@@ -12,7 +12,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "bench": "bun run --filter 'pi-redact' bench",
     "compare": "bun run --filter 'pi-jev-compact' compare",
-    "notes": "python ../.agents/skills/regression-notes/scripts/verify-notes.py --notes-dir .agents/notes"
+    "notes": "sh scripts/verify-notes.sh",
+    "secrets": "bun test plugins/redact/test/no-secrets.test.ts"
   },
   "keywords": [
     "pi",

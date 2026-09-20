@@ -1,33 +1,33 @@
 #!/bin/sh
-# Regression-note gate. Runs the verifier so a bug fix cannot land without its
-# note and bound test. Activated by `git config core.hooksPath .githooks`.
+# Pre-commit gates:
 #
-# Only notes are checked here (fast, path-based). Run `bun run test` and
+#   1. Regression notes — a bug fix cannot land without its note and bound test.
+#   2. Credential-shaped fixtures — a literal secret in the source would make
+#      GitHub push protection refuse the push, and it scans *commits*, so a
+#      literal that reaches a commit is far more expensive to remove than one
+#      caught here.
+#
+# Activated by `git config core.hooksPath .githooks`.
+#
+# Only fast, path/content-based checks run here. Run `bun run test` and
 # `bun run typecheck` yourself, or wire them into CI.
 set -e
 
-# Resolve repo root from this script's location, not the caller's cwd.
+# Resolve the repo root from this script's location, not the caller's cwd.
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-notes="$root/.agents/notes"
 
-[ -d "$notes" ] || exit 0
-
-verifier="$HOME/.agents/skills/regression-notes/scripts/verify-notes.py"
-if [ ! -f "$verifier" ]; then
-  echo "regression-notes: verifier not found at $verifier; skipping gate" >&2
-  exit 0
+# --- 1. credential-shaped literals ------------------------------------------
+# Runs the guard test, which scans the working tree (a git-aware staged-only
+# variant would be nice, but the test is the single source of truth for the
+# rule and duplicating its logic here would let the two drift).
+if command -v bun >/dev/null 2>&1; then
+  if ! (cd "$root" && bun run secrets >/dev/null 2>&1); then
+    echo "pre-commit: credential-shaped literal detected in the source." >&2
+    echo "  Move the value to plugins/redact/test/fixtures.ts and split it so" >&2
+    echo "  neither half matches a rule. Details: AGENTS.md." >&2
+    echo "  Re-run the check: bun run secrets" >&2
+    exit 1
+  fi
 fi
-
-if command -v python3 >/dev/null 2>&1; then
-  py=python3
-elif command -v python >/dev/null 2>&1; then
-  py=python
-elif command -v py >/dev/null 2>&1; then
-  py="py -3"
-else
-  echo "regression-notes: no python found; skipping gate" >&2
-  exit 0
-fi
-
-# shellcheck disable=SC2086
-exec $py "$verifier" --notes-dir "$notes"
+# --- 2. regression notes ----------------------------------------------------
+sh "$root/scripts/verify-notes.sh"

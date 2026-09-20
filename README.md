@@ -70,6 +70,7 @@ bun run typecheck   # tsc --noEmit in each plugin
 bun run bench       # pi-redact micro-benchmarks
 bun run compare     # pi-jev-compact quality comparison vs Morph
 bun run notes       # verify the regression-notes tree
+bun run secrets     # reject credential-shaped literals in the source
 ```
 
 To work in one plugin, `cd` into it and use its own scripts:
@@ -124,12 +125,11 @@ change. Notes live in `.agents/notes/` and are shared across all plugins — a
 note binds to a test by path, so a plugin move must update the paths it cites.
 
 ```bash
-python ../.agents/skills/regression-notes/scripts/verify-notes.py --notes-dir .agents/notes
-# or, from the repo root:
-bun run notes
+bun run notes        # verify the regression-notes tree
+bun run secrets      # reject credential-shaped literals in the source
 ```
 
-The same verifier runs as a pre-commit hook. Enable it once per clone:
+Both also run as a `pre-commit` hook. Enable it once per clone:
 
 ```bash
 git config core.hooksPath .githooks

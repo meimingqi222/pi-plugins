@@ -195,6 +195,8 @@ under `.agents/notes/implemented/bug-fix/`:
 - `redact-zero-width-match` — an empty-matching rule must terminate and stay inert
 - `redact-provider-gap` — the service published for other extensions must be
   announced, re-announced on request, and honoured by consumers
+- `fixture-secrets-block-push` — fixture values must not appear as contiguous
+  secret-shaped literals, or GitHub push protection blocks the push
 
 ## Development
 
@@ -202,7 +204,7 @@ Run from this directory (`plugins/redact`), or from the workspace root with
 `bun run --filter pi-redact <script>`:
 
 ```bash
-bun test              # 62 tests
+bun test              # 67 tests
 bun run typecheck     # tsc --noEmit
 bun bench/bench.ts            # payload + cache benchmarks
 bun bench/profile-patterns.ts # which keyword filters pass on clean text
@@ -223,10 +225,17 @@ test/
   patterns.test.ts         built-in rule smoke tests
   engine.regression.test.ts correctness under the perf optimisations
   perf.test.ts             hot-path regression guards
+  fixtures.ts              credential-shaped dummies, split so no literal matches
+  no-secrets.test.ts       the guard: no secret-shaped literal in the source
 bench/
   bench.ts                 honest payload/cache benchmarks
   profile-patterns.ts      keyword pre-filter effectiveness
 ```
+
+`fixtures.ts` splits each dummy credential across two string halves so no
+contiguous secret-shaped literal exists in the source; `no-secrets.test.ts`
+enforces it. Keep the split — a contiguous literal makes scanners flag the repo
+and makes GitHub refuse a push.
 
 ## License
 

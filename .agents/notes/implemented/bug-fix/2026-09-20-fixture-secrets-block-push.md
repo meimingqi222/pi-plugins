@@ -57,6 +57,16 @@ not token-shaped — several rules deliberately match config markers such as
 `[REDACTED:gcp-service-account]` — are ignored, because a rule's regex source
 appearing in `patterns.ts` is not a committed credential.
 
+Two gates run it without an agent having to remember:
+
+- `bun run secrets` runs the guard test directly.
+- `pre-commit` runs it before every commit, so a reintroduced literal cannot
+  enter history. It also prints what to do: move the value to `fixtures.ts` and
+  split it so neither half matches.
+
+`AGENTS.md` carries the rule as prose, because a gate only helps if the agent
+that hits it knows the intended fix rather than adding the next allowlist entry.
+
 ## Alternatives considered
 
 **Add the values to a scanner allowlist (`.gitleaksignore`, GitHub's unblock
@@ -98,7 +108,8 @@ detector cannot pass vacuously.
 
 Proved: prepended `const PLANTED = "<a full Slack token>";` to
 `plugins/redact/test/patterns.test.ts` → "every source file is free of
-contiguous secret-shaped strings" failed as expected, then reverted. Separately,
-an earlier midpoint split of the fixtures was caught by "neither half of a split
-fixture matches a rule on its own", which is why the split points are searched
-rather than assumed.
+contiguous secret-shaped strings" failed as expected, and `sh
+.githooks/pre-commit` exited 1 with its guidance message; then reverted.
+Separately, an earlier midpoint split of the fixtures was caught by "neither half
+of a split fixture matches a rule on its own", which is why the split points are
+searched rather than assumed.
