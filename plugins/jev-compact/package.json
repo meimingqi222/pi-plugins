@@ -1,0 +1,45 @@
+{
+  "name": "pi-jev-compact",
+  "version": "0.1.0",
+  "description": "pi extension that compacts context by deleting stale tool calls (Jev) instead of summarizing — user and assistant text is never rewritten.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./engine": "./src/jev/index.ts",
+    "./adapter": "./src/pi-adapter.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "compare": "bun bench/compare-quality.ts"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "compaction",
+    "context",
+    "jev",
+    "typesafe",
+    "verbatim"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.4.2",
+    "typescript": "^5.6.0"
+  }
+}

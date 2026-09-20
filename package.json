@@ -1,0 +1,31 @@
+{
+  "name": "pi-plugins",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A workspace of independent pi extensions, published as separate packages.",
+  "type": "module",
+  "workspaces": [
+    "plugins/*"
+  ],
+  "scripts": {
+    "test": "bun run --filter '*' test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "bench": "bun run --filter 'pi-redact' bench",
+    "compare": "bun run --filter 'pi-jev-compact' compare",
+    "notes": "python ../.agents/skills/regression-notes/scripts/verify-notes.py --notes-dir .agents/notes"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-plugins",
+    "extensions"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.4.2",
+    "typescript": "^5.6.0"
+  }
+}
