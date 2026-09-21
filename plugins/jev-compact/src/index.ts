@@ -14,7 +14,10 @@
  * prune → serialize, not prune → replace.
  *
  * Configuration (environment):
- *   TYPESAFE_API_KEY              required; the Jev/System One key
+ *   TYPESAFE_API_KEY              required; the Jev/System One key. May instead
+ *                                 be stored in `<agent dir>/jev-compact.json` as
+ *                                 `{ "apiKey": "..." }`, or in `auth.json` under
+ *                                 the `typesafe` key. See ./api-key.ts.
  *   JEV_COMPACT=false             disable this extension entirely
  *   JEV_COMPACT_MODEL             default "jev-latest"
  *   JEV_COMPACT_THRESHOLD         keep probability cutoff, default 0.5
@@ -28,8 +31,15 @@
  */
 
 import type { ExtensionAPI, SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 
 import { compact, reductionRatio, resolveOptions } from './jev/compact.ts';
+import {
+  CONFIG_FILE_NAME,
+  describeApiKeySource,
+  resolveApiKey as resolveApiKeySources,
+  type ResolvedApiKey,
+} from './api-key.ts';
 import { JevClient } from './jev/client.ts';
 import { DEFAULT_MODEL } from './jev/request.ts';
 import { goalFromMessages } from './jev/state.ts';
@@ -158,28 +168,20 @@ function config() {
 }
 
 /**
- * Resolves the API key from the environment.
+ * Resolve the API key from the environment, the plugin config file, or
+ * `auth.json` — see ./api-key.ts for the precedence and the reasoning.
  *
  * Called at the point of use rather than cached from `session_start`, so the
  * compaction hook works even if the session-start event has not fired (and so
- * `/reload` picks up a changed value). Only the environment is consulted — see
- * the note in `session_start` for why `auth.json` is not an option.
- *
- * Whitespace is stripped. An API key pasted into `setx` (or a shell heredoc)
- * can pick up a trailing newline or a wrapped line, and a newline inside an
- * HTTP header makes the whole request throw before it is sent:
- *
- *   Header '14' has invalid value: 'Bearer apikey_...\n...'
- *
- * That message names no cause, so the useful failure is a warning here naming
- * the actual problem. A real key never contains whitespace, so stripping is
- * safe and cannot mask a different mistake.
+ * `/reload` picks up a changed value).
  */
 function resolveApiKey(): string | undefined {
-  const raw = process.env.TYPESAFE_API_KEY;
-  if (!raw) return undefined;
-  const cleaned = raw.replace(/\s+/g, '');
-  return cleaned.length > 0 ? cleaned : undefined;
+  return resolveApiKeyFromSources().key;
+}
+
+/** The full resolution, including which source supplied the value. */
+function resolveApiKeyFromSources(): ResolvedApiKey {
+  return resolveApiKeySources({ agentDir: getAgentDir() });
 }
 
 /**
@@ -187,8 +189,7 @@ function resolveApiKey(): string | undefined {
  * once at startup rather than discovering it from a confusing 401 later.
  */
 function apiKeyHasWhitespace(): boolean {
-  const raw = process.env.TYPESAFE_API_KEY;
-  return typeof raw === 'string' && raw.length > 0 && /\s/.test(raw);
+  return resolveApiKeyFromSources().repaired;
 }
 
 /**
@@ -203,10 +204,10 @@ function apiKeyHasWhitespace(): boolean {
  */
 function whitespaceWarning(): string {
   return (
-    'jev-compact: TYPESAFE_API_KEY contains whitespace (a stray newline or a wrapped ' +
+    'jev-compact: the API key contains whitespace (a stray newline or a wrapped ' +
     'line). It is trimmed for this request, so compaction still works. If this ' +
     'repeats, the stored value needs fixing; if it appears once after editing the ' +
-    'variable, this process simply still holds the old value and a restart clears it.'
+    'value, this process simply still holds the old copy and a restart clears it.'
   );
 }
 
@@ -286,23 +287,25 @@ export default function jevCompact(pi: ExtensionAPI): void {
   const bridge = installRedactBridge(pi);
 
   pi.on('session_start', async (_event, ctx) => {
-    // Read the key from the environment on every session start, so `/reload`
-    // picks up a change.
+    // Read the key on every session start, so `/reload` picks up a change.
     //
-    // Only the environment is consulted, on purpose. `getApiKeyForProvider` is
-    // not an option: it resolves through the model registry, which returns
-    // `undefined` for any provider id that is not a registered model provider,
-    // so a "typesafe" entry in `auth.json` would never be found. Documenting
-    // that as a fallback would be a promise the code cannot keep.
-    if (!resolveApiKey()) {
+    // Three sources are consulted (see ./api-key.ts): the environment, the
+    // plugin's own `jev-compact.json`, and `auth.json` read directly as a file.
+    // `getApiKeyForProvider` is deliberately *not* used: it resolves through the
+    // model registry, which returns `undefined` for any provider id that is not
+    // a registered model provider, so it cannot read a plugin-owned entry
+    // however the value is stored.
+    const resolved = resolveApiKeyFromSources();
+    if (!resolved.key) {
       ctx.ui.notify(
-        'jev-compact: TYPESAFE_API_KEY is not set — compaction will use pi defaults. ' +
-          'Export it before starting pi (setx on Windows), then restart.',
+        'jev-compact: no API key found — compaction will use pi defaults. Set ' +
+          `${describeApiKeySource('environment')}, or write { "apiKey": "…" } to ` +
+          `${CONFIG_FILE_NAME} in the pi agent directory, then restart.`,
         'warning',
       );
       return;
     }
-    if (apiKeyHasWhitespace()) {
+    if (resolved.repaired) {
       ctx.ui.notify(whitespaceWarning(), 'warning');
     }
     const cfg = config();

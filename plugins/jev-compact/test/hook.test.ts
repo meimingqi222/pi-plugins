@@ -15,6 +15,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import jevCompact, { stripCompactionFrame } from '../src/index.ts';
 
@@ -179,17 +182,29 @@ async function runCompact(
 
 let server: FakeJevServer;
 let savedKey: string | undefined;
+let savedAgentDir: string | undefined;
+let sandboxDir: string;
 
 beforeEach(() => {
   savedKey = process.env.TYPESAFE_API_KEY;
+  savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  // The key resolver also consults `auth.json` and `jev-compact.json` in the pi
+  // agent directory, so these tests must not read a developer's real files. An
+  // empty temporary directory makes the file sources resolve to nothing, which
+  // keeps the environment the only source for this suite.
+  sandboxDir = mkdtempSync(join(tmpdir(), 'jev-compact-agent-'));
+  process.env.PI_CODING_AGENT_DIR = sandboxDir;
   process.env.TYPESAFE_API_KEY = 'test-key';
   server = installFakeJev(0);
 });
 
 afterEach(() => {
   server.restore();
+  rmSync(sandboxDir, { recursive: true, force: true });
   if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
   else process.env.TYPESAFE_API_KEY = savedKey;
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
 });
 
 describe('second compaction', () => {
@@ -398,17 +413,82 @@ describe('api key resolution', () => {
     for (const handler of handlers['session_start'] ?? []) {
       await handler({ type: 'session_start', reason: 'startup' }, ctx);
     }
-    expect(notes.some((n) => n.includes('TYPESAFE_API_KEY is not set'))).toBe(true);
+    // The message names every place a key may live, so a user who has not set
+    // one is told where to put it rather than only that it is missing.
+    expect(notes.some((n) => n.includes('no API key found'))).toBe(true);
+    expect(notes.some((n) => n.includes('TYPESAFE_API_KEY'))).toBe(true);
 
     const { returned } = await runCompact(handlers, ctx, preparation());
     expect(returned).toBeUndefined();
     expect(server.requests.length).toBe(0);
   });
 
+  test('a key stored in auth.json enables compaction', async () => {
+    // The point of the multi-source resolver: a key that is not in the
+    // environment still works. `getApiKeyForProvider` cannot do this, because it
+    // resolves through registered model providers; reading the file does.
+    delete process.env.TYPESAFE_API_KEY;
+    writeFileSync(
+      join(sandboxDir, 'auth.json'),
+      JSON.stringify({ typesafe: { type: 'api_key', key: 'key-from-auth-json' } }),
+      { mode: 0o600 },
+    );
+
+    const handlers = loadExtension();
+    const { ctx, notes } = makeCtx();
+    for (const handler of handlers['session_start'] ?? []) {
+      await handler({ type: 'session_start', reason: 'startup' }, ctx);
+    }
+    expect(notes.some((n) => n.includes('no API key found'))).toBe(false);
+
+    const { returned } = await runCompact(handlers, ctx, preparation());
+    expect(returned).toBeDefined();
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  test('a key stored in jev-compact.json enables compaction', async () => {
+    delete process.env.TYPESAFE_API_KEY;
+    writeFileSync(
+      join(sandboxDir, 'jev-compact.json'),
+      JSON.stringify({ apiKey: 'key-from-config-file' }),
+      { mode: 0o600 },
+    );
+
+    const handlers = loadExtension();
+    const { ctx } = makeCtx();
+    for (const handler of handlers['session_start'] ?? []) {
+      await handler({ type: 'session_start', reason: 'startup' }, ctx);
+    }
+
+    const { returned } = await runCompact(handlers, ctx, preparation());
+    expect(returned).toBeDefined();
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
+  test('the environment overrides a stored key', async () => {
+    writeFileSync(
+      join(sandboxDir, 'auth.json'),
+      JSON.stringify({ typesafe: { type: 'api_key', key: 'stored' } }),
+      { mode: 0o600 },
+    );
+    process.env.TYPESAFE_API_KEY = 'env-value';
+
+    const handlers = loadExtension();
+    const { ctx } = makeCtx();
+    for (const handler of handlers['session_start'] ?? []) {
+      await handler({ type: 'session_start', reason: 'startup' }, ctx);
+    }
+
+    const { returned } = await runCompact(handlers, ctx, preparation());
+    expect(returned).toBeDefined();
+    // Whichever source won, the request must carry a usable key.
+    expect(server.requests.length).toBeGreaterThan(0);
+  });
+
   test('a key with a stray newline is repaired rather than sent broken', async () => {
-    // A key pasted into `setx` can pick up a wrapped line. A newline inside an
-    // HTTP header throws before the request is sent, with an error that names
-    // no cause, so the key is stripped and the user is warned.
+    // A key pasted into `setx` or a heredoc can pick up a wrapped line. A
+    // newline inside an HTTP header throws before the request is sent, with an
+    // error that names no cause, so the key is stripped and the user is warned.
     process.env.TYPESAFE_API_KEY = 'test-key\nbroken';
     const handlers = loadExtension();
     const { ctx, notes } = makeCtx();
@@ -431,7 +511,7 @@ describe('api key resolution', () => {
     for (const handler of handlers['session_start'] ?? []) {
       await handler({ type: 'session_start', reason: 'startup' }, ctx);
     }
-    expect(notes.some((n) => n.includes('is not set'))).toBe(true);
+    expect(notes.some((n) => n.includes('no API key found'))).toBe(true);
     const { returned } = await runCompact(handlers, ctx, preparation());
     expect(returned).toBeUndefined();
   });

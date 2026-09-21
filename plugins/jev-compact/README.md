@@ -24,7 +24,36 @@ serializes the result into the compaction summary. No text is paraphrased, ever.
 pi install -l ./plugins/jev-compact
 ```
 
-Requires a TypeSafe API key, set in the **environment** so pi can see it:
+Requires a TypeSafe API key. Any of these works;
+`auth.json` and the config file are read directly, so no shell setup is needed
+(the key is read on each use, so `/reload` picks up a change):
+
+**1. `auth.json`** — the file pi's `/login` writes. Add a plugin-owned entry:
+
+```jsonc
+// ~/.pi/agent/auth.json
+{
+  "anthropic":       { "type": "api_key", "key": "sk-ant-..." },
+  "typesafe":        { "type": "api_key", "key": "<your key>" }
+}
+```
+
+This is safe in both directions: a stored credential is `{ type, key }`, the
+same shape pi writes for its own providers, and pi's write path re-serializes
+the whole object, so a foreign key survives `/login` and `/logout`.
+
+> Note: `ctx.modelRegistry.getApiKeyForProvider("typesafe")` would **not** find
+> this — the registry only resolves registered *model* providers. The plugin
+> reads the file directly instead, which is why an `auth.json` entry works here
+> but not through the registry API.
+
+**2. The plugin's own config file** — `<agent dir>/jev-compact.json`:
+
+```jsonc
+{ "apiKey": "<your key>" }
+```
+
+**3. The environment** — best for CI, and the highest priority:
 
 ```bash
 # bash / zsh
@@ -34,10 +63,13 @@ export TYPESAFE_API_KEY=...
 setx TYPESAFE_API_KEY "..."
 ```
 
-There is no `auth.json` option. `ctx.modelRegistry.getApiKeyForProvider(id)`
-returns `undefined` for any id that is not a registered model provider, and
-`typesafe` is not one, so an `auth.json` entry would never be found. The key is
-read from the environment on each use, so `/reload` picks up a change.
+Precedence is **environment → `jev-compact.json` → `auth.json`**, so an explicit
+export always overrides a stored value.
+
+A caveat for the environment route specifically: shell rc files are only read by
+*interactive* shells, so a pi launched from a GUI (or by another app) will not
+see an export from `~/.zshrc`. `auth.json` and the config file do not have that
+problem, which is part of why they are supported.
 
 ## Architecture note: why a serializer
 
@@ -222,7 +254,7 @@ headroom, enough for the worst observed error.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | — | Required. The Jev/System One key. |
+| `TYPESAFE_API_KEY` | — | The Jev/System One key. Highest priority, but not the only source; see [Install](#install). |
 | `JEV_COMPACT` | `true` | Set `false` to disable the extension. |
 | `JEV_COMPACT_MODEL` | `jev-latest` | Jev model name. |
 | `JEV_COMPACT_THRESHOLD` | `0.5` | Keep probability cutoff. Lower keeps more; higher discards more. Clamped to 0–1. |
