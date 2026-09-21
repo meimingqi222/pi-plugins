@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   acemcpCachePath,
   loadBlobHashStore,
@@ -22,9 +22,11 @@ describe("cache path", () => {
   test("matches acemcp's sha256(absPath)[:16] scheme", () => {
     // Pin the scheme against a value computed independently of the
     // implementation, so a change to the digest or the slice length fails here.
+    // The directory is joined the platform's way: only the hash and the file
+    // name are acemcp's contract, the separator belongs to the filesystem.
     const projectRoot = "/example/project";
     const expectedDigest = createHash("sha256").update(projectRoot, "utf8").digest("hex").slice(0, 16);
-    expect(acemcpCachePath("/data", projectRoot)).toBe(`/data/cache/${expectedDigest}.json`);
+    expect(acemcpCachePath("/data", projectRoot)).toBe(join("/data", "cache", `${expectedDigest}.json`));
   });
 
   test("the same project root always maps to the same cache file", () => {
@@ -38,11 +40,12 @@ describe("cache path", () => {
 
   test("this client's own index lives beside, not on top of, acemcp's", () => {
     const mine = piAceIndexPath("/data", "/proj");
+    const theirs = acemcpCachePath("/data", "/proj");
     // Different directory ⇒ the two writers can never collide, which is the
     // whole point: this client does not write acemcp's manifest.
-    expect(mine).toContain("/data/pi-ace-index/");
-    expect(mine).not.toBe(acemcpCachePath("/data", "/proj"));
-    expect(acemcpCachePath("/data", "/proj")).toContain("/data/cache/");
+    expect(dirname(mine)).toBe(join("/data", "pi-ace-index"));
+    expect(dirname(theirs)).toBe(join("/data", "cache"));
+    expect(mine).not.toBe(theirs);
   });
 });
 

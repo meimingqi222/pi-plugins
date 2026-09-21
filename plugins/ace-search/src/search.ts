@@ -9,7 +9,7 @@
  */
 
 import { createAceClient, isFatalAceError, type AceClient, type BlobUpload } from "./client.ts";
-import { type AceSearchConfig } from "./config.ts";
+import { toPosixAbsolutePath, type AceSearchConfig } from "./config.ts";
 import {
   acemcpCachePath,
   loadBlobHashStore,
@@ -73,7 +73,12 @@ export interface RunAceSearchOptions {
 const DEFAULT_MAX_INDEX_WAIT_MS = 30_000;
 
 export async function runAceSearch(options: RunAceSearchOptions): Promise<AceSearchResult> {
-  const { projectRoot, query, config } = options;
+  const { query, config } = options;
+  // The cache file name is `sha256(projectRoot)`, so the root must be
+  // canonical before it is hashed: a native `C:\proj` and a POSIX `C:/proj`
+  // name one project and must share one index. This is also the normalization
+  // `acemcp` hashes, so a cache it built is still found.
+  const projectRoot = toPosixAbsolutePath(options.projectRoot, process.cwd());
   const signal = options.signal ?? new AbortController().signal;
   const progress = options.onProgress ?? (() => {});
   const client = options.client ?? createAceClient({ baseUrl: config.baseUrl, token: config.token });

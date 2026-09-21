@@ -303,6 +303,47 @@ describe("runAceSearch", () => {
     expect(secondResult.indexFormat).toBe("pi-ace-index");
   });
 
+  test("the cache key is canonical, so a redundant spelling finds the same index", async () => {
+    // The index file name is `sha256(projectRoot)`. `acemcp` hashes the
+    // POSIX-absolute form, so `runAceSearch` must canonicalize before hashing:
+    // a second spelling of the same directory (a trailing `/.`, a native
+    // backslash path on Windows) must land on the index the first run wrote.
+    // Hashing the raw string made every differently-spelled run cold, which is
+    // the whole cost this plugin exists to remove.
+    const { root, dataDir } = await workspace();
+    await writeFile(join(root, "a.ts"), "x\n");
+    const config = configFor(dataDir, { PI_ACE_MAX_LINES_PER_BLOB: "100" });
+
+    const first = fakeClient();
+    const firstResult = await runAceSearch({
+      projectRoot: root,
+      query: "where",
+      config,
+      client: first.client,
+    });
+    expect(firstResult.uploadedChunks).toBe(1);
+
+    // The same directory, spelled non-canonically: a trailing `/.` is kept by
+    // string concatenation but removed by `resolve`, so the raw bytes hashed
+    // before the fix differ from the canonical ones after it. On Windows a
+    // POSIX-separated spelling is added too, since the separator itself
+    // changes the hashed bytes there.
+    const spellings = [`${root}/.`];
+    if (process.platform === "win32") spellings.push(root.split("\\").join("/"));
+
+    for (const projectRoot of spellings) {
+      const next = fakeClient();
+      const result = await runAceSearch({
+        projectRoot,
+        query: "where",
+        config,
+        client: next.client,
+      });
+      expect(result.uploadedChunks).toBe(0);
+      expect(next.calls.some((call) => call.method === "uploadBlobs")).toBe(false);
+    }
+  });
+
   test("progress reports every phase so a slow run is attributable", async () => {
     const { root, dataDir } = await workspace();
     await writeFile(join(root, "a.ts"), "x\n");

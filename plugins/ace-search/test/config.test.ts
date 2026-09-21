@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadAceSearchConfig, parseSettingsToml, toPosixAbsolutePath } from "../src/config.ts";
 
 describe("parseSettingsToml", () => {
@@ -185,10 +185,20 @@ TEXT_EXTENSIONS = [ ".ts", ".go",]
 
 describe("toPosixAbsolutePath", () => {
   test("resolves a relative path against cwd and strips backslashes", () => {
-    expect(toPosixAbsolutePath("sub/dir", "/base")).toBe("/base/sub/dir");
+    // The given cwd is the anchor, and the result is POSIX: on Windows the
+    // native separator would otherwise survive as `\`.
+    const base = resolve(process.cwd(), "base");
+    const result = toPosixAbsolutePath("sub/dir", base);
+    expect(result).toBe(`${base.split("\\").join("/")}/sub/dir`);
+    expect(result).not.toContain("\\");
   });
 
   test("leaves an absolute path absolute", () => {
-    expect(toPosixAbsolutePath("/already/abs", "/base")).toBe("/already/abs");
+    // `/already/abs` is drive-relative on Windows, not absolute, so pinning
+    // that literal would assert the wrong rule there. A platform-appropriate
+    // absolute path (with an ignored cwd) is what the contract actually says.
+    const absolute = process.platform === "win32" ? "C:\\already\\abs" : "/already/abs";
+    const expected = process.platform === "win32" ? "C:/already/abs" : "/already/abs";
+    expect(toPosixAbsolutePath(absolute, "/base")).toBe(expected);
   });
 });
