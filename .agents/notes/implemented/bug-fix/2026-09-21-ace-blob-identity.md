@@ -83,6 +83,6 @@ belief that caused the bug.
   `0de615464bc64794` observed for this workspace, plus the single-chunk case
   (no `#chunk1of1` suffix, matching `acemcp`).
 
-Proved red: reverting the retrieval payload to `inventory.names` reproduced
+Proved: reverted the retrieval payload to `inventory.names`; it reproduced
 `Invalid blob name` against the live endpoint and failed the cold-project
 assertion. The identifier check is what the live 400 replaced.

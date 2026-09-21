@@ -87,7 +87,7 @@ for a transient network blip.
 - `plugins/ace-search/test/client.test.ts` — "a 401 fails immediately instead of
   burning retries".
 
-Proved red: replaced the `outcome.failedBatches === 0` gate with `if (true)` →
+Proved: replaced the `outcome.failedBatches === 0` gate with `if (true)` →
 "a failed upload is not persisted…" and "a failing batch does not abort the run,
 but a 401 does" both failed. Removed the `isFatalAceError` rethrow in
 `uploadChunks` → the 401 case failed. Reverted both; 56 tests across the plugin

@@ -10,9 +10,17 @@ import {
  *
  * The resolver takes an injected reader precisely so these tests never touch a
  * developer's real credentials in the pi agent directory.
+ *
+ * Keys are compared POSIX-style. The resolver builds paths with the platform's
+ * `join`, so on Windows it looks up `\agent\auth.json` while the fixtures below
+ * are written as `/agent/auth.json`. Normalizing both sides keeps this file
+ * about precedence and robustness — the behavior it exists to pin — instead of
+ * re-testing `path.join` per platform.
  */
 function files(entries: Record<string, string>) {
-  return (path: string): string | undefined => entries[path];
+  const normalize = (path: string): string => path.split("\\").join("/");
+  const normalized = new Map(Object.entries(entries).map(([path, text]) => [normalize(path), text]));
+  return (path: string): string | undefined => normalized.get(normalize(path));
 }
 
 const AGENT_DIR = '/agent';

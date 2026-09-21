@@ -115,13 +115,13 @@ a file.
   jev-compact.json enables compaction", "the environment overrides a stored key",
   and the updated missing-key and whitespace cases.
 
-Proved red: the environment branch returned `source: "none"`, and
+Proved: the environment branch returned `source: "none"`, and
 "the environment wins over both files" failed with
 `Expected: "environment"  Received: "none"`. Fixed by narrowing `normalize`'s
 return type; 16/16 in the new file, 152/152 in the plugin.
 
 Also verified against a real pi credential store outside the test suite: seeded
-a temporary `auth.json` with a `typesafe` entry alongside `parallel` and
+a temporary auth.json with a `typesafe` entry alongside `parallel` and
 `copilot-api-chat`, then drove `AuthStorage.modify` for both a delete and an add.
-All three keys survived, so a real `/login` or `/logout` does not drop the
+All three keys survived, so a real login or logout does not drop the
 plugin's key.

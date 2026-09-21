@@ -79,6 +79,6 @@ broken for every pattern ending in a wildcard section, as above.
   matches at the root" (asserts both that the root-level directory is excluded
   **and** that a nested look-alike is not).
 
-Proved red: restored `return pathIndex === pathParts.length` in
+Proved: restored `return pathIndex === pathParts.length` in
 `matchPathPattern` → "a path pattern only matches at the root" failed.
 Reverted; 11 tests passed.

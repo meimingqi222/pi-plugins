@@ -123,7 +123,7 @@ it only checked that a cache-only project uploads nothing, which the union also
 satisfies, so it never covered the case where the two stores hold different
 files.
 
-Proved red by restoring the ranking loop: 3 tests fail, including the reported
+Proved: restoring the ranking loop makes 3 tests fail, including the reported
 case. Restored, 69/69 pass.
 
 Verified against the real workspace, which is the environment that exposed it:
