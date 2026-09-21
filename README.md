@@ -11,6 +11,7 @@ can be installed without pulling in its siblings.
 | [redact](plugins/redact) | `pi-redact` | Strips API keys, tokens and other secrets from every payload sent to a model, before it leaves your machine. |
 | [jev-compact](plugins/jev-compact) | `pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
 | [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
+| [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
 
 Each plugin has its own README with configuration, architecture notes and
 measured behaviour. `pi-jev-compact` additionally ships
@@ -38,6 +39,7 @@ Each plugin is installed on its own:
 pi install -l ./plugins/redact         # project-local
 pi install -l ./plugins/jev-compact
 pi install -l ./plugins/ace-search
+pi install -l ./plugins/goal
 pi install npm:pi-redact               # once published
 ```
 
