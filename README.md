@@ -10,6 +10,7 @@ can be installed without pulling in its siblings.
 |--------|---------|--------------|
 | [redact](plugins/redact) | `pi-redact` | Strips API keys, tokens and other secrets from every payload sent to a model, before it leaves your machine. |
 | [jev-compact](plugins/jev-compact) | `pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
+| [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
 
 Each plugin has its own README with configuration, architecture notes and
 measured behaviour. `pi-jev-compact` additionally ships
@@ -36,11 +37,15 @@ Each plugin is installed on its own:
 ```bash
 pi install -l ./plugins/redact         # project-local
 pi install -l ./plugins/jev-compact
+pi install -l ./plugins/ace-search
 pi install npm:pi-redact               # once published
 ```
 
 `pi-jev-compact` needs a TypeSafe API key in the environment
 (`TYPESAFE_API_KEY`); `pi-redact` has no required configuration.
+`pi-ace-search` reads its endpoint and token from `~/.acemcp/settings.toml`, the
+same file `acemcp` uses, and uploads source to that endpoint — see its
+[README](plugins/ace-search/README.md).
 
 To hack on a plugin against a live pi session, symlink its `src/` directory
 into pi's global extension directory, where pi hot-reloads it with `/reload`:
@@ -69,6 +74,7 @@ bun run test        # bun test in each plugin
 bun run typecheck   # tsc --noEmit in each plugin
 bun run bench       # pi-redact micro-benchmarks
 bun run compare     # pi-jev-compact quality comparison vs Morph
+bun run accuracy    # pi-ace-search recall benchmark vs judged ground truth
 bun run notes       # verify the regression-notes tree
 bun run secrets     # reject credential-shaped literals in the source
 ```
@@ -104,6 +110,11 @@ pi-plugins/
         ├── src/              source, incl. vendored src/jev/
         ├── test/
         └── bench/            quality comparison + session replay
+    └── ace-search/
+        ├── package.json      name: pi-ace-search — the published package
+        ├── src/              client, chunker, index store, CLI, pi tool
+        ├── test/             all network-free (fetch is stubbed)
+        └── bench/            recall benchmark vs judged ground truth
 ```
 
 ### Adding a plugin

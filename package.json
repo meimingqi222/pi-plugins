@@ -12,6 +12,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "bench": "bun run --filter 'pi-redact' bench",
     "compare": "bun run --filter 'pi-jev-compact' compare",
+    "accuracy": "bun run --filter 'pi-ace-search' bench",
     "notes": "sh scripts/verify-notes.sh",
     "secrets": "bun test plugins/redact/test/no-secrets.test.ts"
   },
