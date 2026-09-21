@@ -1,0 +1,51 @@
+{
+  "name": "pi-ace-search",
+  "version": "0.1.0",
+  "description": "pi extension + CLI that queries the Augment ACE codebase-retrieval index over a project, reusing acemcp-go's blob hashes so a warm index is a single round trip.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./search": "./src/search.ts",
+    "./config": "./src/config.ts"
+  },
+  "bin": {
+    "pi-ace-search": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "bench": "bun bench/accuracy.ts"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "search",
+    "codebase",
+    "semantic",
+    "ace",
+    "augment"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "^0.86.1",
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.4.2",
+    "typebox": "^1.3.7",
+    "typescript": "^5.6.0"
+  }
+}
