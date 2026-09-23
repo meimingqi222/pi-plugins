@@ -73,7 +73,11 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 		if (timeoutHandle) clearTimeout(timeoutHandle);
 		detach();
 		logStream?.end();
-		resolveResult({ exitCode, timedOut, aborted, killed, spawnError });
+		// Windows has no process signals: a `taskkill`-terminated process reports a
+		// real exit code (usually 1), so a killed run would say "exit code 1"
+		// where the contract is a signalled process with no exit code. Normalize
+		// only when we are the ones who killed it.
+		resolveResult({ exitCode: killed ? null : exitCode, timedOut, aborted, killed, spawnError });
 	};
 
 	const forward = (chunk: Buffer): void => {

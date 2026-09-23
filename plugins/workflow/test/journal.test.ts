@@ -35,7 +35,10 @@ function entry(overrides: Partial<WorkflowJournalEntry> = {}): WorkflowJournalEn
 
 describe("run paths", () => {
   test("the workflow root is pi's, not another tool's", () => {
-    expect(resolveWorkflowRoot("/tmp/project")).toBe(join("/tmp/project", ".pi", "workflows"));
+    // An absolute fixture, because `path.resolve` adds the current drive on
+    // Windows and would otherwise resolve `/tmp/project` off the C: drive.
+    const project = join(tmpdir(), "pi-wf-project");
+    expect(resolveWorkflowRoot(project)).toBe(join(project, ".pi", "workflows"));
   });
   test("a run id that could escape the runs directory is rejected", () => {
     const cwd = "/tmp/project";

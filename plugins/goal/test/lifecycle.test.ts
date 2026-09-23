@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { symlink } from "node:fs/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +11,29 @@ import { withDeadline } from "pi-run-core";
 import { PLAN_FILE_NAME, renderPlan } from "../src/plan.ts";
 
 const planFileIn = (sessionDir: string): string => join(sessionDir, PLAN_FILE_NAME);
+
+/**
+ * Whether this process may create a symlink at all.
+ *
+ * Windows grants `symlink` only to an elevated process or one with Developer
+ * Mode enabled, and refuses it with `EPERM` otherwise. The guard the symlink
+ * test pins cannot be exercised without one, so the test is skipped rather
+ * than failing on a platform that genuinely cannot set up its precondition.
+ */
+const canCreateSymlinks = ((): boolean => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-goal-symlink-"));
+	try {
+		const target = join(dir, "target");
+		writeFileSync(target, "x");
+		symlinkSync(target, join(dir, "link"));
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+})();
+
 /**
  * Rewrites the checklist the way the agent would, by editing the file.
  *
@@ -1012,7 +1035,7 @@ describe("goal await windows", () => {
     expect(settled.planCriteria).toEqual(["the objective is met"]);
   });
 
-  test("a plan path squatted by a symlink is refused, not written through", async () => {
+  test.skipIf(!canCreateSymlinks)("a plan path squatted by a symlink is refused, not written through", async () => {
     const env = setup();
     const target = join(env.sessionDir, "outside.md");
     await writeFile(target, "untouched", { encoding: "utf-8" });
