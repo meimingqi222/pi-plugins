@@ -1,5 +1,15 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+/**
+ * The model type the registry hands out, derived rather than imported.
+ *
+ * `@earendil-works/pi-ai` is a transitive dependency of the coding agent, not a
+ * dependency of this plugin, so naming `Model` directly would mean adding one
+ * just for a type. `find` returns exactly this, and `ctx.model` is the same
+ * type, so deriving it keeps both sides in sync with the API automatically.
+ */
+export type RegisteredModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>;
+
 export const GOAL_ENTRY = "goal-state";
 export const MAX_OBJECTIVE = 4_000;
 export type GoalStatus =
@@ -39,16 +49,81 @@ export function goalLimits(env: Record<string, string | undefined> = process.env
 }
 
 /**
+ * The verifier's model, as `provider/modelId` (`PI_GOAL_VERIFIER_MODEL`).
+ *
+ * The verifier judges work rather than doing it, and a judge that shares the
+ * implementer's blind spots is the weakest possible one: the mistake just made
+ * is the mistake it will fail to see. Running verification on a different model
+ * is the way to break that correlation, and it also lets an expensive model do
+ * the work while a cheaper one verifies (or the reverse).
+ *
+ * Unset is the default and means "use the session's active model", so this
+ * changes nothing until it is configured. A spec without a `provider/` prefix is
+ * ignored rather than guessed: the same bare id can exist on several providers,
+ * and picking one arbitrarily would silently verify with a model the user did
+ * not name.
+ */
+export function verifierModelSpec(
+  env: Record<string, string | undefined> = process.env,
+): { provider: string; id: string } | undefined {
+  const raw = env.PI_GOAL_VERIFIER_MODEL?.trim();
+  if (!raw) return undefined;
+  const slash = raw.indexOf("/");
+  if (slash <= 0 || slash === raw.length - 1) return undefined;
+  return { provider: raw.slice(0, slash), id: raw.slice(slash + 1) };
+}
+
+/**
+ * Resolves the verifier's model, falling back to the session's active model.
+ *
+ * `reason` is `undefined` when the configured model was used, otherwise it
+ * explains the fallback so a caller can surface it. An unknown id or a model
+ * without configured auth must not throw here: verification still has a usable
+ * model, and failing closed on a typo would make the goal unverifiable.
+ */
+export function resolveVerifierModel(
+  ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+  env: Record<string, string | undefined> = process.env,
+): { model: RegisteredModel | undefined; reason?: string } {
+  const spec = verifierModelSpec(env);
+  const active = ctx.model;
+  if (!spec) return { model: active };
+  const configured = ctx.modelRegistry.find(spec.provider, spec.id);
+  if (!configured) {
+    return { model: active, reason: `Unknown model ${spec.provider}/${spec.id}; using the active model.` };
+  }
+  if (!ctx.modelRegistry.hasConfiguredAuth(configured)) {
+    return {
+      model: active,
+      reason: `No configured authentication for ${spec.provider}/${spec.id}; using the active model.`,
+    };
+  }
+  return { model: configured };
+}
+
+/**
  * Normalizes a verifier `nextAction` to a stall fingerprint.
  *
  * Two rounds asking for the same work in different words are the same request,
  * so case, punctuation and whitespace are folded away. The remaining tokens are
  * what identifies the action; a reworded nudge still counts as progress only
  * when it names something different.
+ *
+ * High-entropy tokens are folded first, before punctuation is stripped. A
+ * scratch path or an id embedded in the action differs every attempt, so
+ * leaving it in makes an identical gap look new each round and the stall guard
+ * never fires. Plain integers are deliberately *not* folded: "step 1" and
+ * "step 2" name different work, and line numbers in a citation are part of what
+ * identifies a gap.
  */
 export function nextActionKey(value: string): string {
   return value
     .toLowerCase()
+    .replace(/(?:\/private)?\/(?:tmp|var\/folders)\/\S+/g, " scratch ")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, " id ")
+    // 12+ hex characters: a git sha, hash or hex id. Deliberately not shorter —
+    // real words are spelled from a-f plus other letters ("defaced" is 7).
+    .replace(/\b[0-9a-f]{12,}\b/g, " id ")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
@@ -75,6 +150,9 @@ export interface Goal {
   candidate?: string;
   /** Session-scoped plan file, written once at goal creation. */
   planPath?: string;
+  /** `provider/modelId` of the model that judged the last verification round.
+   * Absent when the session's active model was used or before the first round. */
+  verifierModel?: string;
   /** The gating criteria as first written. Held by the plugin, never re-read from the file. */
   planCriteria?: string[];
   /** First unchecked `## Task checklist` box, refreshed once per work run. */
@@ -106,7 +184,7 @@ export function isGoal(value: unknown): value is Goal {
     optionalNatural(g.attemptRuns) && optionalNatural(g.stalledRuns) &&
     (g.budget === undefined || (natural(g.budget) && g.budget > 0)) &&
     (g.lastBlockerRun === undefined || natural(g.lastBlockerRun)) &&
-    ["blocker", "blockerReason", "candidate", "progress", "reason", "nextActionKey"].every(
+    ["blocker", "blockerReason", "candidate", "progress", "reason", "nextActionKey", "verifierModel"].every(
       (key) => g[key] === undefined || typeof g[key] === "string",
     ) &&
     (g.planPath === undefined || typeof g.planPath === "string") &&
@@ -158,8 +236,24 @@ export function parseObjective(source: string): { objective: string; budget?: nu
   return { objective, ...(budget === undefined ? {} : { budget }) };
 }
 
+/**
+ * Terminal statuses, defined as exactly the ones `/goal resume` refuses.
+ *
+ * A retired goal keeps its snapshot — `/goal status` still reports it — but it
+ * is dropped from the model context and the status bar. Re-injecting "goal
+ * complete" on later turns makes the model narrate the completion instead of
+ * answering the user's actual next request, which is what a mechanical "this
+ * goal is already complete" reply is.
+ */
+export function isRetired(goal: Goal): boolean {
+  return goal.status === "complete" || goal.status === "budget_limited";
+}
+
 export function goalPrompt(goal: Goal): string {
-  const planLines = goal.planPath
+  // Plan instructions belong only to a goal that can still take a work run.
+  // Emitting them otherwise contradicted the closing line of the same prompt:
+  // "check each item off …" versus "do not resume goal work".
+  const planLines = goal.status === "active" && goal.planPath
     ? [
         `A plan for this goal is on disk and is the source of truth for what "done" means: ${goal.planPath}`,
         goal.planStep

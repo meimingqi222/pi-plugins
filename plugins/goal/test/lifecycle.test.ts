@@ -41,20 +41,31 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 	const tools = new Map<string, any>();
 	const sent: Array<{ message: any; options: any }> = [];
 	const appended: any[] = [];
+	// The status bar is where a retired goal must disappear from; record every
+	// call so a test can assert the key was cleared rather than merely rewritten.
+	const statuses: Array<string | undefined> = [];
+	// Models the verifier may be pointed at, and every model a side call was
+	// actually made with. `find` returns a model missing from `authless` only, so
+	// a test can exercise the unknown-id and no-auth fallbacks.
+	const catalogue = new Map<string, any>();
+	const authless = new Set<string>();
+	const judgedBy: string[] = [];
 	// A real directory, so the plan file is written and re-read as in production.
 	const sessionDir = mkdtempSync(join(tmpdir(), "pi-goal-"));
 	const ctx: any = {
-		ui: { setStatus() {}, notify() {}, setWorkingMessage() {} }, mode: "tui", hasUI: true,
+		ui: { setStatus(_key: string, value?: string) { statuses.push(value); }, notify() {}, setWorkingMessage() {} }, mode: "tui", hasUI: true,
 		isIdle: () => true, hasPendingMessages: () => false, abort() {},
 		sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionDir: () => sessionDir },
 		model: { provider: "test", id: "model" },
 		modelRegistry: {
-			hasConfiguredAuth: () => true,
+			hasConfiguredAuth: (model: any) => !authless.has(`${model?.provider}/${model?.id}`),
+			find: (provider: string, id: string) => catalogue.get(`${provider}/${id}`),
 			// The planner and the verifier are separate side calls; routing is by
 			// system prompt so a test that stubs one never stubs the other. Arguments
 			// are forwarded, because a stub may inspect the context.
 			complete: async (...args: any[]) => {
 				const context = args[1];
+				judgedBy.push(`${args[0]?.provider}/${args[0]?.id}`);
 				if (typeof context?.systemPrompt === "string" && context.systemPrompt.includes(PLANNER_MARK)) {
 					return (planner ?? plannerReply)();
 				}
@@ -78,7 +89,7 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		for (const handler of handlers.get(name) ?? []) result = await handler({ type: name, messages: [], ...event }, ctx);
 		return result;
 	};
-	return { ctx, commands, tools, sent, appended, sessionDir, emit };
+	return { ctx, commands, tools, sent, appended, sessionDir, statuses, catalogue, authless, judgedBy, emit };
 }
 
 async function run(command: any, args: string, ctx: any) { await command.handler(args, ctx); }
@@ -128,7 +139,7 @@ async function endWork(env: ReturnType<typeof setup>, messages: any[] = []) {
 // rather than restore: nothing in this suite depends on a pre-existing value,
 // and `process.env.X = undefined` would store the string "undefined".
 afterEach(() => {
-  for (const key of ["PI_GOAL_MAX_RUNS", "PI_GOAL_STALL_RUNS", "PI_GOAL_PLAN"]) delete process.env[key];
+  for (const key of ["PI_GOAL_MAX_RUNS", "PI_GOAL_STALL_RUNS", "PI_GOAL_PLAN", "PI_GOAL_VERIFIER_MODEL"]) delete process.env[key];
 });
 
 describe("goal safety boundaries", () => {
@@ -333,6 +344,40 @@ describe("goal continuation bounds", () => {
     await round(env);
     await round(env);
     expect((await state(env)).status).toBe("no_progress");
+  });
+
+  test("a next action whose only change is a per-attempt token still stalls", async () => {
+    process.env.PI_GOAL_STALL_RUNS = "2";
+    process.env.PI_GOAL_MAX_RUNS = "20";
+    // The same request reworded only by a scratch path and a generated id. If
+    // the fingerprint kept those tokens, every round would look like new work
+    // and the goal would run to the cap instead of pausing as no_progress.
+    let n = 0;
+    const env = setup([], async () => failing(
+      `Investigate the failing run in /tmp/grok-goal-${(n++).toString(16).padStart(12, "0")}/out.log`,
+    ), () => plannerReply(["c"], ["one", "two"]));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    await round(env);
+    expect((await state(env)).status).toBe("active");
+    await round(env);
+    expect((await state(env)).status).toBe("no_progress");
+  });
+
+  test("a next action naming a different numbered step is not a stall", async () => {
+    process.env.PI_GOAL_STALL_RUNS = "2";
+    process.env.PI_GOAL_MAX_RUNS = "20";
+    // Plain integers must keep distinguishing work, or a progressing goal would
+    // be paused as stalled on its second round.
+    let n = 0;
+    const env = setup([], async () => failing(`Run test ${++n} of the suite`), () => plannerReply(["c"], ["one", "two"]));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    await round(env);
+    await round(env);
+    await round(env);
+    expect((await state(env)).status).toBe("active");
+    expect((await state(env)).stalledRuns).toBe(1);
   });
 
   test("usage is persisted at run boundaries, not per assistant message", async () => {
@@ -548,6 +593,115 @@ describe("goal lifecycle", () => {
 		await env.emit("agent_settled");
 		const state = (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 		expect(state.status).toBe("complete");
+	});
+
+	test("a completed goal stops being injected and leaves the status bar", async () => {
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "tests pass", evidence: "tool output" }) }] }));
+		await run(env.commands.get("goal"), "task", env.ctx);
+		// Still injected while the goal is live, so the assertion below is about
+		// completion rather than about the injection never happening.
+		const live = await env.emit("context", { messages: [] });
+		expect(live.messages).toHaveLength(1);
+		expect(live.messages[0].content).toContain("task");
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect((await state(env)).status).toBe("complete");
+		// The completed goal is withheld entirely: no "goal complete" line for the
+		// model to narrate on the user's next unrelated request.
+		const after = await env.emit("context", { messages: [{ role: "user", content: "unrelated question" }] });
+		expect(after.messages).toHaveLength(1);
+		expect(after.messages[0].content).toBe("unrelated question");
+		expect(env.statuses.at(-1)).toBeUndefined();
+		// The snapshot survives, so the user can still inspect what happened.
+		expect((await state(env)).objective).toBe("task");
+	});
+
+	test("a budget limited goal is also retired from context and the status bar", async () => {
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: false, reason: "checked", evidence: "tool output", nextAction: "keep going" }) }] }));
+		await run(env.commands.get("goal"), "task --tokens 1", env.ctx);
+		await endWork(env, [failing("keep going", 5)]);
+		expect((await state(env)).status).toBe("budget_limited");
+		const after = await env.emit("context", { messages: [{ role: "user", content: "next question" }] });
+		expect(after.messages).toHaveLength(1);
+		expect(env.statuses.at(-1)).toBeUndefined();
+	});
+
+	test("a paused goal still reaches the model, since it is resumable", async () => {
+		const env = setup();
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await run(env.commands.get("goal"), "pause", env.ctx);
+		const after = await env.emit("context", { messages: [] });
+		expect(after.messages).toHaveLength(1);
+		expect(after.messages[0].content).toContain("not active");
+		expect(env.statuses.at(-1)).toContain("Goal paused");
+	});
+
+	test("a paused goal is not told to work through a plan it must not resume", async () => {
+		const env = setup();
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await run(env.commands.get("goal"), "pause", env.ctx);
+		const result = await env.emit("context", { messages: [] });
+		expect(result.messages[0].content).not.toContain("## Task checklist");
+		expect(result.messages[0].content).not.toContain("check each item off");
+	});
+
+	test("a configured verifier model judges instead of the active model", async () => {
+		process.env.PI_GOAL_VERIFIER_MODEL = "other/judge";
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		env.catalogue.set("other/judge", { provider: "other", id: "judge" });
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect(env.judgedBy.at(-1)).toBe("other/judge");
+		expect((await state(env)).verifierModel).toBe("other/judge");
+	});
+
+	test("no configured verifier model keeps the active model", async () => {
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect(env.judgedBy.at(-1)).toBe("test/model");
+		expect((await state(env)).verifierModel).toBe("test/model");
+	});
+
+	test("an unknown verifier model falls back to the active model", async () => {
+		process.env.PI_GOAL_VERIFIER_MODEL = "other/typo";
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect(env.judgedBy.at(-1)).toBe("test/model");
+		expect((await state(env)).verifierModel).toBe("test/model");
+		expect((await state(env)).status).toBe("complete");
+	});
+
+	test("a verifier model without auth falls back instead of failing the goal", async () => {
+		process.env.PI_GOAL_VERIFIER_MODEL = "other/nokey";
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		env.catalogue.set("other/nokey", { provider: "other", id: "nokey" });
+		env.authless.add("other/nokey");
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect(env.judgedBy.at(-1)).toBe("test/model");
+		expect((await state(env)).status).toBe("complete");
+	});
+
+	test("a verifier model spec without a provider prefix is ignored", async () => {
+		process.env.PI_GOAL_VERIFIER_MODEL = "judge";
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		env.catalogue.set("test/judge", { provider: "test", id: "judge" });
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("agent_end");
+		await env.emit("agent_settled");
+		expect(env.judgedBy.at(-1)).toBe("test/model");
 	});
 
 	test("malformed verifier output pauses instead of completing", async () => {

@@ -11,6 +11,7 @@ import {
   renderPlan,
 } from "../src/plan.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +67,32 @@ describe("plan file", () => {
     expect(parsePlan("not markdown")).toBeUndefined();
     expect(await readPlan(garbage)).toBeUndefined();
     expect(await readPlan(headingsOnly)).toBeUndefined();
+  });
+
+  test("readPlan works under Node, where pi loads extensions and `Bun` does not exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-goal-plan-"));
+    const path = join(dir, "goal-plan.md");
+    writeFileSync(path, renderPlan("ship the CLI", plan));
+    // pi loads extensions under Node (`#!/usr/bin/env node`), where the `Bun`
+    // global is absent. `bun test` defines a non-configurable `Bun`, so an
+    // in-process test cannot observe its absence — running the real read in a
+    // Node child is the only faithful way to pin this. `Bun.file` threw
+    // ReferenceError there, and `readPlan`'s own catch turned it into
+    // `undefined`, so every caller saw "no plan".
+    const moduleUrl = new URL("../src/plan.ts", import.meta.url).href;
+    const script = [
+      `const m = await import(${JSON.stringify(moduleUrl)});`,
+      `const p = await m.readPlan(${JSON.stringify(path)});`,
+      "console.log(JSON.stringify({ plan: p, first: m.firstUnchecked(p), progress: m.planProgress(p) }));",
+    ].join(" ");
+    const stdout = execFileSync(process.env.PI_GOAL_TEST_NODE ?? "node", ["--input-type=module", "-e", script], {
+      encoding: "utf-8",
+    });
+    expect(JSON.parse(stdout)).toEqual({
+      plan,
+      first: "write the parser",
+      progress: { done: 1, total: 3 },
+    });
   });
 
   test("first unchecked skips done items and is undefined when finished", () => {

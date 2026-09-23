@@ -19,6 +19,15 @@ provider errors, redactor errors, cancellation, and timeouts pause safely rather
 than pretending success. Completion is only reported after a valid verifier
 verdict.
 
+A goal that reaches a terminal status — `complete` or `budget_limited`, exactly
+the two `/goal resume` refuses — is **retired**: it stops being injected into the
+model context and drops out of the status bar. The snapshot is kept, so
+`/goal status` and session restore still report it. This is deliberate: leaving a
+finished goal in context makes the model narrate its completion on the user's
+next unrelated request instead of just answering it. `paused`, `blocked` and
+`no_progress` keep injecting, because their "do not resume automatically" line is
+a decision the model must still respect after a compaction.
+
 The optional `pi-redact` service is used for the isolated verifier payload.
 Because this completion bypasses provider hooks, a redactor failure refuses the
 request. Without `pi-redact`, this independently installable plugin sends the
@@ -66,10 +75,13 @@ budget set.
   the goal pauses instead of verifying again. The cap is checked *before* the
   verifier round, so the last round is never paid for and discarded.
 - **Stall detection** — a verifier `nextAction` is folded to a fingerprint
-  (lowercased, punctuation and whitespace collapsed). Repeating the same
-  fingerprint `PI_GOAL_STALL_RUNS` times (default 2) pauses the goal as
-  `no_progress`: the verifier is re-litigating, not converging. A reworded
-  action that names different work still counts as progress.
+  (lowercased, punctuation and whitespace collapsed, and high-entropy tokens
+  such as a scratch path, uuid or generated id normalised away). Repeating the
+  same fingerprint `PI_GOAL_STALL_RUNS` times (default 2) pauses the goal as
+  `no_progress`: the verifier is re-litigating, not converging. The fold is
+  deliberately not lossy where it matters — plain integers and line numbers are
+  kept, so `Run test 3` and `Run test 4`, or `src/a.ts:41` and `src/a.ts:42`,
+  still count as different work.
 
 `/goal resume` restarts the attempt. It clears the run counter and the stall
 streak while keeping the lifetime totals, so a resume is the user authorizing
@@ -121,6 +133,29 @@ performed by the development tests.
 | `PI_GOAL_MAX_RUNS` | `12` | Work runs per attempt before the goal pauses for `/goal resume`. |
 | `PI_GOAL_STALL_RUNS` | `2` | Repeated identical verifier `nextAction` fingerprints before the goal pauses as `no_progress`. |
 | `PI_GOAL_PLAN` | `true` | Write a plan at goal creation before the first work run. |
+| `PI_GOAL_VERIFIER_MODEL` | *(unset)* | Model that judges completion, as `provider/modelId`. Unset uses the session's active model. |
 
-All three are read per call, so `/reload` picks up a change without restarting
+All four are read per call, so `/reload` picks up a change without restarting
 pi.
+
+### Running the verifier on its own model
+
+An unset `PI_GOAL_VERIFIER_MODEL` verifies with the session's active model, which
+is the default and changes nothing. Setting it makes verification a
+cross-model judgment:
+
+```sh
+PI_GOAL_VERIFIER_MODEL=anthropic/claude-sonnet-4-5 pi
+```
+
+A model that shares the implementer's blind spots is the weakest possible judge —
+the mistake it just made is the one it will fail to see. A different model breaks
+that correlation, and because the verifier and the implementer are billed
+separately this also lets an expensive model do the work while a cheaper one
+verifies, or the reverse.
+
+A malformed spec is ignored rather than guessed, and a spec that names an unknown
+model or one without configured authentication falls back to the active model
+with a one-time warning. Verification therefore never becomes impossible because
+of a typo. The model that judged is recorded on the goal snapshot as
+`verifierModel`, so a verdict stays attributable after the fact.

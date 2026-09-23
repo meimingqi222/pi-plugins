@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { installRedactBridge } from "./redact.ts";
-import { GOAL_ENTRY, MAX_OBJECTIVE, goalLimits, goalPrompt, nextActionKey, parseObjective, planEnabled, readTokenUsage, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
+import { GOAL_ENTRY, MAX_OBJECTIVE, goalLimits, goalPrompt, isRetired, nextActionKey, parseObjective, planEnabled, readTokenUsage, resolveVerifierModel, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
 import { parseVerdict, verifyGoal, type VerifierPlanInput } from "./verifier.ts";
 import { firstUnchecked, planPathFor, planProgress, readPlan, renderPlan, runPlanner } from "./plan.ts";
 
@@ -30,6 +30,10 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   let work: WorkRun | undefined;
   let endedRun: WorkRun | undefined;
   let scheduled: ReturnType<typeof setTimeout> | undefined;
+  // A fallback is a standing configuration state, not a per-round event, so it
+  // is announced once per goal rather than on every verification round. Keyed
+  // by goal id, so a replace re-announces and a resume does not.
+  let verifierFallbackNotified: string | undefined;
   const redactor = installRedactBridge(pi);
 
   function elapsed(): number {
@@ -42,7 +46,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     pi.appendEntry(GOAL_ENTRY, structuredClone(goal));
   }
   function display(ctx: ExtensionContext): void {
-    ctx.ui.setStatus("pi-goal", goal
+    // A retired goal leaves the status bar. The objective text it carries only
+    // invites the model to keep talking about a goal that is already finished.
+    ctx.ui.setStatus("pi-goal", goal && !isRetired(goal)
       ? `Goal ${goal.status} · ${goal.workRuns} runs · ${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens · ${goal.objective.slice(0, 60)}`
       : undefined);
   }
@@ -142,6 +148,19 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (!goal || flight || goal.status !== "active" || budgetReached(ctx)) return;
     const planInput = await refreshPlan();
     if (!goal || flight || goal.status !== "active" || budgetReached(ctx)) return;
+    // Recorded on the snapshot so a verdict stays explainable after the fact:
+    // the same transcript can be judged differently by a different model.
+    const resolved = resolveVerifierModel(ctx);
+    if (!resolved.model) {
+      finish(ctx, "paused", "No model is available to verify this goal.");
+      return;
+    }
+    goal.verifierModel = `${resolved.model.provider}/${resolved.model.id}`;
+    const notice = `${goal.id}:${resolved.reason}`;
+    if (resolved.reason && verifierFallbackNotified !== notice) {
+      verifierFallbackNotified = notice;
+      ctx.ui.notify(`pi-goal: ${resolved.reason}`, "warning");
+    }
     checkpoint();
     goal.status = "verifying";
     const call: Flight = { epoch, session, goalId: goal.id, abort: new AbortController() };
@@ -149,7 +168,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     checkpoint();
     display(ctx);
     try {
-      const result = await verifyGoal(ctx, structuredClone(goal), call.abort, redactor(), planInput);
+      const result = await verifyGoal(ctx, structuredClone(goal), call.abort, redactor(), planInput, resolved.model);
       if (!current(call) || !goal) return;
       goal.used += readTokenUsage(result);
       checkpoint();
@@ -253,7 +272,12 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     const messages = event.messages.filter((message) =>
       message.role !== "custom" || !["goal-context", "goal-continuation"].includes(message.customType),
     );
-    if (goal) messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal), display: false, timestamp: Date.now() });
+    // A retired goal is not injected at all. Only active/paused/blocked states
+    // carry a decision the model must respect, so the injection condition has to
+    // match the statuses whose prompt still says something beyond "this is done".
+    if (goal && !isRetired(goal)) {
+      messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal), display: false, timestamp: Date.now() });
+    }
     return { messages };
   });
   pi.on("agent_start", async () => {

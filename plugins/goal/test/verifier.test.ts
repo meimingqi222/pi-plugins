@@ -16,7 +16,7 @@ test("verifier uses redacted transcript with no tools and includes summaries", a
  await verifyGoal(ctx, goal, new AbortController(), {
   version: 1, redactString: value => value,
   redactJson(value) { raw = value; return { sanitized: true }; },
- });
+ }, undefined, ctx.model);
  expect(raw.transcript).toContain("prior tests passed");
  expect(raw.transcript).not.toContain("goal-state");
  expect(captured.tools).toEqual([]);
@@ -31,7 +31,7 @@ test("redaction failure prevents provider request", async () => {
  };
  await expect(verifyGoal(ctx, goal, new AbortController(), {
   version: 1, redactString: value => value, redactJson() { throw new Error("redactor broken"); },
- })).rejects.toThrow("redactor broken");
+ }, undefined, ctx.model)).rejects.toThrow("redactor broken");
  expect(called).toBe(false);
 });
 
@@ -87,7 +87,7 @@ test("verifier payload keeps whole entries under a tight context window", async 
     modelRegistry: { hasConfiguredAuth: () => true, complete: async (_model: any, context: any) => { captured = context; return {}; } },
     sessionManager: { getBranch: () => entries },
   };
-  await verifyGoal(ctx, goal, new AbortController(), undefined);
+  await verifyGoal(ctx, goal, new AbortController(), undefined, undefined, ctx.model);
   const transcript = JSON.parse(captured.messages[0].content[0].text).transcript;
   expect(transcript).toContain("entry-29");
   expect(transcript).not.toContain("entry-0");

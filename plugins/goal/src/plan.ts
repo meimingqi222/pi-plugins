@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RedactService } from "./redact.ts";
 import { withDeadline } from "./verifier.ts";
@@ -120,7 +121,10 @@ export function parsePlan(body: string): GoalPlan | undefined {
 export async function readPlan(path: string): Promise<GoalPlan | undefined> {
   let body: string;
   try {
-    body = await Bun.file(path).text();
+    // `node:fs/promises`, not `Bun.file`. pi loads extensions under Node, so a
+    // Bun-only global throws ReferenceError here and this catch turns it into
+    // `undefined` — indistinguishable from "no plan".
+    body = await readFile(path, "utf-8");
   } catch {
     return undefined;
   }

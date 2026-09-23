@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Goal } from "./state.ts";
 import type { RedactService } from "./redact.ts";
+import type { RegisteredModel } from "./state.ts";
 
 export const VERIFY_TIMEOUT_MS = 45_000;
 
@@ -100,9 +101,11 @@ export async function withDeadline<T>(
 
 export async function verifyGoal(
   ctx: ExtensionContext, goal: Goal, controller: AbortController,
-  redactor: RedactService | undefined, plan?: VerifierPlanInput,
+  redactor: RedactService | undefined, plan: VerifierPlanInput | undefined,
+  // Resolved by the caller so the model recorded on the snapshot is guaranteed
+  // to be the one that judged, rather than a second lookup that could drift.
+  model: RegisteredModel | undefined,
 ) {
-  const model = ctx.model;
   if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
     throw new Error("Current model has no configured authentication");
   }
