@@ -12,8 +12,22 @@
  * would abort the run instead of letting the model correct itself.
  */
 
-import { Check, Errors } from "typebox/schema";
+// `typebox/value`, not `typebox/schema`: pi hands jiti an alias table where
+// `typebox` is an entry *file* and only `typebox/compile` and `typebox/value`
+// exist as subpaths, so `typebox/schema` is prefix-rewritten to
+// `<entry>/schema` and the extension fails to load under pi. Both packages
+// export `Check`/`Errors` over the same JSON Schema semantics, but
+// `typebox/value` types them against TypeBox schemas, and `Errors` returns the
+// error list alone rather than the leading boolean `typebox/schema` returned —
+// hence the retyping and the non-destructuring call below.
+import { Check, Errors } from "typebox/value";
 import type { WorkflowJsonSchema } from "./types.ts";
+
+const checkJsonSchema = Check as unknown as (schema: unknown, value: unknown) => boolean;
+const jsonSchemaErrors = Errors as unknown as (
+  schema: unknown,
+  value: unknown,
+) => ReadonlyArray<{ instancePath?: string; message: string }>;
 
 export interface WorkflowSchemaResult {
   valid: boolean;
@@ -48,11 +62,10 @@ export function validateWorkflowSchema(schema: unknown, value: unknown, stripUnk
   }
   try {
     const normalized = stripUnknown ? cleanUnknownProperties(schema as WorkflowJsonSchema, value) : value;
-    if (Check(schema, normalized)) return { valid: true, errors: [], value: normalized };
-    const [, errors] = Errors(schema, normalized);
+    if (checkJsonSchema(schema, normalized)) return { valid: true, errors: [], value: normalized };
     return {
       valid: false,
-      errors: errors.map((error) => `${error.instancePath || "$"} ${error.message}`),
+      errors: jsonSchemaErrors(schema, normalized).map((error) => `${error.instancePath || "$"} ${error.message}`),
       value: normalized,
     };
   } catch (error: unknown) {

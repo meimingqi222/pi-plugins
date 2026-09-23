@@ -12,7 +12,7 @@
  * needs none of that, runs on both runtimes, and still gives the property that
  * matters — it can be terminated.
  *
- * The settlement rules below are the whole difficulty, and both were bugs once:
+ * The settlement rules below are the whole difficulty, and each was a bug once:
  *
  * 1. **Never wait for the worker to exit on its own.** The worker is kept alive
  *    by its own `parentPort` listener, so waiting for an `exit` event after
@@ -23,6 +23,10 @@
  *    abort signal would hold `Promise.allSettled` open forever, so the drain is
  *    skipped once the run is aborted. The worker is already gone; a result it
  *    could have received is unreachable anyway.
+ * 3. **Terminate at most once, and await the worker's `exit` rather than
+ *    `terminate()`'s promise.** On Bun a second `terminate()` — or one issued
+ *    after the worker already exited — never settles, so an abort path that
+ *    terminated once eagerly and once in `finally` hung the run.
  */
 
 import { Worker } from "node:worker_threads";
@@ -134,12 +138,26 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     void work.finally(() => inFlight.delete(work));
   };
 
+  // Termination is requested at most once, and callers wait on the worker's
+  // `exit` rather than on `terminate()`'s promise. On Bun a second
+  // `terminate()` — or one issued after the worker already exited — never
+  // settles, so awaiting it would hang every abort path (timeout, external
+  // stop) after `onAbort` and `finally` each asked for termination.
+  let terminateRequested = false;
+  let resolveExited!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    resolveExited = resolve;
+  });
   const kill = async (): Promise<void> => {
-    try {
-      await worker.terminate();
-    } catch {
-      // Already gone.
+    if (!terminateRequested) {
+      terminateRequested = true;
+      try {
+        void worker.terminate().catch(() => undefined);
+      } catch {
+        // `terminate()` can also throw synchronously; the worker is already gone.
+      }
     }
+    await exited;
   };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -153,11 +171,16 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     timer = setTimeout(() => controller.abort(new Error(`Workflow script timed out after ${timeoutMs}ms`)), timeoutMs);
   }
 
-  worker.on("exit", () => settle());
+  worker.on("exit", () => {
+    resolveExited();
+    settle();
+  });
   worker.on("error", (error) => {
     // A worker-level failure (a syntax error in the script, or a resource limit)
-    // surfaces here, not as a wire message.
+    // surfaces here, not as a wire message. `error` is terminal, so it releases
+    // `kill()` even if this runtime does not follow it with `exit`.
     workerError = error instanceof Error ? error.message : String(error);
+    resolveExited();
     settle();
   });
 
