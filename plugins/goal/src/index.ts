@@ -2,14 +2,21 @@ import { writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  ActiveTimer,
+  appendRunSnapshot,
+  ContinuationChannel,
+  readTokenUsage,
+  RunGuard,
+  type RunToken,
+} from "pi-run-core";
 import { installRedactBridge } from "./redact.ts";
-import { GOAL_ENTRY, MAX_OBJECTIVE, goalLimits, goalPrompt, isRetired, nextActionKey, parseObjective, planEnabled, readTokenUsage, resolveVerifierModel, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
+import { GOAL_ENTRY, MAX_OBJECTIVE, goalDisabled, goalLimits, goalPrompt, isResumable, isRetired, nextActionKey, parseObjective, planEnabled, resolveVerifierModel, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
 import { parseVerdict, verifyGoal, type VerifierPlanInput } from "./verifier.ts";
-import { firstUnchecked, planPathFor, planProgress, readPlan, renderPlan, runPlanner } from "./plan.ts";
+import { compareCriteria, firstUnchecked, planPathFor, planPathIsSafe, planProgress, readPlan, renderPlan, runPlanner } from "./plan.ts";
 
 interface Flight {
-  epoch: number;
-  session: number;
+  token: RunToken;
   goalId: string;
   abort: AbortController;
 }
@@ -18,32 +25,64 @@ interface WorkRun {
   session: number;
   index: number;
   seen: Set<string>;
+  /** The message objects already counted, so a replay cannot be billed twice. */
+  objects: WeakSet<object>;
+  /**
+   * True when this attempt was started by the plugin's own continuation, not by
+   * a user turn that merely happened to run while a goal was active.
+   * Interruption is scoped to goal-driven turns, so a user turn is never killed
+   * by `/goal pause` or `/goal clear`.
+   */
+  continuationDriven: boolean;
   stopReason?: string;
 }
 
 export default function goalPlugin(pi: ExtensionAPI): void {
+  // A child process spawned for one delegated job has no user and no goal of its
+  // own; registering here would inject the parent's objective into a context
+  // that cannot act on it. The spawner sets the flag — see `goalDisabled`.
+  if (goalDisabled()) return;
   let goal: Goal | undefined;
-  let epoch = 0;
-  let session = 0;
-  let activeSince: number | undefined;
   let flight: Flight | undefined;
+  let planFlight: { goalId: string; abort: AbortController } | undefined;
   let work: WorkRun | undefined;
   let endedRun: WorkRun | undefined;
   let scheduled: ReturnType<typeof setTimeout> | undefined;
+  // Persistence failures are surfaced once per streak rather than per boundary:
+  // checkpointing runs at every run boundary, and a full disk would otherwise
+  // turn one problem into a notification per turn.
+  let persistFailure: string | undefined;
+  let persistReported = false;
   // A fallback is a standing configuration state, not a per-round event, so it
   // is announced once per goal rather than on every verification round. Keyed
   // by goal id, so a replace re-announces and a resume does not.
   let verifierFallbackNotified: string | undefined;
+  // Epoch x session staleness guard and the continuation channel are shared with
+  // any other run-oriented extension; both encode bugs already paid for once.
+  const guard = new RunGuard();
+  const continuation = new ContinuationChannel(pi);
+  // Wall-clock accounting that survives pause and resume without dropping the
+  // sub-second remainder at each boundary.
+  const timer = new ActiveTimer();
   const redactor = installRedactBridge(pi);
 
   function elapsed(): number {
-    return (goal?.elapsedMs ?? 0) + (activeSince === undefined ? 0 : Math.max(0, Date.now() - activeSince));
+    return timer.elapsedMs();
   }
   function checkpoint(): void {
     if (!goal) return;
-    goal.elapsedMs = elapsed();
-    if (activeSince !== undefined) activeSince = Date.now();
-    pi.appendEntry(GOAL_ENTRY, structuredClone(goal));
+    goal.elapsedMs = timer.capture();
+    try {
+      appendRunSnapshot(pi, GOAL_ENTRY, goal);
+      persistFailure = undefined;
+      persistReported = false;
+    } catch (error) {
+      // A snapshot that cannot be written must not take the lifecycle handler
+      // down with it. The in-memory goal is still the truth for this session,
+      // the next boundary retries the write, and the user is told — silently
+      // continuing would mean a goal that looks persisted and is not.
+      persistFailure = `Could not persist the goal snapshot (${error instanceof Error ? error.message : String(error)}).`;
+    }
   }
   function display(ctx: ExtensionContext): void {
     // A retired goal leaves the status bar. The objective text it carries only
@@ -51,19 +90,29 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     ctx.ui.setStatus("pi-goal", goal && !isRetired(goal)
       ? `Goal ${goal.status} · ${goal.workRuns} runs · ${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens · ${goal.objective.slice(0, 60)}`
       : undefined);
+    if (persistFailure && !persistReported) {
+      persistReported = true;
+      ctx.ui.notify(`pi-goal: ${persistFailure}`, "warning");
+    }
   }
   function invalidate(): void {
-    epoch++;
+    guard.invalidate();
     if (scheduled !== undefined) clearTimeout(scheduled);
     scheduled = undefined;
+    // The planner is a model call like the verifier and needs the same
+    // cancellation. Without it, `/goal replace` or `/goal clear` during planning
+    // left the call running to completion, and its tokens were then billed to a
+    // goal that no longer existed — the cost was paid and recorded nowhere.
+    planFlight?.abort.abort(new Error("Goal operation superseded"));
+    planFlight = undefined;
     const previous = flight;
     flight = undefined;
     previous?.abort.abort(new Error("Goal operation superseded"));
   }
   function finish(ctx: ExtensionContext, status: Exclude<GoalStatus, "active" | "verifying">, reason: string): void {
     if (!goal) return;
-    goal.elapsedMs = elapsed();
-    activeSince = undefined;
+    goal.elapsedMs = timer.capture();
+    timer.stop();
     goal.status = status;
     goal.reason = reason;
     invalidate();
@@ -79,26 +128,22 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   function schedule(ctx: ExtensionContext): void {
     if (!goal || goal.status !== "active" || scheduled !== undefined || flight || !ctx.isIdle() || ctx.hasPendingMessages()) return;
     if (budgetReached(ctx)) return;
-    const token = epoch;
-    const generation = session;
+    const token = guard.issue();
     const goalId = goal.id;
     const sessionId = ctx.sessionManager.getSessionId();
     // Let pi finish the preceding run cleanup before starting another prompt.
     scheduled = setTimeout(() => {
       scheduled = undefined;
-      if (!goal || goal.id !== goalId || goal.status !== "active" || token !== epoch ||
-        generation !== session || ctx.sessionManager.getSessionId() !== sessionId ||
+      if (!goal || goal.id !== goalId || goal.status !== "active" || !guard.isCurrent(token) ||
+        ctx.sessionManager.getSessionId() !== sessionId ||
         !ctx.isIdle() || ctx.hasPendingMessages()) return;
-      try {
-        pi.sendMessage({ customType: "goal-continuation", content: goalPrompt(goal), display: false },
-          { triggerTurn: true, deliverAs: "followUp" });
-      } catch (error) {
-        finish(ctx, "paused", `Continuation could not start: ${String(error)}`);
+      if (!continuation.deliver("queued", { customType: "goal-continuation" }, goalPrompt(goal))) {
+        finish(ctx, "paused", "Continuation could not start.");
       }
     }, 0);
   }
   function current(call: Flight): boolean {
-    return flight === call && call.epoch === epoch && call.session === session && goal?.id === call.goalId;
+    return flight === call && guard.isCurrent(call.token) && goal?.id === call.goalId;
   }
   /**
    * Writes the plan once, at goal creation. Best-effort by design: a goal with
@@ -109,13 +154,28 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (!goal || goal.status !== "active" || !planEnabled()) return;
     const goalId = goal.id;
     const controller = new AbortController();
+    planFlight = { goalId, abort: controller };
     ctx.ui.setWorkingMessage("pi-goal: planning the goal…");
     try {
-      const plan = await runPlanner(ctx, goal.objective, controller, redactor());
+      const { plan, usage } = await runPlanner(ctx, goal.objective, controller, redactor());
       // A replace or clear during the planner call must not inherit this plan.
       if (!goal || goal.id !== goalId || goal.status !== "active") return;
+      goal.used += usage;
+      // The planner's own cost can exhaust a small budget; check before
+      // writing a plan for a goal that is already over.
+      if (budgetReached(ctx)) return;
       const path = planPathFor(ctx);
+      // `writeFile` follows a symlink. The plan is the gating contract and its
+      // path is predictable, so a symlink planted there would redirect the
+      // contract outside the session while the plugin believed it wrote the plan.
+      if (!(await planPathIsSafe(path))) {
+        ctx.ui.notify(`pi-goal: refusing to write the plan — ${path} exists and is not a regular file.`, "warning");
+        return;
+      }
       await writeFile(path, renderPlan(goal.objective, plan), { encoding: "utf-8", mode: 0o600 });
+      // Writing is an await too: a clear landing in it leaves no goal to attach
+      // the plan to, and the file is then an orphan the next goal will overwrite.
+      if (!goal || goal.id !== goalId) return;
       goal.planPath = path;
       goal.planCriteria = plan.criteria;
       goal.planStep = firstUnchecked(plan);
@@ -125,6 +185,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     } catch (error) {
       ctx.ui.notify(`Goal plan unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
     } finally {
+      if (planFlight?.goalId === goalId) planFlight = undefined;
       ctx.ui.setWorkingMessage();
     }
   }
@@ -134,20 +195,46 @@ export default function goalPlugin(pi: ExtensionAPI): void {
    * The criteria come from the plugin-held baseline, never from the file, so an
    * implementer that edits its own acceptance criteria cannot narrow the
    * contract. Only the checklist is read as mutable — that is its purpose.
+   *
+   * The goal id is a parameter rather than read from the closure at each use
+   * because the file read is an await: `/goal clear` sets the module-level goal
+   * to undefined, and assigning `goal.planStep` after that threw a TypeError out
+   * of whichever lifecycle handler called this; a `/goal replace` in the same
+   * window attributed the old plan to the new goal. Both are now a `return`.
    */
-  async function refreshPlan(): Promise<VerifierPlanInput | undefined> {
-    if (!goal?.planPath) return undefined;
-    const parsed = await readPlan(goal.planPath);
+  async function refreshPlan(goalId: string): Promise<VerifierPlanInput | undefined> {
+    const atEntry = goal;
+    if (!atEntry || atEntry.id !== goalId || !atEntry.planPath) return undefined;
+    const path = atEntry.planPath;
+    const parsed = await readPlan(path);
+    if (!goal || goal.id !== goalId) return undefined;
     goal.planStep = firstUnchecked(parsed);
     const progress = planProgress(parsed);
+    // A deleted or emptied file is "no plan" rather than "every criterion was
+    // removed": the file is the implementer's working copy, and treating its
+    // absence as a mass deletion would make the verdict about the file rather
+    // than about the work.
     const criteriaEdited = !!goal.planCriteria && !!parsed &&
       JSON.stringify(parsed.criteria) !== JSON.stringify(goal.planCriteria);
-    return { criteria: goal.planCriteria ?? [], step: goal.planStep, ...progress, criteriaEdited };
+    const criteriaChanges = goal.planCriteria && parsed
+      ? compareCriteria(goal.planCriteria, parsed.criteria)
+      : undefined;
+    return {
+      criteria: goal.planCriteria ?? [],
+      step: goal.planStep,
+      ...progress,
+      criteriaEdited,
+      ...(criteriaChanges ? { criteriaChanges } : {}),
+    };
   }
   async function verify(ctx: ExtensionContext): Promise<void> {
     if (!goal || flight || goal.status !== "active" || budgetReached(ctx)) return;
-    const planInput = await refreshPlan();
-    if (!goal || flight || goal.status !== "active" || budgetReached(ctx)) return;
+    // Captured before the first await: `/goal replace` can land in the plan read
+    // and leave a different goal in the closure, and the round must be abandoned
+    // rather than judged against it.
+    const goalId = goal.id;
+    const planInput = await refreshPlan(goalId);
+    if (!goal || goal.id !== goalId || flight || goal.status !== "active" || budgetReached(ctx)) return;
     // Recorded on the snapshot so a verdict stays explainable after the fact:
     // the same transcript can be judged differently by a different model.
     const resolved = resolveVerifierModel(ctx);
@@ -163,7 +250,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     }
     checkpoint();
     goal.status = "verifying";
-    const call: Flight = { epoch, session, goalId: goal.id, abort: new AbortController() };
+    const call: Flight = { token: guard.issue(), goalId: goal.id, abort: new AbortController() };
     flight = call;
     checkpoint();
     display(ctx);
@@ -179,6 +266,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
       const verdict = parseVerdict(raw);
       goal.verdict = { reason: verdict.reason, evidence: verdict.evidence };
+      // A parsed verdict is a judgment on whatever candidate was outstanding,
+      // so the pending flag clears even when the verdict rejects.
+      goal.candidatePending = false;
       if (verdict.passed) {
         finish(ctx, "complete", verdict.reason);
         return;
@@ -217,15 +307,20 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     } finally {
       if (flight === call) flight = undefined;
     }
-    if (goal?.status === "active" && call.epoch === epoch && call.session === session) schedule(ctx);
+    if (goal?.status === "active" && guard.isCurrent(call.token)) schedule(ctx);
   }
   function restore(ctx: ExtensionContext): void {
     invalidate();
-    session++;
+    continuation.reset();
+    guard.nextSession();
     work = undefined;
     endedRun = undefined;
-    activeSince = undefined;
+    timer.stop();
     goal = restoreGoal(ctx);
+    // The snapshot is the authority for elapsed time; without seeding it, a
+    // reload would restart the counter and under-report a long goal.
+    timer.restart(goal?.elapsedMs ?? 0);
+    timer.stop();
     if (goal?.status === "active" || goal?.status === "verifying") {
       finish(ctx, "paused", "Recovered goal; use /goal resume to continue.");
     } else display(ctx);
@@ -233,18 +328,23 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   function leave(ctx: ExtensionContext): void {
     if (goal?.status === "active" || goal?.status === "verifying") finish(ctx, "paused", "Session left.");
     else invalidate();
-    session++;
+    continuation.reset();
+    guard.nextSession();
     work = undefined;
     endedRun = undefined;
   }
-  function account(message: unknown, owner: WorkRun | undefined): void {
-    if (!goal || !owner || owner.goalId !== goal.id || owner.session !== session ||
+  function account(message: unknown, owner: WorkRun | undefined, ctx: ExtensionContext): void {
+    if (!goal || !owner || owner.goalId !== goal.id || owner.session !== guard.sessionId ||
       !message || typeof message !== "object" || (message as { role?: string }).role !== "assistant") return;
     // `message_end` and `agent_end` deliver the same assistant message twice, so
-    // identity is what separates a replay from a second message. The provider's
-    // own response id is the canonical answer; a message without one falls back
-    // to its serialized bytes, which still distinguishes messages that differ in
-    // any field including the timestamp.
+    // identity is what separates a replay from a second message. Three answers in
+    // order of strength: the same object (WeakSet — the harness hands the stored
+    // message to both events), the provider's response id, and finally the
+    // serialized bytes for a copy that carries neither.
+    if (typeof message === "object" && message !== null) {
+      if (owner.objects.has(message)) return;
+      owner.objects.add(message);
+    }
     const identity = message as { responseId?: unknown };
     const key = typeof identity.responseId === "string" && identity.responseId
       ? identity.responseId
@@ -252,9 +352,23 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (owner.seen.has(key)) return;
     owner.seen.add(key);
     goal.used += readTokenUsage(message);
+    // The budget used to be enforced only at a settled-run boundary, so a long
+    // tool loop could overshoot it by an unbounded amount and the overshoot was
+    // invisible until the run ended. Accounting is the moment the spend becomes
+    // known, so it is the moment to act: the goal flips here, and a run the
+    // plugin started is stopped instead of paying for the rest of the loop. A
+    // user turn is left alone — it is the user's output, and the goal merely
+    // stops being active.
+    if (budgetReached(ctx) && owner.continuationDriven) {
+      try {
+        ctx.abort();
+      } catch {
+        // The run then just finishes; the goal is already budget_limited.
+      }
+    }
     // Deliberately no checkpoint here. One snapshot per assistant message grew
-    // the session file without bound on a long goal, and the budget is only
-    // enforced at a settled-run boundary; `agent_start`/`agent_end` persist.
+    // the session file without bound on a long goal; `agent_start`/`agent_end`
+    // persist, and a budget stop persists through `finish`.
   }
 
   pi.on("session_start", (_event, ctx) => restore(ctx));
@@ -280,26 +394,49 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     }
     return { messages };
   });
-  pi.on("agent_start", async () => {
+  pi.on("agent_start", async (_event, ctx) => {
+    // Consumed per attempt, so a user follow-up inside a continuation-started
+    // run is not itself mistaken for goal-driven work.
+    const continuationDriven = continuation.consume();
     if (scheduled !== undefined) clearTimeout(scheduled);
     scheduled = undefined;
     endedRun = undefined;
     work = undefined;
-    if (goal?.status !== "active") return;
-    activeSince ??= Date.now();
+    if (goal?.status !== "active") {
+      // The goal was paused or cleared after the continuation was queued. Pi
+      // cannot unsend it, so the turn it starts is stopped instead: it would
+      // otherwise pay for model work toward a goal the user already stopped.
+      if (continuationDriven) {
+        const status = goal?.status;
+        try { ctx.abort(); } catch { /* the turn then just runs out */ }
+        // Derived from the same classification `/goal resume` uses. The pair it
+        // replaced (`paused || blocked`) happened to be equivalent here — the only
+        // statuses reachable at this point are `paused` and "no goal", since every
+        // other ending skips the continuation that would have queued this turn —
+        // and that is exactly what made the second hand-written list a silent
+        // hazard: it was right, and nothing kept it right.
+        const resumable = goal !== undefined && isResumable(goal);
+        ctx.ui.notify(
+          `Stopped a queued goal turn (${status ? `goal is ${status}` : "no goal is set"}).${resumable ? " Run /goal resume to continue it." : ""}`,
+          "info",
+        );
+      }
+      return;
+    }
+    timer.start();
     goal.workRuns++;
     goal.attemptRuns = (goal.attemptRuns ?? 0) + 1;
-    work = { goalId: goal.id, session, index: goal.workRuns, seen: new Set() };
+    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven };
     // Refresh before the checkpoint so the run starts from the checklist's
     // current first unchecked item and that step is persisted with it.
-    await refreshPlan();
+    await refreshPlan(goal.id);
     checkpoint();
   });
-  pi.on("message_end", (event) => account(event.message, work));
+  pi.on("message_end", (event, ctx) => account(event.message, work, ctx));
   pi.on("agent_end", (event, ctx) => {
     const owner = work;
-    if (!owner || !goal || owner.goalId !== goal.id || owner.session !== session) return;
-    for (const message of event.messages) account(message, owner);
+    if (!owner || !goal || owner.goalId !== goal.id || owner.session !== guard.sessionId) return;
+    for (const message of event.messages) account(message, owner, ctx);
     const final = [...event.messages].reverse().find((message) => message.role === "assistant");
     owner.stopReason = final?.stopReason;
     endedRun = owner;
@@ -309,7 +446,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       goal.blocker = undefined;
     }
     if (goal.status === "active" && final?.stopReason === "aborted") {
-      finish(ctx, "paused", "Agent cancelled.");
+      finish(ctx, "paused", goal.candidatePending
+        ? "Agent cancelled; a reported candidate was never verified."
+        : "Agent cancelled.");
       return;
     }
     // Persist the run's usage even when the goal already left `active` during
@@ -317,14 +456,22 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     // pi may retry provider errors before settling, so those are handled at
     // agent_settled rather than here.
     checkpoint();
+    // The status bar reads `used`; without this it shows the pre-run count
+    // until the next boundary.
+    display(ctx);
   });
   pi.on("agent_settled", async (_event, ctx) => {
     const owner = endedRun;
     endedRun = undefined;
-    if (!owner || !goal || owner.goalId !== goal.id || owner.session !== session ||
+    if (!owner || !goal || owner.goalId !== goal.id || owner.session !== guard.sessionId ||
       goal.status !== "active" || !ctx.isIdle() || ctx.hasPendingMessages() || flight) return;
     if (owner.stopReason === "error" || owner.stopReason === "aborted") {
-      finish(ctx, "paused", `Agent ${owner.stopReason}.`);
+      // A candidate reported in a run that ends here was never judged — the
+      // verifier only sees clean stops. The pause reason says so, and the
+      // candidatePending flag carries the same fact into the next prompt.
+      finish(ctx, "paused", goal.candidatePending
+        ? `Agent ${owner.stopReason}; a reported candidate was never verified.`
+        : `Agent ${owner.stopReason}.`);
       return;
     }
     // Checked before verification so the cap never pays for a verifier round
@@ -350,21 +497,25 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       }
       if (verb === "pause") {
         if (!goal || !["active", "verifying"].includes(goal.status)) return;
-        const abortWork = !!work;
+        // Only a turn the plugin started is interrupted. A user turn that runs
+        // while a goal is active is the user's output, not goal work, so it is
+        // left to finish and merely stops being accounted as goal progress.
+        const interruptsRun = !!work?.continuationDriven;
         finish(ctx, "paused", "Requested by user.");
-        if (abortWork) ctx.abort();
+        if (interruptsRun) ctx.abort();
         return;
       }
       if (verb === "clear") {
-        const abortWork = !!work;
+        const interruptsRun = !!work?.continuationDriven;
         invalidate();
+        continuation.reset();
         goal = undefined;
-        activeSince = undefined;
+        timer.stop();
         work = undefined;
         endedRun = undefined;
         pi.appendEntry(GOAL_ENTRY, { schema: 1, cleared: true });
         display(ctx);
-        if (abortWork) ctx.abort();
+        if (interruptsRun) ctx.abort();
         return;
       }
       if (!ctx.isIdle()) {
@@ -372,13 +523,15 @@ export default function goalPlugin(pi: ExtensionAPI): void {
         return;
       }
       if (verb === "resume") {
-        if (!goal || !["paused", "blocked", "no_progress"].includes(goal.status)) {
+        if (!goal || !isResumable(goal)) {
           ctx.ui.notify("Only paused, blocked or stalled goals can resume.", "warning");
           return;
         }
         invalidate();
         goal.status = "active";
-        goal.reason = undefined;
+        // `reason` is kept on purpose: the continuation prompt surfaces it as
+        // "last paused with", which is how the agent learns whether the last
+        // attempt was rejected by the verifier or never reached it.
         goal.blocker = undefined;
         goal.blockerRuns = 0;
         goal.lastBlockerRun = undefined;
@@ -387,7 +540,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
         goal.attemptRuns = 0;
         goal.stalledRuns = 0;
         goal.nextActionKey = undefined;
-        activeSince = Date.now();
+        timer.start();
         checkpoint();
         display(ctx);
         schedule(ctx);
@@ -404,7 +557,8 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       work = undefined;
       endedRun = undefined;
       goal = { schema: 1, id: crypto.randomUUID(), ...parsed, status: "active", used: 0, elapsedMs: 0, workRuns: 0, attemptRuns: 0, blockerRuns: 0, stalledRuns: 0 };
-      activeSince = Date.now();
+      timer.restart();
+      timer.start();
       checkpoint();
       display(ctx);
       // The plan is written before the first work run so run 1 already has a
@@ -433,7 +587,12 @@ export default function goalPlugin(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: "No active goal work run." }], details: { state: "none" } };
       }
       goal.progress = params.message;
-      if (params.kind === "candidate_complete") goal.candidate = params.message;
+      if (params.kind === "candidate_complete") {
+        goal.candidate = params.message;
+        // Until a verdict is parsed this candidate is unjudged; a run that
+        // ends before verification must not read as a rejection.
+        goal.candidatePending = true;
+      }
       if (params.kind === "blocked") {
         const key = params.blockerKey?.trim() || params.message.trim();
         if (goal.lastBlockerRun !== work.index) {
@@ -446,7 +605,10 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       }
       checkpoint();
       display(ctx);
-      return { content: [{ type: "text", text: `Goal ${goal.status}; report recorded.` }], details: structuredClone(goal) };
+      const reply = params.kind === "candidate_complete" && goal.status === "active"
+        ? "Goal active; candidate recorded. It will be verified when this run settles — if the run is interrupted first, the candidate stays unjudged and must be re-reported."
+        : `Goal ${goal.status}; report recorded.`;
+      return { content: [{ type: "text", text: reply }], details: structuredClone(goal) };
     },
   });
 }

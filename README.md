@@ -12,11 +12,25 @@ can be installed without pulling in its siblings.
 | [jev-compact](plugins/jev-compact) | `pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
 | [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
 | [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
+| [workflow](plugins/workflow) | `pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
+| [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
+
+### Not a plugin: `pi-run-core`
+
+[`plugins/run-core`](plugins/run-core) (`pi-run-core`) is a **library**, not an
+installable extension — it declares no `pi` manifest and registers nothing. It
+holds the run primitives that `pi-goal` and `pi-workflow` share:
+staleness guards, dual-axis fail-closed budgets, active-time accounting, token
+accounting, branch-aware snapshot persistence, and continuation delivery. It
+has its own [README](plugins/run-core/README.md); plugins consume it as a
+workspace dependency.
+
 
 Each plugin has its own README with configuration, architecture notes and
 measured behaviour. `pi-jev-compact` additionally ships
 [`ATTRIBUTION.md`](plugins/jev-compact/ATTRIBUTION.md), since its decision engine
-is vendored from `fast-jev-compaction`.
+is vendored from `fast-jev-compaction`; `pi-workflow` ships one too, since its
+core is ported from Step-Code.
 
 ### The plugins stay independent, but cooperate when both are installed
 
@@ -40,6 +54,7 @@ pi install -l ./plugins/redact         # project-local
 pi install -l ./plugins/jev-compact
 pi install -l ./plugins/ace-search
 pi install -l ./plugins/goal
+pi install -l ./plugins/bg-bash
 pi install npm:pi-redact               # once published
 ```
 

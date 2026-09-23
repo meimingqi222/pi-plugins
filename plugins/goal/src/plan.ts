@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readTokenUsage, withDeadline } from "pi-run-core";
 import type { RedactService } from "./redact.ts";
-import { withDeadline } from "./verifier.ts";
 
 /**
  * The goal plan: a short, plugin-owned contract plus a mutable checklist.
@@ -16,6 +16,13 @@ import { withDeadline } from "./verifier.ts";
  */
 
 export const PLAN_FILE_NAME = "goal-plan.md";
+/**
+ * Deadline for the one planner call, matching the verifier's.
+ *
+ * A plan is written once at goal creation, and a planner that hangs must not
+ * hold the goal's first run open; the goal still runs without a plan.
+ */
+export const PLANNER_TIMEOUT_MS = 45_000;
 export const MAX_CRITERIA = 8;
 export const MAX_CHECKLIST = 12;
 export const MAX_CRITERION_CHARS = 500;
@@ -131,9 +138,66 @@ export async function readPlan(path: string): Promise<GoalPlan | undefined> {
   return parsePlan(body);
 }
 
+/**
+ * Whether the plan path can be written without following something else.
+ *
+ * The plan file is the gating contract, and its path is predictable and inside
+ * the session directory. `writeFile` follows a symlink, so anything that can
+ * create one there first — a previous run with write access, a tool that ran with
+ * the user's permissions — can redirect the contract outside the session while
+ * the plugin believes it wrote the plan. `lstat` does not follow, so a symlink,
+ * directory, fifo or device is refused instead of written through. Absent is the
+ * normal case and is fine.
+ *
+ * Grok's PlanGuard makes the same check for the same reason, which is also why
+ * its strategist's edits are reverted byte for byte.
+ */
+export async function planPathIsSafe(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isFile();
+  } catch {
+    // ENOENT: nothing there, which is where a fresh plan goes.
+    return true;
+  }
+}
+
 /** The first unchecked box, or `undefined` when the checklist is finished or absent. */
 export function firstUnchecked(plan: GoalPlan | undefined): string | undefined {
   return plan?.checklist.find((item) => !item.done)?.label;
+}
+
+export interface CriteriaChanges {
+  /** Baselines the file no longer states — the criteria that were dropped or rewritten away. */
+  removed: string[];
+  /** Criteria the file states that the baseline never did. */
+  added: string[];
+}
+
+/**
+ * What the plan file's criteria section no longer says.
+ *
+ * An edit cannot weaken the contract — the verifier judges the plugin-held
+ * baseline — but "the criteria section changed" does not tell it *what* was
+ * weakened, which is the only part it can weigh. A criterion deleted from the
+ * file is exactly that fact, and it used to be reduced to a boolean: the signal
+ * was identical whether the implementer added a note or removed the test that
+ * would have proved the work.
+ *
+ * Compared as trimmed, case-folded sets, so a reorder is not a change and a
+ * reworded criterion reads as one removal plus one addition. Bounded by the same
+ * caps as the plan itself: this is fed to a model call, and an unbounded diff of
+ * an implementer-controlled file is a prompt-size hole.
+ */
+export function compareCriteria(baseline: readonly string[], current: readonly string[]): CriteriaChanges {
+  const fold = (value: string): string => value.trim().toLowerCase();
+  const before = new Set(baseline.map(fold));
+  const after = new Set(current.map(fold));
+  const cap = (value: string): string =>
+    value.length > MAX_CRITERION_CHARS ? `${value.slice(0, MAX_CRITERION_CHARS)}…` : value;
+  return {
+    removed: baseline.filter((criterion) => !after.has(fold(criterion))).map(cap).slice(0, MAX_CRITERIA),
+    added: current.filter((criterion) => !before.has(fold(criterion))).map(cap).slice(0, MAX_CRITERIA),
+  };
 }
 
 export function planProgress(plan: GoalPlan | undefined): { done: number; total: number } {
@@ -176,20 +240,28 @@ export function parsePlannerPlan(raw: string): GoalPlan {
 export async function runPlanner(
   ctx: ExtensionContext, objective: string, controller: AbortController,
   redactor: RedactService | undefined,
-): Promise<GoalPlan> {
+): Promise<{ plan: GoalPlan; usage: number }> {
   const model = ctx.model;
   if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
     throw new Error("Current model has no configured authentication");
   }
   const payload = redactor ? redactor.redactJson({ objective }) : { objective };
-  const result = await withDeadline(() => ctx.modelRegistry.complete(model, {
-    systemPrompt: PLANNER_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }],
-    tools: [],
-  }, { signal: controller.signal }), controller);
+  const result = await withDeadline(
+    () =>
+      ctx.modelRegistry.complete(model, {
+        systemPrompt: PLANNER_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }],
+        tools: [],
+      } as never, { signal: controller.signal } as never),
+    controller,
+    PLANNER_TIMEOUT_MS,
+    "Planning",
+  );
   if (result.stopReason !== "stop" || result.content.some((part) => part.type === "toolCall")) {
     throw new Error(`Planner ended with ${result.stopReason}, not a plan`);
   }
   const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-  return parsePlannerPlan(raw);
+  // The planner is a model call like the verifier; its tokens belong to the
+  // goal's accounting or a budget would not see them.
+  return { plan: parsePlannerPlan(raw), usage: readTokenUsage(result) };
 }
