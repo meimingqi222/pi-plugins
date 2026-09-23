@@ -1,0 +1,27 @@
+name: regression notes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The verifier is a shared skill installed outside the repository, so CI
+      # installs it from the same source a developer does.
+      - name: Install the regression-notes verifier
+        run: npx --yes skills add meimingqi222/my-agent-skills@regression-notes -g -y
+
+      # Deliberately not `bun run notes`: scripts/verify-notes.sh fails open when
+      # it cannot find the verifier, which would make CI green whether or not the
+      # skill installed. Calling the verifier by absolute path turns a missing
+      # install into a failed job instead of a silent pass.
+      - name: Verify the notes tree
+        run: python3 "$HOME/.agents/skills/regression-notes/scripts/verify-notes.py" --notes-dir .agents/notes

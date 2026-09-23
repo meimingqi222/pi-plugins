@@ -1,8 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { withDeadline } from "pi-run-core";
+import type { CriteriaChanges } from "./plan.ts";
 import type { Goal } from "./state.ts";
 import type { RedactService } from "./redact.ts";
 import type { RegisteredModel } from "./state.ts";
 
+/** Deadline for one verification round. */
 export const VERIFY_TIMEOUT_MS = 45_000;
 
 /**
@@ -18,6 +21,8 @@ export interface VerifierPlanInput {
   done: number;
   total: number;
   criteriaEdited: boolean;
+  /** What the file's criteria section no longer states, when it changed. */
+  criteriaChanges?: CriteriaChanges;
 }
 
 /**
@@ -61,7 +66,6 @@ export interface Verdict {
   evidence: string;
   nextAction?: string;
 }
-
 export function parseVerdict(raw: string): Verdict {
   const v: unknown = JSON.parse(raw);
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("Invalid verification object");
@@ -76,29 +80,13 @@ export function parseVerdict(raw: string): Verdict {
   return obj as unknown as Verdict;
 }
 
-/** Cancels promptly even when the provider ignores AbortSignal. Late rejection is observed by race. */
-export async function withDeadline<T>(
-  start: () => Promise<T>, controller: AbortController, timeoutMs = VERIFY_TIMEOUT_MS,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort = (): void => {};
-  const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(controller.signal.reason ?? new Error("Verification cancelled"));
-    controller.signal.addEventListener("abort", onAbort, { once: true });
-    if (controller.signal.aborted) onAbort();
-    else timer = setTimeout(() => controller.abort(new Error("Verification timed out")), timeoutMs);
-  });
-  try {
-    controller.signal.throwIfAborted();
-    return await Promise.race([start(), cancelled]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    controller.signal.removeEventListener("abort", onAbort);
-    // cancelled is also observed when start() throws synchronously.
-    void cancelled.catch(() => {});
-  }
-}
-
+/**
+ * Ask the judge for a verdict.
+ *
+ * The deadline primitive is shared with any other isolated model call; only the
+ * label is local, so a timeout reads as "Verification timed out" rather than
+ * something generic.
+ */
 export async function verifyGoal(
   ctx: ExtensionContext, goal: Goal, controller: AbortController,
   redactor: RedactService | undefined, plan: VerifierPlanInput | undefined,
@@ -118,16 +106,26 @@ export async function verifyGoal(
   const evidence = {
     objective: goal.objective,
     previousVerdict: goal.verdict,
-    candidate: goal.candidate,
+    // `goal.candidate` is overloaded: it holds the implementer's claim while
+    // unjudged, and the verifier's own required next action after a
+    // rejection. Sending it under one name would let the verifier mistake its
+    // own instruction for a fresh claim, so the two are split here.
+    candidate: goal.candidatePending ? goal.candidate : undefined,
+    requiredAction: goal.candidatePending ? undefined : goal.candidate,
     ...(plan
       ? {
           criteria: plan.criteria,
           planStep: plan.step,
           planProgress: `${plan.done}/${plan.total}`,
           // The contract is the baseline the plugin holds, so an edit to the
-          // plan file cannot weaken it; the flag only tells the verifier the
-          // implementer tried.
+          // plan file cannot weaken it. The edits themselves are sent, because
+          // "something changed" is not something a judge can weigh — a deleted
+          // criterion is.
           criteriaEdited: plan.criteriaEdited,
+          ...(plan.criteriaChanges &&
+          (plan.criteriaChanges.removed.length > 0 || plan.criteriaChanges.added.length > 0)
+            ? { criteriaChanges: plan.criteriaChanges }
+            : {}),
         }
       : {}),
     truncated: transcript.truncated,
@@ -140,7 +138,8 @@ export async function verifyGoal(
       "Judge every explicit objective requirement against concrete transcript evidence, including tool results and tests.",
       "When `criteria` is present it is the gating contract: every one must hold. Judge it against the workspace evidence, not against the plan's own wording.",
       "`planStep` and `planProgress` are the implementer's own progress record. They are evidence of bookkeeping, never a substitute for the observations a criterion requires.",
-      "`criteriaEdited` true means the implementer changed the plan's criteria section after it was written. Weigh that against the evidence you find yourself.",
+      "`candidate` is the implementer's unjudged completion claim; `requiredAction` is the next step a previous verdict demanded. They never appear together.",
+      "`criteriaEdited` true means the implementer changed the plan's criteria section after it was written. `criteriaChanges.removed` names the criteria the file no longer states, and `criteriaChanges.added` names ones it invented; weigh a removal against the evidence you find yourself, and never treat a removal as lowering the bar.",
       "An assistant's completion claim alone is insufficient. Missing/truncated evidence is not proof. No tools are available.",
       "Audit earlier gaps without inventing new requirements or raising the acceptance bar. A required external result cannot be replaced by a local proxy.",
       'Return ONLY JSON {"passed":boolean,"reason":string,"evidence":string,"nextAction":string}.',

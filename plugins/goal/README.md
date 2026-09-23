@@ -97,11 +97,22 @@ restores instead of being discarded.
 
 Continuations yield to queued user messages. Pause, clear, replace, user input,
 session switching, tree navigation, and shutdown invalidate stale
-continuation/verifier callbacks. Token accounting deduplicates assistant message
-usage across events and includes verification usage; elapsed time covers active
-and verifying states, not pauses. A budget moves the goal to `budget_limited`
-at the next settled-run or verifier boundary. It is a soft budget: an in-flight
-work run can overshoot it. Start a replacement goal to authorize more budget.
+continuation/verifier callbacks — including the planner, which is a model call
+like the verifier and would otherwise finish after the goal it belonged to was
+replaced. Token accounting deduplicates assistant message usage across events
+(the same object is counted once even if a field changed between the two events)
+and includes planner and verifier usage. A budget moves the goal to
+`budget_limited`**as soon as accounting sees the spend**, not at the next
+boundary: a run the plugin started is stopped there, a user turn is left to
+finish. It is still a soft budget — the message already in flight overshoots it —
+but the overshoot is now bounded by that message instead of by the run. Start a
+replacement goal to authorize more budget.
+
+A snapshot that cannot be written logs a warning and keeps the in-memory goal
+authoritative; the next boundary retries the write. A goal that is not workable
+is never silently dropped: a status word from a newer build restores as
+`paused`, with the reason, rather than taking the objective and its counters with
+it.
 
 ## Limits
 
@@ -128,14 +139,21 @@ performed by the development tests.
 
 ## Configuration
 
+A goal is a property of the session a *user* is in. A child process spawned to do
+one delegated job has no user, no goal of its own, and no business resuming the
+parent's — so a spawner sets `PI_GOAL_DISABLE=1` in the child's environment and
+the plugin registers nothing there. pi core has no subagent primitive, which
+makes that the spawner's job; `pi-workflow` does it for its children.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `PI_GOAL_MAX_RUNS` | `12` | Work runs per attempt before the goal pauses for `/goal resume`. |
 | `PI_GOAL_STALL_RUNS` | `2` | Repeated identical verifier `nextAction` fingerprints before the goal pauses as `no_progress`. |
 | `PI_GOAL_PLAN` | `true` | Write a plan at goal creation before the first work run. |
 | `PI_GOAL_VERIFIER_MODEL` | *(unset)* | Model that judges completion, as `provider/modelId`. Unset uses the session's active model. |
+| `PI_GOAL_DISABLE` | *(unset)* | Set to `1` in a child process's environment so it registers no goal surface at all. |
 
-All four are read per call, so `/reload` picks up a change without restarting
+All five are read per call, so `/reload` picks up a change without restarting
 pi.
 
 ### Running the verifier on its own model

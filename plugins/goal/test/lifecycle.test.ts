@@ -1,11 +1,13 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { mkdtempSync, existsSync } from "node:fs";
+import { symlink } from "node:fs/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import goalPlugin from "../src/index.ts";
 import { parseObjective, restoreGoal } from "../src/state.ts";
-import { parseVerdict, withDeadline } from "../src/verifier.ts";
+import { parseVerdict } from "../src/verifier.ts";
+import { withDeadline } from "pi-run-core";
 import { PLAN_FILE_NAME, renderPlan } from "../src/plan.ts";
 
 const planFileIn = (sessionDir: string): string => join(sessionDir, PLAN_FILE_NAME);
@@ -35,7 +37,7 @@ const plannerReply = (criteria = ["the objective is met"], steps = ["do the work
 	content: [{ type: "text", text: JSON.stringify({ criteria, checklist: steps }) }],
 });
 
-function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?: () => any) {
+function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?: (...args: any[]) => any) {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
@@ -44,6 +46,9 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 	// The status bar is where a retired goal must disappear from; record every
 	// call so a test can assert the key was cleared rather than merely rewritten.
 	const statuses: Array<string | undefined> = [];
+	// Warnings are the only place a refused plan write or a failed snapshot is
+	// reported, so a test needs to see them.
+	const notices: string[] = [];
 	// Models the verifier may be pointed at, and every model a side call was
 	// actually made with. `find` returns a model missing from `authless` only, so
 	// a test can exercise the unknown-id and no-auth fallbacks.
@@ -53,7 +58,11 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 	// A real directory, so the plan file is written and re-read as in production.
 	const sessionDir = mkdtempSync(join(tmpdir(), "pi-goal-"));
 	const ctx: any = {
-		ui: { setStatus(_key: string, value?: string) { statuses.push(value); }, notify() {}, setWorkingMessage() {} }, mode: "tui", hasUI: true,
+		ui: {
+			setStatus(_key: string, value?: string) { statuses.push(value); },
+			notify(message: string) { notices.push(message); },
+			setWorkingMessage() {},
+		}, mode: "tui", hasUI: true,
 		isIdle: () => true, hasPendingMessages: () => false, abort() {},
 		sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionDir: () => sessionDir },
 		model: { provider: "test", id: "model" },
@@ -67,7 +76,9 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 				const context = args[1];
 				judgedBy.push(`${args[0]?.provider}/${args[0]?.id}`);
 				if (typeof context?.systemPrompt === "string" && context.systemPrompt.includes(PLANNER_MARK)) {
-					return (planner ?? plannerReply)();
+					// Arguments are forwarded to a custom stub, which may want the
+					// AbortSignal; the built-in reply takes (criteria, steps).
+					return planner ? planner(...args) : plannerReply();
 				}
 				return complete
 					? complete(...args)
@@ -89,7 +100,7 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		for (const handler of handlers.get(name) ?? []) result = await handler({ type: name, messages: [], ...event }, ctx);
 		return result;
 	};
-	return { ctx, commands, tools, sent, appended, sessionDir, statuses, catalogue, authless, judgedBy, emit };
+	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit };
 }
 
 async function run(command: any, args: string, ctx: any) { await command.handler(args, ctx); }
@@ -262,6 +273,96 @@ describe("goal safety boundaries", () => {
   expect(restoreGoal(env.ctx)).toBeUndefined();
   await run(env.commands.get("goal"), "clear", env.ctx);
  });
+ test("a status from a newer build pauses the goal instead of deleting it", async () => {
+  // The branch walk takes the newest snapshot, so rejecting the status discards
+  // the objective, the budget and every counter — the whole goal lost to one word
+  // this build has not heard of. Unknown means paused, and it says why.
+  const entries: any[] = [];
+  const env = setup(entries);
+  await run(env.commands.get("goal"), "task --tokens 50", env.ctx);
+  const live = await state(env);
+  entries.push({
+   type: "custom", customType: "goal-state",
+   data: { ...live, status: "frozen", used: 7, workRuns: 3 },
+  });
+  const restored = restoreGoal(env.ctx)!;
+  expect(restored.status).toBe("paused");
+  expect(restored.objective).toBe("task");
+  expect(restored.budget).toBe(50);
+  expect(restored.used).toBe(7);
+  expect(restored.reason).toContain("frozen");
+  await run(env.commands.get("goal"), "clear", env.ctx);
+ });
+});
+
+describe("goal continuation provenance", () => {
+  /**
+   * A user turn while a goal is active. It is accounted as goal progress, but
+   * it was not started by the plugin, so pausing must not interrupt it.
+   */
+  test("pausing during a user turn does not interrupt the user's own output", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    let aborted = false;
+    env.ctx.abort = () => { aborted = true; };
+    await env.emit("agent_start");
+    await run(env.commands.get("goal"), "pause", env.ctx);
+    expect(aborted).toBe(false);
+    expect((await state(env)).status).toBe("paused");
+  });
+  test("pausing during a continuation turn interrupts the goal-driven run", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await endWork(env);
+    await tick();
+    expect(env.sent.length).toBeGreaterThan(0);
+    // The plugin's own continuation is what starts this attempt.
+    let aborted = false;
+    env.ctx.abort = () => { aborted = true; };
+    await env.emit("agent_start");
+    await run(env.commands.get("goal"), "pause", env.ctx);
+    expect(aborted).toBe(true);
+    expect((await state(env)).status).toBe("paused");
+  });
+  test("a continuation queued before pause is stopped when it starts", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await endWork(env);
+    await tick();
+    expect(env.sent.length).toBeGreaterThan(0);
+    // Pause before the queued continuation turn begins: Pi cannot unsend it.
+    await run(env.commands.get("goal"), "pause", env.ctx);
+    let aborted = false;
+    env.ctx.abort = () => { aborted = true; };
+    await env.emit("agent_start");
+    expect(aborted).toBe(true);
+    expect((await state(env)).status).toBe("paused");
+  });
+  test("clear also leaves a user turn running", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    let aborted = false;
+    env.ctx.abort = () => { aborted = true; };
+    await env.emit("agent_start");
+    await run(env.commands.get("goal"), "clear", env.ctx);
+    expect(aborted).toBe(false);
+    expect((await state(env)).state).toBe("none");
+  });
+  test("a user follow-up inside a continuation run is not goal-driven", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await endWork(env);
+    await tick();
+    // Attempt 1 is the plugin's continuation; attempt 2 is the user's follow-up
+    // arriving in the same run. Pausing must not interrupt the latter.
+    await env.emit("agent_start");
+    await env.emit("agent_end", { messages: [] });
+    await env.emit("agent_start");
+    let aborted = false;
+    env.ctx.abort = () => { aborted = true; };
+    await run(env.commands.get("goal"), "pause", env.ctx);
+    expect(aborted).toBe(false);
+  });
 });
 
 describe("goal continuation bounds", () => {
@@ -405,6 +506,138 @@ describe("goal continuation bounds", () => {
     expect(restored.used).toBe(7);
     expect(restored.attemptRuns).toBe(0);
     expect(restored.stalledRuns).toBe(0);
+  });
+});
+
+describe("goal candidate verification status", () => {
+  // Regression: a candidate_complete reported in a run that then errored was
+  // indistinguishable from a rejected one — `candidate` was set either way and
+  // the prompt said nothing about it, so the agent re-ran the whole attempt
+  // blind after every resume.
+  test("a candidate in a run that errors is flagged unjudged, and the prompt says so", async () => {
+    let calls = 0;
+    const env = setup([], async () => { calls++; return verdict(false); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    const reply = await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    expect(reply.content[0].text).toContain("will be verified");
+    await env.emit("agent_end", { messages: [{ ...verdict(), stopReason: "error" }] });
+    await env.emit("agent_settled");
+    const paused = await state(env);
+    expect(paused.status).toBe("paused");
+    expect(paused.candidatePending).toBe(true);
+    expect(paused.reason).toContain("never verified");
+    // The verifier must not have run on an errored run.
+    expect(calls).toBe(0);
+    // After resume the prompt distinguishes "unjudged" from "rejected".
+    await run(env.commands.get("goal"), "resume", env.ctx);
+    const result = await env.emit("context", { messages: [] });
+    expect(result.messages[0].content).toContain("has NOT been judged");
+    expect(result.messages[0].content).toContain("never verified");
+    expect(result.messages[0].content).not.toContain("Required next action");
+  });
+
+  test("a rejected candidate clears pending and the prompt names the verdict and next action", async () => {
+    const env = setup([], async () => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ passed: false, reason: "tests missing", evidence: "no test run in transcript", nextAction: "run the suite" }) }],
+    }));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await tick();
+    const active = await state(env);
+    expect(active.status).toBe("active");
+    expect(active.candidatePending).toBe(false);
+    expect(active.candidate).toBe("run the suite");
+    const result = await env.emit("context", { messages: [] });
+    expect(result.messages[0].content).toContain("verdict was not passed: tests missing");
+    expect(result.messages[0].content).toContain("Required next action: run the suite");
+    expect(result.messages[0].content).not.toContain("has NOT been judged");
+  });
+
+  test("a new candidate after a rejection is pending again and the old verdict is marked as predating it", async () => {
+    const env = setup([], async () => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ passed: false, reason: "tests missing", evidence: "e", nextAction: "run the suite" }) }],
+    }));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await tick();
+    // The continuation run starts; the agent reports a fresh candidate.
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "done for real", env.ctx);
+    const result = await env.emit("context", { messages: [] });
+    expect(result.messages[0].content).toContain("has NOT been judged");
+    expect(result.messages[0].content).toContain("predates the pending candidate");
+  });
+
+  test("a paused goal keeps its pause reason visible after resume", async () => {
+    const env = setup([], async () => verdict(false));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await env.emit("agent_end", { messages: [{ ...verdict(), stopReason: "error" }] });
+    await env.emit("agent_settled");
+    await run(env.commands.get("goal"), "resume", env.ctx);
+    const result = await env.emit("context", { messages: [] });
+    expect(result.messages[0].content).toContain("last paused with: Agent error");
+  });
+
+  test("the verifier sees a pending claim and a required action as different fields", async () => {
+    // `goal.candidate` is overloaded: the implementer's claim while unjudged,
+    // the verifier's demanded next action after a rejection. Sent under one
+    // name, the verifier would read its own instruction as a fresh claim.
+    const captured: any[] = [];
+    const env = setup([], async (_model: any, context: any) => {
+      captured.push(JSON.parse(context.messages[0].content[0].text));
+      return {
+        stopReason: "stop",
+        content: [{ type: "text", text: JSON.stringify({ passed: false, reason: "r", evidence: "e", nextAction: "run the suite" }) }],
+      };
+    });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "first claim", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await tick();
+    // Round 1: the pending claim is `candidate`; nothing is required yet.
+    expect(captured[0].candidate).toBe("first claim");
+    expect(captured[0].requiredAction).toBeUndefined();
+    // Round 2: a fresh claim arrives while the old verdict's action stands.
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "second claim", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await tick();
+    expect(captured[1].candidate).toBe("second claim");
+    expect(captured[1].requiredAction).toBeUndefined();
+    expect(captured[1].previousVerdict.reason).toBe("r");
+  });
+
+  test("the planner's tokens are billed to the goal", async () => {
+    const env = setup([], undefined, async () => ({
+      stopReason: "stop",
+      usage: { totalTokens: 42 },
+      content: [{ type: "text", text: JSON.stringify({ criteria: ["c"], checklist: ["s"] }) }],
+    }));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    expect((await state(env)).used).toBe(42);
+  });
+
+  test("the status bar reflects usage at the end of a run", async () => {
+    const env = setup();
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await env.emit("message_end", { message: { role: "assistant", stopReason: "stop", usage: { totalTokens: 7 } } });
+    await env.emit("agent_end", { messages: [] });
+    expect(env.statuses.at(-1)).toContain("7");
   });
 });
 
@@ -726,3 +959,115 @@ describe("goal lifecycle", () => {
 });
 
 
+
+/**
+ * The await windows.
+ *
+ * Every `await` in a lifecycle handler is a moment the user can pause, clear,
+ * replace or switch sessions. These pin that a command landing in one of those
+ * windows is honored rather than crashing the handler or being attributed to the
+ * wrong goal.
+ */
+describe("goal await windows", () => {
+  test("clearing during the plan read does not throw out of the handler", async () => {
+    const env = setup();
+    await run(env.commands.get("goal"), "task", env.ctx);
+    // Not awaited: the handler is parked inside the plan read when the clear
+    // lands, which is exactly the window. Assigning `goal.planStep` after it used
+    // to be a TypeError out of `agent_start`.
+    const started = env.emit("agent_start");
+    await run(env.commands.get("goal"), "clear", env.ctx);
+    await expect(started).resolves.toBeUndefined();
+    expect(env.appended.at(-1).data).toEqual({ schema: 1, cleared: true });
+    expect(env.sent).toHaveLength(0);
+  });
+
+  test("replacing a goal while the planner runs cancels the planner", async () => {
+    const signals: AbortSignal[] = [];
+    let releaseFirst!: (value: unknown) => void;
+    const env = setup([], undefined, ((_model: any, _context: any, options: any) => {
+      const index = signals.length;
+      signals.push(options?.signal);
+      // The first planner is held open so the replace lands while it is running.
+      return index === 0 ? new Promise((resolve) => { releaseFirst = resolve; }) : plannerReply();
+    }) as any);
+
+    const first = run(env.commands.get("goal"), "first objective", env.ctx);
+    await tick();
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.aborted).toBe(false);
+
+    await run(env.commands.get("goal"), "replace second objective", env.ctx);
+    // The superseded planner is aborted rather than left to finish: its result
+    // belongs to a goal that no longer exists, so the tokens were paid for and
+    // recorded nowhere.
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals).toHaveLength(2);
+
+    releaseFirst(plannerReply(["stale criterion"], ["stale step"]));
+    await first;
+    const settled = await state(env);
+    expect(settled.objective).toBe("second objective");
+    // The stale plan is not attributed to the new goal.
+    expect(settled.planCriteria).toEqual(["the objective is met"]);
+  });
+
+  test("a plan path squatted by a symlink is refused, not written through", async () => {
+    const env = setup();
+    const target = join(env.sessionDir, "outside.md");
+    await writeFile(target, "untouched", { encoding: "utf-8" });
+    await symlink(target, planFileIn(env.sessionDir));
+
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    // `writeFile` follows the link, so without the lstat check the gating
+    // contract would have been written outside the session directory.
+    expect(await readFile(target, "utf8")).toBe("untouched");
+    expect((await state(env)).planPath).toBeUndefined();
+    expect(env.notices.join("\n")).toContain("not a regular file");
+  });
+});
+
+describe("goal robustness", () => {
+  test("a mid-run report that exhausts the budget flips the goal there", async () => {
+    // The budget used to be enforced only at a settled-run boundary, so a long
+    // tool loop could overshoot it by an unbounded amount with nothing visible
+    // until the run ended.
+    const env = setup([], async () => verdict(true, 0));
+    await run(env.commands.get("goal"), "task --tokens 5", env.ctx);
+    await env.emit("agent_start");
+    await env.emit("message_end", { message: verdict(true, 5) });
+    expect((await state(env)).status).toBe("budget_limited");
+    // The run was not plugin-driven, so it is left to finish: a user turn is the
+    // user's output, and the goal merely stops being active.
+    await env.emit("agent_end", { messages: [] });
+    expect((await state(env)).status).toBe("budget_limited");
+  });
+
+  test("the same message object delivered twice is counted once even if it changed", async () => {
+    // `message_end` and `agent_end` hand over the same stored object. The byte
+    // hash alone misses it the moment any field differs between the two events,
+    // and the goal then pays for its own transcript twice.
+    const env = setup([], async () => verdict(true, 0));
+    await run(env.commands.get("goal"), "task --tokens 1000", env.ctx);
+    await env.emit("agent_start");
+    const message = verdict(true, 7);
+    await env.emit("message_end", { message });
+    message.usage.totalTokens = 700;
+    await env.emit("agent_end", { messages: [message] });
+    expect((await state(env)).used).toBe(7);
+  });
+
+  test("a snapshot that cannot be persisted does not take the handler down", async () => {
+    const env = setup();
+    await run(env.commands.get("goal"), "task", env.ctx);
+    env.pi.appendEntry = () => {
+      throw new Error("disk full");
+    };
+    // `finish` persists before it reports; a throw there used to escape the
+    // command handler and skip the status bar, the notification and the reason.
+    await run(env.commands.get("goal"), "pause", env.ctx);
+    expect((await state(env)).status).toBe("paused");
+    expect(env.notices.join("\n")).toContain("Could not persist the goal snapshot");
+  });
+});

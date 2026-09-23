@@ -85,10 +85,10 @@ the alternative is a test that cannot fail when the bug is present.
 
 ## Verification
 
-- `plugins/goal/test/plan.test.ts`
-- `plugins/goal/test/plan.test.ts::readPlan works under Node, where pi loads extensions and `Bun` does not exist`
+- `plugins/goal/test/plan.test.ts` — including the Node child test
+  "readPlan works under Node, where pi loads extensions and Bun does not exist"
 
 Proved: restored `Bun.file(path).text()` in `readPlan`. The Node child returned
 `{"plan":null,...}` while the test expects the parsed plan, so the suite went
 red with one failing assertion (`9 pass, 1 fail`). Restoring `readFile` from
-`node:fs/promises` returned it to green (`10 pass, 0 fail`).
+node:fs/promises returned it to green (`10 pass, 0 fail`).

@@ -71,12 +71,30 @@ test("bounded transcript reports no truncation when everything fits", () => {
   expect(text.split("\n").map((line) => JSON.parse(line))).toEqual(entries);
 });
 
-test("bounded transcript clips rather than dropping an oversized newest entry", () => {
+test("an oversized oldest entry is elided rather than clipped", () => {
+  // The ordinary case: the newest entries fit, the walk stops when the next one
+  // would not, so the oversized entry is dropped whole.
   const entries = [{ type: "message", body: "y".repeat(5_000) }, { type: "message", body: "small" }];
   const { text, truncated } = boundedTranscript(entries, 500);
   expect(truncated).toBe(true);
   expect(text).toContain("small");
   expect(text.length).toBeLessThanOrEqual(500);
+});
+
+test("an oversized newest entry is clipped rather than dropped", () => {
+  // The oversized entry has to be the *newest* for this branch to run: with it
+  // first, the walk fills the budget from the end and stops before reaching it,
+  // so the previous version of this test never exercised the clip at all. An
+  // empty transcript would leave the verifier nothing to judge, which is why the
+  // one partial document the module sends is this one.
+  const newest = { type: "message", body: "y".repeat(5_000) };
+  const { text, truncated } = boundedTranscript([{ type: "message", body: "small" }, newest], 500);
+  expect(truncated).toBe(true);
+  // Exactly the budget, and the tail of the newest entry — a partial JSON
+  // document, which is the one documented exception to "whole entries only".
+  expect(text.length).toBe(500);
+  expect(JSON.stringify(newest).endsWith(text)).toBe(true);
+  expect(text).not.toContain("small");
 });
 
 test("verifier payload keeps whole entries under a tight context window", async () => {
