@@ -15,6 +15,7 @@ can be installed without pulling in its siblings.
 | [workflow](plugins/workflow) | `pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
 | [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: wait for the answer or let it run in the background. One-level fan-out, user-scoped agent definitions. |
 | [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
+| [morph-search](plugins/morph-search) | `pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
 
 ### Not a plugin: `pi-run-core`
 
@@ -68,6 +69,7 @@ pi install -l ./plugins/ace-search
 pi install -l ./plugins/goal
 pi install -l ./plugins/bg-bash
 pi install -l ./plugins/subagent
+pi install -l ./plugins/morph-search
 pi install npm:pi-redact               # once published
 ```
 
