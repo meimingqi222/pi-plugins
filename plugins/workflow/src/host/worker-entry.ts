@@ -122,7 +122,8 @@ async function pipeline(items) {
   for (let i = 0; i < stages.length; i += 1) {
     if (typeof stages[i] !== "function") throw new TypeError("pipeline() stages must be functions");
   }
-  await admitPanel(items.length);
+  // A stage is arbitrary code, not one agent call per item. Only agent() can
+  // know how many calls actually occur; its admission remains the hard bound.
   return Promise.all(items.map(async function (item, index) {
     let value = item;
     for (let i = 0; i < stages.length; i += 1) {

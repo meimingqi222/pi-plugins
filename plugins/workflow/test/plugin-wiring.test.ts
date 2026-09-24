@@ -153,6 +153,19 @@ describe("workflow tool launches a background run", () => {
     expect(String(captured.delivered[0].content)).toContain("echo:hi");
   });
 
+  test("a non-JSON script result delivers a failed run rather than disappearing", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    workflowExtension({ executor: fakeExecutor, cwd })(pi);
+    await captured.tool.execute("call", { script: "return 1n;" }, undefined, undefined, fakeCtx(cwd));
+
+    await waitFor(() => captured.delivered.length === 1);
+    expect(captured.delivered[0].customType).toBe("workflow-result");
+    const record = captured.delivered[0].details as { result: { status: string } };
+    expect(record.result.status).toBe("failed");
+    expect(String(captured.delivered[0].content)).toContain("JSON");
+  });
+
   test("the handle's runId is the run's own id", async () => {
     // Regression: execute() and executeWorkflow() each minted an id, so the
     // handle named a run that had no journal and resumeFromRunId could not

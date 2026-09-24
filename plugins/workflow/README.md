@@ -267,12 +267,15 @@ running child may cross a token limit before it settles.
 
 - **Dual-axis fail-closed budget** (`pi-run-core`'s `RunBudget`): tokens bound
   cost, agent count bounds fan-out. Admission is checked *before* an agent
-  starts, so a refused call costs nothing; `parallel()` and `pipeline()` preview
-  their whole width before starting any child, so a panel that would cross the
-  limit is refused whole. The preview does not reserve — each child still admits
-  its own call — so a second panel can consume the budget between preview and
-  start; the admits remain the bound. A resumed call served from the journal
-  releases the slot it was admitted, since it did no work.
+  starts, so a refused call costs nothing. `parallel()` previews its task count
+  before starting any task (use it for one-agent-per-task panels); this refuses
+  a panel whose declared width exceeds the limit. Arbitrary task functions may
+  call zero or multiple agents, so this preview is not a reservation or an
+  exact count. `pipeline()` cannot preview agent calls from arbitrary stages;
+  each actual `agent()` call is admitted separately, and a refused stage yields
+  `null` for that item. Concurrent panels can also consume budget between a
+  preview and their calls; per-call admission remains the hard bound. A resumed
+  call served from the journal releases its admitted slot, since it did no work.
 - **A default agent cap.** A caller who sets no budget still gets a cap of 64
   agent calls, because "unbounded unless you ask" contradicts every other bound
   here. The number is a runaway backstop, deliberately far above the ~15 the
