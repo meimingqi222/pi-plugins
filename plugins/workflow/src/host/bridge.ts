@@ -188,9 +188,25 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     if (!isWorkerMessage(message)) return;
     switch (message.kind) {
       case "complete":
-        state.value = message.value;
-        state.meta = message.meta;
-        state.completed = true;
+        try {
+          // Structured clone accepts BigInt, Map and other values the public
+          // result renderer and journal cannot serialize. Reject them here,
+          // before a run can be recorded as completed but never delivered.
+          const json = (_key: string, value: unknown): unknown => {
+            if (value === undefined || typeof value === "bigint" || typeof value === "symbol" || typeof value === "function" ||
+              (value !== null && typeof value === "object" && !Array.isArray(value) &&
+                Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+              throw new Error("Workflow result and meta must contain only JSON values");
+            }
+            return value;
+          };
+          state.value = JSON.parse(JSON.stringify(message.value, json));
+          state.meta = JSON.parse(JSON.stringify(message.meta, json));
+          state.completed = true;
+        } catch {
+          state.stopReason = "failed";
+          state.errorMessage = "Workflow result and meta must contain only JSON values";
+        }
         settle();
         return;
       case "error":

@@ -34,8 +34,9 @@ export interface WorkerBudgetRequest {
 /**
  * A panel's preview: may `calls` more agents be admitted?
  *
- * Sent by `parallel()`, `pipeline()`, and `agent()` before any work starts, so a
- * panel that would cross the agent limit is refused whole rather than half-run.
+ * Sent by `parallel()` before its tasks start, so a panel that would cross the
+ * agent limit is refused whole rather than half-run. Arbitrary pipeline stages
+ * cannot predict their agent call count and rely on per-call admission instead.
  * It deliberately does not reserve — each task still admits its own call, and
  * reserving here would count them twice.
  */

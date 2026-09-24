@@ -86,6 +86,15 @@ describe("script host lifecycle", () => {
     const { result } = await run("meta = { name: 'demo' }; return 1;");
     expect(result.meta).toEqual({ name: "demo" });
   });
+
+  test("non-JSON result and meta fail before the run is marked complete", async () => {
+    for (const script of ["return 1n;", "meta = { value: 1n }; return 1;", "return new Map([['key', 1]]);"]) {
+      const { result } = await run(script);
+      expect(result.completed).toBe(false);
+      expect(result.stopReason).toBe("failed");
+      expect(result.errorMessage).toContain("JSON");
+    }
+  });
 });
 
 describe("script host agent bridge", () => {
@@ -183,6 +192,30 @@ describe("script host concurrency", () => {
       return await pipeline([1, 2, 3], async (n) => { if (n === 2) throw new Error("x"); return n * 10; });
     `);
     expect(result.value).toEqual([10, null, 30]);
+  });
+
+  test("a pipeline with no agents does not preview or consume agent budget", async () => {
+    const { result, agents } = await run("return await pipeline([1, 2], n => n + 1);", {
+      check: () => { throw new Error("no agent budget"); },
+      admit: () => { throw new Error("no agent budget"); },
+    });
+    expect(result.completed).toBe(true);
+    expect(result.value).toEqual([2, 3]);
+    expect(agents).toHaveLength(0);
+  });
+
+  test("pipeline admits actual agent calls rather than previewing its item count", async () => {
+    let admitted = 0;
+    const { result, agents } = await run(
+      "return await pipeline([1, 2], n => agent('stage-' + n, {}));",
+      {
+        check: () => { throw new Error("not a static panel"); },
+        admit: () => { if (++admitted > 1) throw new Error("agent cap"); },
+      },
+    );
+    expect(result.completed).toBe(true);
+    expect(result.value).toEqual(["echo:stage-1", null]);
+    expect(agents).toHaveLength(1);
   });
 
   test("phase and log are delivered in order", async () => {
