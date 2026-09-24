@@ -134,6 +134,12 @@ export class JobRegistry {
 		this.jobs.clear();
 	}
 
+	/** Drop all bookkeeping; a new session starts ids from bg001 again. */
+	reset(): void {
+		this.jobs.clear();
+		this.next = 1;
+	}
+
 	private reapFinished(): void {
 		const finished = this.list().filter((job) => job.status !== "running");
 		for (const job of finished.slice(0, Math.max(0, finished.length - this.retainFinished))) {

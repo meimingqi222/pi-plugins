@@ -76,6 +76,15 @@ describe("JobRegistry", () => {
 		expect(ids).toEqual(["bg004", "bg005"]);
 	});
 
+	test("reset drops every job and restarts the id counter", () => {
+		const registry = new JobRegistry();
+		registry.create({ command: "a", cwd: "/" });
+		registry.create({ command: "b", cwd: "/" });
+		registry.reset();
+		expect(registry.list()).toHaveLength(0);
+		expect(registry.create({ command: "c", cwd: "/" }).id).toBe("bg001");
+	});
+
 	test("killAll signals every running job", () => {
 		const registry = new JobRegistry();
 		let killed = 0;

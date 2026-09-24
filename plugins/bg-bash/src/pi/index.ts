@@ -14,7 +14,7 @@ import type { RunOutcome } from "../core/types.ts";
 import { createBgBashTool } from "./bash-tool.ts";
 import { createBgTasksTool } from "./tasks-tool.ts";
 import { formatCompletionMessage, detailsFor, type BgBashDetails } from "./format.ts";
-import { loadThresholdSources } from "./settings.ts";
+import { loadThresholdSources, sweepLogDir } from "./settings.ts";
 import { isPureWaitCommand, pollBlockReason } from "./poll-guard.ts";
 import type { Runtime } from "./runtime.ts";
 
@@ -64,6 +64,12 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", () => {
 		shuttingDown = false;
+		// A new session must not inherit the previous one's job list or id
+		// counter; shutdown already killed anything still running.
+		registry.reset();
+		// Bound the log directory: files past the retention window are deleted,
+		// then the newest MAX_LOG_FILES are kept.
+		sweepLogDir();
 	});
 
 	pi.on("session_shutdown", () => {
@@ -91,8 +97,10 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	// batch early-termination rule means a poll batched with real work does not
 	// stop that work.
 	pi.on("tool_call", (event) => {
-		if (event.toolName !== "bash") return;
-		const running = registry.list().filter((job) => job.status === "running");
+		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
+		// Only background jobs make a bare sleep a poll: a foreground job ends
+		// its own tool call, so sleeping alongside it is not waiting on us.
+		const running = registry.list().filter((job) => job.status === "running" && job.mode === "background");
 		if (running.length === 0) return;
 		const command = (event.input as { command?: unknown }).command;
 		if (typeof command !== "string" || !isPureWaitCommand(command)) return;

@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import bgBashExtension, { BG_BASH_CUSTOM_TYPE } from "../src/index.ts";
@@ -193,12 +193,28 @@ describe("bg_tasks tool", () => {
 		expect(id).toBeDefined();
 
 		const kill = textOf(await tasks(harness).execute("k1", { action: "kill", id }, undefined, undefined, harness.ctx));
-		expect(kill).toContain(`Stopping job ${id}`);
+		expect(kill).toContain(`Job ${id} killed`);
 
 		await waitFor(() => harness.messages.some((entry) => entry.message.content.includes("was stopped")));
 		const list = textOf(await tasks(harness).execute("l2", { action: "list" }, undefined, undefined, harness.ctx));
 		expect(list).toContain(`${id} [killed`);
 	}, 15000);
+
+	test("log prefers the in-memory tail over a stale file", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("t13", { command: "echo fresh-buffer-line", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.messages.length > 0);
+
+		const status = textOf(await tasks(harness).execute("s3", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx));
+		const logPath = status.match(/Log: (.+)$/)?.[1]?.trim();
+		expect(logPath).toBeDefined();
+		writeFileSync(logPath!, "STALE-FILE-CONTENT\n");
+
+		const log = textOf(await tasks(harness).execute("g2", { action: "log", id: "bg001" }, undefined, undefined, harness.ctx));
+		expect(log).toContain("fresh-buffer-line");
+		expect(log).not.toContain("STALE-FILE-CONTENT");
+	});
 
 	test("requires an id for status/log/kill", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
@@ -211,6 +227,23 @@ describe("bg_tasks tool", () => {
  * The wait-poll guard: a bare `sleep` while a job is running must end the turn
  * rather than let the model poll a result that will be delivered on its own.
  */
+describe("session lifecycle", () => {
+	test("session_start drops the previous session's jobs and restarts ids", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("t9", { command: "echo first-session", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.messages.length > 0);
+
+		await harness.emit("session_start");
+
+		const list = textOf(await tasks(harness).execute("l3", { action: "list" }, undefined, undefined, harness.ctx));
+		expect(list).toContain("No bash jobs");
+
+		const result = await bash(harness).execute("t10", { command: "echo second-session", background: true }, undefined, undefined, harness.ctx);
+		expect(textOf(result)).toContain("bg001");
+	});
+});
+
 describe("poll guard", () => {
 	test("a bare sleep while a job runs is blocked and ends the turn", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
@@ -230,6 +263,25 @@ describe("poll guard", () => {
 
 		const result = await harness.emit("tool_call", { toolName: "bash", input: { command: "sleep 5 && npm test" } });
 		expect(result).toBeUndefined();
+	}, 15000);
+
+	test("a powershell sleep is also recognised as a poll", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("t11", { command: "sleep 30", background: true }, undefined, undefined, harness.ctx);
+
+		const result = await harness.emit("tool_call", { toolName: "powershell", input: { command: "sleep 30" } });
+		expect((result as any).block).toBe(true);
+	}, 15000);
+
+	test("a running foreground job does not make a sleep a poll", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		// The foreground sleep is still in flight when the tool_call event fires.
+		const pending = bash(harness).execute("t12", { command: "sleep 0.5" }, undefined, undefined, harness.ctx);
+		const result = await harness.emit("tool_call", { toolName: "bash", input: { command: "sleep 30" } });
+		expect(result).toBeUndefined();
+		await pending;
 	}, 15000);
 
 	test("nothing is blocked when no job is running", async () => {
