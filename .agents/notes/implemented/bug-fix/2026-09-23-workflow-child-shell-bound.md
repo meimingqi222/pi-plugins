@@ -38,8 +38,9 @@ Ship a small guard extension and load it into every child with
   `--extension` for a missing file would fail every child — worse than an
   unbounded shell.
 
-Arg construction moved into an exported `buildPiArgs` so the guard flag, the tool
-list, and the `--` separator can be asserted without spawning.
+Arg construction moved into `pi-agent-runner`'s exported `buildAgentArgs` so the
+guard flag, the tool list, and the `--` separator can be asserted without
+spawning.
 
 ## Alternatives considered
 
@@ -80,15 +81,16 @@ of transpiling that file.
 ## Verification
 
 - `plugins/workflow/test/child-guard.test.ts` — the default and override, the malformed-value fallback, injection only into an absent timeout, ownership detection (including a throwing registry), the two "steps aside" cases, and that pi loads the guard without errors
-- `plugins/workflow/test/pi-executor-spawn.test.ts` — the guard flag is in the child argv with `--` last, it is omitted when unavailable, and the resolved path exists on disk
+- `plugins/workflow/test/pi-executor.test.ts` — the guard path resolves to a file on disk (`the child guard > resolves to a file the child can load`)
+- `plugins/agent-runner/test/spawn.test.ts` — the guard flag is in the child argv with `--` last, and it is omitted when unavailable (`buildAgentArgs`)
 
 `202 pass, 0 fail` for the workflow package; `bun run typecheck` clean.
 
 Proved: two red runs.
 
-- **The `--extension` push removed from `buildPiArgs`.** It failed
-  `child argv > loads the guard extension and keeps the prompt after --`, so the
-  test pins that the child actually receives the guard rather than that a path was
+- **The `--extension` push removed from `buildAgentArgs`.** It failed
+  `buildAgentArgs > orders flags and keeps the prompt after --`, so the test pins
+  that the child actually receives the guard rather than that a path was
   computed.
 - **`ownsBuiltinShellTool` made to always return true** (the guard claiming every
   shell tool). It failed

@@ -1,126 +1,84 @@
 import { describe, expect, test } from "bun:test";
-import { applyEvent, emptyStreamState } from "../src/runner/pi-executor.ts";
-import { forwardedExecArgs, jsonRunArgs, resolvePiInvocation } from "../src/runner/spawn.ts";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { childGuardPath, createPiExecutor } from "../src/runner/pi-executor.ts";
 
-describe("applyEvent", () => {
-  test("message_end is authoritative for the final text", () => {
-    const state = emptyStreamState();
-    applyEvent(state, {
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", delta: "partial" },
-    });
-    applyEvent(state, {
-      type: "message_end",
-      message: { role: "assistant", content: [{ type: "text", text: "complete answer" }] },
-    });
-    expect(state.finalText).toBe("complete answer");
+/**
+ * Adapter tests for `createPiExecutor`.
+ *
+ * The process handling itself is tested in `pi-agent-runner`; what is tested
+ * here is workflow policy on top of it — role resolution before the spawn, the
+ * guard extension the child loads, and the per-call timeout and evidence path
+ * threaded through. Those are the parts the shared runner cannot see.
+ */
+const fixture = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/fake-pi.mjs");
+const injection = { command: process.execPath, args: [fixture] };
+const TIMEOUT_MS = 8_000;
+
+function input(prompt: string, extra: Record<string, unknown> = {}) {
+  return { prompt, options: {} as never, cwd: process.cwd(), runId: "r", agentId: "a", ...extra } as never;
+}
+
+describe("workflow agent adapter", () => {
+  test("a normal run returns the reply, its usage, and the model", async () => {
+    const executor = createPiExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    const result = await executor(input("hello"));
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("reply:hello");
+    expect(result.model).toBe("fixture/model");
+    expect(result.usage?.input).toBe(11);
+    expect(result.usage?.output).toBe(7);
   });
 
-  test("usage is cumulative, so a zeroed later event does not erase a total", () => {
-    const state = emptyStreamState();
-    applyEvent(state, {
-      type: "message_update",
-      usage: { input: 100, output: 20, totalTokens: 120 },
-    });
-    applyEvent(state, { type: "message_update", usage: { input: 0, output: 0, totalTokens: 0 } });
-    expect(state.usage.input).toBe(100);
-    expect(state.usage.totalTokens).toBe(120);
+  test("a read-only role still completes", async () => {
+    // The fixture ignores flags, so this pins that the argument path builds and
+    // the process runs. The allowlist content is pinned in `roles.test.ts`.
+    const executor = createPiExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    const result = await executor(input("planner role", { options: { toolProfile: "planner" } }));
+    expect(result.status).toBe("completed");
   });
 
-  test("reads cost from both the nested object and a scalar", () => {
-    const nested = emptyStreamState();
-    applyEvent(nested, { type: "message_update", usage: { cost: { total: 0.5 } } });
-    expect(nested.usage.cost).toBe(0.5);
-    const scalar = emptyStreamState();
-    applyEvent(scalar, { type: "message_update", usage: { cost: 0.25 } });
-    expect(scalar.usage.cost).toBe(0.25);
+  test("an unknown role is rejected before spawning", async () => {
+    const executor = createPiExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    // `resolveToolProfile` throws, so no process should start at all.
+    const result = await executor(input("bad role", { options: { toolProfile: "not-a-role" } }));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("Unknown workflow role");
   });
 
-  test("an assistant error message is captured", () => {
-    const state = emptyStreamState();
-    applyEvent(state, {
-      type: "message_end",
-      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "rate limited" },
-    });
-    expect(state.errorMessage).toBe("rate limited");
-    expect(state.stopReason).toBe("error");
-  });
+  test("a per-call timeout overrides the executor's default", async () => {
+    const executor = createPiExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    const result = await executor(input("HANG", { timeoutMs: 250 }));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("timed out after 250ms");
+  }, 15_000);
 
-  test("agent_end replays its messages, so a failed run still yields text", () => {
-    const state = emptyStreamState();
-    applyEvent(state, {
-      type: "agent_end",
-      messages: [{ role: "assistant", content: [{ type: "text", text: "last words" }] }],
-    });
-    expect(state.finalText).toBe("last words");
-  });
+  test("the child's raw event stream is written to the evidence path", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-wf-evidence-"));
+    try {
+      const evidencePath = join(dir, "agents", "a0.jsonl");
+      const executor = createPiExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+      const result = await executor(input("evidence probe", { evidencePath }));
+      expect(result.status).toBe("completed");
 
-  test("non-assistant messages are ignored", () => {
-    const state = emptyStreamState();
-    applyEvent(state, { type: "message_end", message: { role: "user", content: "hi" } });
-    expect(state.finalText).toBe("");
-  });
-
-  test("the model is recorded when reported", () => {
-    const state = emptyStreamState();
-    applyEvent(state, { type: "message_end", message: { role: "assistant", content: [], model: "test/model" } });
-    expect(state.model).toBe("test/model");
-  });
-
-  test("malformed events are ignored rather than throwing", () => {
-    const state = emptyStreamState();
-    for (const event of [null, undefined, 42, "text", [], {}, { type: 5 }]) {
-      expect(() => applyEvent(state, event)).not.toThrow();
+      const lines = (await readFile(evidencePath, "utf8")).trim().split("\n").filter(Boolean);
+      expect(lines.length).toBeGreaterThan(0);
+      expect(typeof JSON.parse(lines[0]!)).toBe("object");
+      expect(lines.some((entry) => entry.includes("reply:evidence probe"))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
-    expect(state.finalText).toBe("");
-  });
+  }, 15_000);
 });
 
-describe("resolvePiInvocation", () => {
-  test("a virtual script path is never forwarded", () => {
-    // A compiled binary's argv[1] is a path inside the executable; passing it to
-    // a child would hand it a file that does not exist.
-    const invocation = resolvePiInvocation("/usr/bin/pi", "/$bunfs/root/stepcode.js");
-    expect(invocation.args).toEqual([]);
-    expect(invocation.command).toBe("/usr/bin/pi");
-  });
-
-  test("a plain interpreter with no forwarding script falls back to PATH", () => {
-    // An empty string, not `undefined`: `undefined` would trigger the default
-    // parameter and silently pick up the real `process.argv[1]`.
-    const invocation = resolvePiInvocation("/usr/local/bin/node", "");
-    expect(invocation).toEqual({ command: "pi", args: [] });
-  });
-
-  test("a source launch forwards the script and its loader flags", () => {
-    // argv[1] must be a real file: the resolver checks, because a compiled
-    // binary's argv[1] is a virtual path that does not exist.
-    const script = import.meta.path;
-    const invocation = resolvePiInvocation(
-      "/usr/local/bin/node",
-      script,
-      ["--require", "tsx/preload", "--inspect=9229", "--import=tsx"],
-    );
-    expect(invocation.command).toBe("/usr/local/bin/node");
-    expect(invocation.args).toEqual(["--require", "tsx/preload", "--import=tsx", script]);
-  });
-});
-
-describe("forwardedExecArgs", () => {
-  test("drops debugger ports, which a second process cannot bind", () => {
-    expect(forwardedExecArgs(["--inspect=9229", "--require", "x"])).toEqual(["--require", "x"]);
-  });
-  test("keeps inline loader flags", () => {
-    expect(forwardedExecArgs(["--import=tsx", "-rfoo"])).toEqual(["--import=tsx", "-rfoo"]);
-  });
-  test("drops a loader flag with no value", () => {
-    expect(forwardedExecArgs(["--require"])).toEqual([]);
-  });
-});
-
-describe("jsonRunArgs", () => {
-  test("is non-interactive and does not persist a session per agent", () => {
-    // A fan-out of hundreds of agents must not fill the session store.
-    expect(jsonRunArgs()).toEqual(["--mode", "json", "-p", "--no-session"]);
+describe("the child guard", () => {
+  test("resolves to a file the child can load", () => {
+    const path = childGuardPath();
+    expect(path).toBeDefined();
+    expect(existsSync(path!)).toBe(true);
+    expect(path!.endsWith("child-guard.ts")).toBe(true);
   });
 });

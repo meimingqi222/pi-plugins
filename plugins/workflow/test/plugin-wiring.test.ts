@@ -39,6 +39,7 @@ interface Captured {
 }
 
 function fakePi(): { pi: any; captured: Captured } {
+  const listeners = new Map<string, Array<(value: any) => void>>();
   const captured: Captured = {
     tool: undefined as never,
     tools: new Map(),
@@ -66,7 +67,10 @@ function fakePi(): { pi: any; captured: Captured } {
     sendMessage(message: any) {
       captured.delivered.push({ customType: message.customType, content: message.content, details: message.details });
     },
-    events: { on() {}, emit() {} },
+    events: {
+      on(name: string, handler: (value: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
+      emit(name: string, value: any) { for (const handler of listeners.get(name) ?? []) handler(value); },
+    },
   };
   return { pi, captured };
 }
@@ -107,6 +111,19 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
 const SCRIPT = "return await agent('hi', {});";
 
 describe("workflow tool launches a background run", () => {
+  test("reports cache-inclusive live spend to the goal when it settles", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const reported: number[] = [];
+    workflowExtension({
+      cwd,
+      executor: async () => ({ status: "completed", text: "ok", value: "ok", usage: { input: 3, output: 2, cacheRead: 5, cacheWrite: 0 } }),
+    })(pi);
+    pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: (tokens: number) => reported.push(tokens) }) });
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd));
+    await waitFor(() => reported.length === 1);
+    expect(reported).toEqual([10]);
+  });
   test("execute returns a handle without waiting for the run to finish", async () => {
     const cwd = await tempCwd();
     const { pi, captured } = fakePi();

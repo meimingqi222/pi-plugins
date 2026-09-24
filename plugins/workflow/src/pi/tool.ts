@@ -58,7 +58,7 @@ export const WORKFLOW_DESCRIPTION = [
 export const WORKFLOW_GUIDELINES: string[] = [
   "Use `workflow` only when the user has opted in: the keyword \"ultraloop\" in the current message, an explicit request (use a workflow / fan out agents / orchestrate this with subagents), a saved workflow invoked by name, or a skill that instructs it.",
   "Never infer opt-in from task shape or size. A large or parallel-looking task is not consent, and an opt-in from an earlier turn does not carry forward.",
-  "Without an opt-in, prefer the targeted tool: a single subagent for one delegated task, `grep`/`read` for a lookup, or a direct edit.",
+  "Without an opt-in, prefer the targeted tool: `grep`/`read` for a lookup, or a direct edit.",
   // The script contract, stated where the model reads it. Step-Code teaches this
   // in its tool description; without it an author has to read the source to learn
   // what a script is, which is the difference between a tool and a framework.

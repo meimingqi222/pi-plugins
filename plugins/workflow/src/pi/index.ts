@@ -28,6 +28,7 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { connectGoalSpend, type GoalSpendLease } from "pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
 import { renderLiveStatus } from "../runs/live-status.ts";
@@ -76,6 +77,8 @@ export default function workflowPlugin(pi: ExtensionAPI): void {
 export function workflowExtension(options: WorkflowExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     if (options.enabled === false || workflowsDisabled()) return;
+    const goalSpend = connectGoalSpend(pi);
+    const goalLeases = new Map<string, GoalSpendLease>();
     const executor = options.executor ?? createPiExecutor();
     const cwd = (ctx: ExtensionContext): string => options.cwd ?? ctx.cwd;
 
@@ -111,6 +114,8 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     const registry = new RunRegistry({
       maxActiveRuns: maxActiveRunsCeiling(),
       onSettled(record) {
+        goalLeases.get(record.runId)?.finish(record.result?.goalTokens ?? record.progress?.goalTokens ?? 0);
+        goalLeases.delete(record.runId);
         // A run stopped by the user or ended by a failure has no result to
         // render; the notice still matters.
         if (record.result) {
@@ -143,9 +148,13 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         // background where it cannot.
         const source = await resolveWorkflowSource(workDir, params as Record<string, never>);
         const runId = newWorkflowRunId();
+        const lease = goalSpend()?.begin(ctx, runId);
+        if (lease) goalLeases.set(runId, lease);
         const agentTimeoutMs = (params as { agentTimeoutMs?: number }).agentTimeoutMs;
 
-        const record = registry.launch({ runId, name: source.name, agentTimeoutMs }, (runSignal) =>
+        let record: RunRecord;
+        try {
+          record = registry.launch({ runId, name: source.name, agentTimeoutMs }, (runSignal) =>
           executeWorkflow(params as Record<string, never>, {
             cwd: workDir,
             executor,
@@ -163,7 +172,12 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
               footer.sync();
             },
           }),
-        );
+          );
+        } catch (error) {
+          goalLeases.delete(runId);
+          lease?.finish(0);
+          throw error;
+        }
         attachFooter(ctx);
         footer.sync();
 

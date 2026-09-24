@@ -141,17 +141,17 @@ test("pi loads the child guard as an extension without errors", async () => {
 	}
 });
 
-import { workflowChildEnv } from "../src/runner/pi-executor.ts";
+import { agentChildEnv } from "pi-agent-runner";
+import { workflowsDisabled } from "../src/pi/index.ts";
 
 /**
- * A workflow child must be told it is not the user's session.
+ * Fan-out is one level deep.
  *
- * pi core has no subagent primitive, so nothing enforces this but the spawner;
- * the goal plugin honors the flag, and this pins that the spawner sets it.
+ * `pi-agent-runner` sets the child environment; this plugin reads the switch.
+ * The two halves are composed here rather than asserted separately, so the test
+ * fails if either the runner stops setting the flag or this plugin stops
+ * honoring it. The env's exact shape is pinned once, in the runner's own test.
  */
-test("a workflow child is told not to run the user's goal", () => {
-  expect(workflowChildEnv({ PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin", PI_GOAL_DISABLE: "1" });
-  // The parent's own environment is inherited, not replaced: a child still needs
-  // its PATH and its provider credentials.
-  expect(workflowChildEnv({ OPENAI_API_KEY: "k" }).OPENAI_API_KEY).toBe("k");
+test("a workflow child cannot start another workflow", () => {
+  expect(workflowsDisabled(agentChildEnv({}))).toBe(true);
 });

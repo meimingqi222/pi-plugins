@@ -13,6 +13,7 @@
  */
 
 export { ActiveTimer, readTokenUsage } from "./usage.ts";
+export { connectGoalSpend, GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendLease, type GoalSpendService } from "./goal-spend.ts";
 export { RunGuard, type RunToken } from "./guard.ts";
 export {
   RunBudget,

@@ -59,11 +59,11 @@ in the same place, which is also why its strategist's edits are reverted byte fo
 byte.
 
 **A child is told it is not the user's session.** `PI_GOAL_DISABLE=1` makes the
-plugin register nothing, and `pi-workflow` sets it in every child's environment
-via `workflowChildEnv()`. pi core has no subagent primitive, so this is the
-spawner's contract — the same shape Step-Code uses (`STEP_DISABLE_GOAL` for its
-own subagents). Relying on a child having no session would be relying on an
-accident of how it was launched.
+plugin register nothing, and the shared runner (`pi-agent-runner`) sets it in
+every child's environment via `agentChildEnv()`. pi core has no subagent
+primitive, so this is the spawner's contract — the same shape Step-Code uses
+(`STEP_DISABLE_GOAL` for its own subagents). Relying on a child having no
+session would be relying on an accident of how it was launched.
 
 **One classification, both answers derived.** `goalDisposition` returns
 `running | resumable | terminal`; `isRetired` and `isResumable` read it. The call

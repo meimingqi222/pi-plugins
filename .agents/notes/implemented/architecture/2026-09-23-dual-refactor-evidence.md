@@ -136,10 +136,11 @@ to a spawned process is exercised:
   asserts the returned values, the accumulated token spend, that a parallel panel
   collects every result, and that a fully-resumed run spawns nothing
   (`cacheHits: 1`, `spentTokens: 0`).
-- `plugins/workflow/test/pi-executor-spawn.test.ts` covers the executor's
-  process handling against a fixture that speaks pi's JSON event stream: a normal
-  run, a closed stdin, 500 drained progress events, an assistant error, the
-  **timeout kill of a hanging child**, and the abort path.
+- `plugins/agent-runner/test/executor.test.ts` — the process handling that
+  `pi-workflow` used to own, moved into the shared library in the same change —
+  covers the executor against a fixture that speaks pi's JSON event stream: a
+  normal run, a closed stdin, 500 drained progress events, an assistant error,
+  the **timeout kill of a hanging child**, and the abort path.
 - `plugins/workflow/test/plugin-wiring.test.ts` covers the design's background
   execution: the tool returns a handle without awaiting the run, the settled
   result is delivered back into the conversation, two concurrent runs each

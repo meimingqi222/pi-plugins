@@ -114,7 +114,7 @@ widely writes one file per agent under its run directory.
 
 - `plugins/workflow/test/orchestrator.test.ts` — a failed call is journaled as `failed`; the progress snapshot ends with the terminal status; `agentTimeoutMs` and `evidencePath` reach the executor
 - `plugins/workflow/test/progress.test.ts` — the on-disk summary reports failures, `failedCalls`, `lastError`, and reads zero-successes-with-failures as `failed`
-- `plugins/workflow/test/pi-executor-spawn.test.ts` — a per-call timeout overrides the executor default; the child's stream lands in the evidence file; a timeout names it
+- `plugins/workflow/test/pi-executor.test.ts` — a per-call timeout overrides the executor default and the child's stream lands in the evidence file, through the workflow adapter
 - `plugins/workflow/test/plugin-wiring.test.ts` — the tool maps `agentTimeoutMs` to the per-agent cap and passes an evidence path
 - `plugins/workflow/test/core.test.ts` — a `failed` entry is a valid journal line and is still not reusable
 
@@ -135,5 +135,6 @@ Proved: four red runs, one per fix, each on the assertion it is meant to carry.
   with `Received: undefined` for the executor's `timeoutMs`.
 - **The evidence sink made a no-op.** It failed
   `pi executor diagnostics > the child's raw event stream is written to the evidence path`
-  with `ENOENT` reading the file, so the test pins that the stream is actually
-  persisted rather than that a path was computed.
+  in `plugins/agent-runner/test/executor.test.ts` with `ENOENT` reading the file,
+  so the test pins that the stream is actually persisted rather than that a path
+  was computed.

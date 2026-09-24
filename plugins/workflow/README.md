@@ -223,10 +223,19 @@ Ambient extensions load in a workflow child, since the spawn does not pass
 `--no-extensions` (a child may be asked to use one). So a plugin that schedules
 work for the user's session has to be told this is not one, or it will inject the
 parent's objective into a context that cannot act on it and bill the parent's
-budget for the tokens. `workflowChildEnv()` sets `PI_GOAL_DISABLE=1`, which
-`pi-goal` honors by registering nothing — the same shape Step-Code uses for its
-own subagents (`STEP_DISABLE_GOAL`), and the closest thing to subagent isolation
-pi allows, since pi core has no subagent primitive.
+budget for the tokens.
+
+The child environment comes from `pi-agent-runner`'s `agentChildEnv()`, which
+sets `PI_GOAL_DISABLE=1` (read by `pi-goal`), `PI_WORKFLOW_DISABLED=1` (read by
+this plugin) and `PI_SUBAGENT_DISABLE=1` (read by `pi-subagent`, when installed),
+so **fan-out is one level deep.** Without them a child — which loads ambient
+extensions like any other pi process — would register the `workflow` and
+`subagent` tools and be free to start a run or a delegation of its own,
+multiplying concurrent provider streams past the account limit. Step-Code names
+the same failure for its own children; the recursion bound belongs in the spawn
+environment because there is no core mechanism to declare it. Keeping the three
+switches in one constant is what makes a fourth scheduler a one-line change
+rather than a hunt through every spawner.
 
 ### A child's shell is bounded
 
@@ -248,6 +257,13 @@ cap (15 minutes by default), so a stuck command fails one tool call and the agen
 can recover.
 
 ## Budget, journal, resume
+
+When a workflow starts inside an active `pi-goal` work run, its parent plugin
+reports cache-inclusive child usage to the goal on settlement. The workflow's
+own `spentTokens` and `budget` still use input plus output; they exclude cache
+reads and writes. Goal accounting uses a different, cache-inclusive total so it
+matches the goal's message usage. Both budgets react to reported usage, so a
+running child may cross a token limit before it settles.
 
 - **Dual-axis fail-closed budget** (`pi-run-core`'s `RunBudget`): tokens bound
   cost, agent count bounds fan-out. Admission is checked *before* an agent
