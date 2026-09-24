@@ -11,13 +11,14 @@ pi install -l ./plugins/goal
 `/goal <objective> [--tokens N]`; inspect it with `/goal status`; use
 `/goal pause`, `/goal resume`, `/goal clear`, or `/goal replace <objective>`.
 
-The agent can call `get_goal` and `update_goal` to report progress, a candidate
-completion, or a blocker. It cannot resume a paused goal or declare completion.
-After each settled goal work run, the plugin asks the current configured model in
-an isolated, tool-free completion to verify transcript evidence. Invalid JSON,
-provider errors, redactor errors, cancellation, and timeouts pause safely rather
-than pretending success. Completion is only reported after a valid verifier
-verdict.
+The agent can call `get_goal` and `update_goal` to report material progress, a
+candidate completion, or a blocker. It cannot resume a paused goal or declare
+completion. An unfinished work run continues without a verifier call. After a
+run reports `candidate_complete` and settles, the plugin asks the current
+configured model in an isolated, tool-free completion to verify transcript
+evidence. Invalid JSON, provider errors, redactor errors, cancellation, and
+timeouts pause safely rather than pretending success. Completion is only
+reported after a valid verifier verdict.
 
 A goal that reaches a terminal status — `complete` or `budget_limited`, exactly
 the two `/goal resume` refuses — is **retired**: it stops being injected into the
@@ -55,8 +56,11 @@ The plan lives at `<session dir>/goal-plan.md` and holds exactly two sections:
 `## Acceptance criteria` is the gating bar: short, outcome-shaped, anchored to
 the literal objective, never naming a file or a function. `## Task checklist` is
 the implementer's own progress record. The plugin reads the **first unchecked
-box** once per work run and hands it to the model as the next step, so a stale
-checklist produces a stale nudge and a current one produces a correct one.
+box** before each work run and presents it as a starting point. The agent may
+advance through several steps in one run. During that run, context injection
+does not repeat the starting point, since the file may already have changed.
+The queued continuation is only a trigger; the first context call after the
+run starts supplies the freshly read step.
 
 **The criteria section is not a contract the implementer can edit.** The plugin
 keeps the criteria it was first given and hands those to the verifier on every
@@ -72,8 +76,8 @@ name *some* next action otherwise never terminates a goal that has no token
 budget set.
 
 - **Run cap** — after `PI_GOAL_MAX_RUNS` work runs (default 12) in one attempt,
-  the goal pauses instead of verifying again. The cap is checked *before* the
-  verifier round, so the last round is never paid for and discarded.
+  the goal pauses, including when none reported completion. The cap is checked
+  *before* a verifier round, so the last round is never paid for and discarded.
 - **Stall detection** — a verifier `nextAction` is folded to a fingerprint
   (lowercased, punctuation and whitespace collapsed, and high-entropy tokens
   such as a scratch path, uuid or generated id normalised away). Repeating the

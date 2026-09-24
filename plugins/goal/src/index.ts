@@ -37,6 +37,8 @@ interface WorkRun {
    * by `/goal pause` or `/goal clear`.
    */
   continuationDriven: boolean;
+  /** The starting plan hint is shown once, before the run can edit the file. */
+  contextSeen: boolean;
   stopReason?: string;
 }
 
@@ -188,7 +190,10 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       if (!goal || goal.id !== goalId || goal.status !== "active" || !guard.isCurrent(token) ||
         ctx.sessionManager.getSessionId() !== sessionId ||
         !ctx.isIdle() || ctx.hasPendingMessages()) return;
-      if (!continuation.deliver("queued", { customType: "goal-continuation" }, goalPrompt(goal))) {
+      // The context handler supplies the fresh goal state after agent_start
+      // refreshes the plan. Duplicating it here stores stale plan text in the
+      // transcript and wastes context on every continuation.
+      if (!continuation.deliver("queued", { customType: "goal-continuation" }, "Continue the active goal.")) {
         finish(ctx, "paused", "Continuation could not start.");
       }
     }, 0);
@@ -444,7 +449,8 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (goal && !isRetired(goal)) {
       // The current work run, when there is one, is what decides whether a
       // pending candidate is unjudged or merely awaiting its settle.
-      messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal, work?.index), display: false, timestamp: Date.now() });
+      messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal, work?.index, !work?.contextSeen), display: false, timestamp: Date.now() });
+      if (work) work.contextSeen = true;
     }
     return { messages };
   });
@@ -481,7 +487,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     timer.start();
     goal.workRuns++;
     goal.attemptRuns = (goal.attemptRuns ?? 0) + 1;
-    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven };
+    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven, contextSeen: false };
     // Refresh before the checkpoint so the run starts from the checklist's
     // current first unchecked item and that step is persisted with it.
     await refreshPlan(goal.id);
@@ -537,6 +543,14 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     const { maxRuns } = goalLimits();
     if ((goal.attemptRuns ?? 0) >= maxRuns) {
       finish(ctx, "paused", `Work run cap of ${maxRuns} reached; /goal resume authorizes more.`);
+      return;
+    }
+    // A clean stop is not a completion claim. Keep working without paying for a
+    // verifier round until this run explicitly reports candidate_complete.
+    // A candidate left pending by an older, interrupted run is not this run's
+    // claim and must be re-reported before it can be judged.
+    if (!goal.candidatePending || goal.candidateRun !== owner.index) {
+      schedule(ctx);
       return;
     }
     await verify(ctx);

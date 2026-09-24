@@ -376,20 +376,25 @@ export function isRetired(goal: Goal): boolean {
   return goalDisposition(goal) === "terminal";
 }
 
-export function goalPrompt(goal: Goal, currentRun?: number): string {
+export function goalPrompt(goal: Goal, currentRun?: number, showPlanStep = true): string {
   // Every string the model can write is fenced before it is inlined. `progress`,
   // `candidate` and `blockerReason` are the implementer's own words; `planStep`
   // comes from the plan file, which the implementer is invited to edit; the
   // verdict was written by the model judging it. The objective is the user's,
   // and is fenced too — it is still inlined into a block, and the point of the
   // fence is that nothing inside can close that block.
+  const { planStep, ...rest } = goal;
   const shown: Goal = {
-    ...goal,
+    ...rest,
     objective: fenceModelText(goal.objective, MAX_OBJECTIVE),
     ...(goal.progress === undefined ? {} : { progress: fenceModelText(goal.progress) }),
     ...(goal.candidate === undefined ? {} : { candidate: fenceModelText(goal.candidate) }),
     ...(goal.blockerReason === undefined ? {} : { blockerReason: fenceModelText(goal.blockerReason) }),
-    ...(goal.planStep === undefined ? {} : { planStep: fenceModelText(goal.planStep, 300) }),
+    // A run may edit the checklist between context calls. Its starting step is
+    // then stale until the next run boundary, so do not keep presenting it as
+    // authoritative while that run is in flight.
+    ...(planStep === undefined || !showPlanStep
+      ? {} : { planStep: fenceModelText(planStep, 300) }),
     ...(goal.verdict === undefined
       ? {}
       : { verdict: { reason: fenceModelText(goal.verdict.reason), evidence: fenceModelText(goal.verdict.evidence) } }),
@@ -399,11 +404,13 @@ export function goalPrompt(goal: Goal, currentRun?: number): string {
   // "check each item off …" versus "do not resume goal work".
   const planLines = goal.status === "active" && goal.planPath
     ? [
-        `A plan for this goal is on disk and is the source of truth for what "done" means: ${goal.planPath}`,
-        shown.planStep
-          ? `Next step (first unchecked item in its ## Task checklist): ${shown.planStep}`
-          : "Its ## Task checklist has no unchecked item.",
-        "Seed your work from its `## Acceptance criteria` and check each item off in its `## Task checklist` as you complete it. The first unchecked box is the next step you are given, so keeping it current is how you stay on track.",
+        `A plan for this goal is on disk: ${goal.planPath}`,
+        showPlanStep && shown.planStep
+          ? `Starting point (first unchecked checklist item): ${shown.planStep}`
+          : showPlanStep
+            ? "Its ## Task checklist has no unchecked item."
+            : "The checklist may have changed during this run; continue through the checklist in this run.",
+        "Use its `## Acceptance criteria` as the completion bar. Mark checklist items done once as you complete them; do not undo completed items merely because an earlier step was mentioned in a prompt.",
       ]
     : [];
   // The candidate/verdict status is spelled out because the JSON alone is
@@ -451,7 +458,7 @@ export function goalPrompt(goal: Goal, currentRun?: number): string {
     ...planLines,
     ...statusLines,
     goal.status === "active"
-      ? "Work toward this goal within the user's permissions. Honor new user requests. Report progress or candidate_complete with update_goal; only the verifier can mark completion. For a persistent blocker, report a stable blockerKey and observed reason. Ask for required authority rather than retrying unauthorized actions."
+      ? "Work toward this goal within the user's permissions. Honor new user requests. Report material progress only when it changes the work, and report candidate_complete once all requirements are met; only then will the verifier run. Do not call get_goal or update_goal merely to acknowledge a checklist step. For a persistent blocker, report a stable blockerKey and observed reason. Ask for required authority rather than retrying unauthorized actions."
       : "This goal is not active. Do not resume goal work automatically; answer the current user request. Only /goal resume or a new user-managed goal starts it.",
   ].join("\n");
 }

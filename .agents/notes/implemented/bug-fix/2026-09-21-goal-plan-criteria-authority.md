@@ -1,6 +1,7 @@
 # Agent Note: Hold the goal plan's acceptance criteria outside the implementer's reach
 
 Status: implemented
+Partly-superseded-by: 2026-09-24-goal-work-run-efficiency.md
 
 ## Problem
 
@@ -45,6 +46,10 @@ through the plan must not be stalled by a verifier that words its nudge the same
 way twice, and a verifier naming genuinely new work must not be stalled by a
 checklist that has not caught up yet. Fingerprinting only one of the two breaks
 the other case, so both are covered by a test.
+
+## Superseded
+
+The first unchecked item is now only a starting hint at a run boundary. The older claim that it remains an authoritative next step throughout a run is superseded by `2026-09-24-goal-work-run-efficiency.md`; the held criteria and checklist persistence decisions still apply.
 
 ## Alternatives considered
 
