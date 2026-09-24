@@ -16,7 +16,7 @@ import {
 import { installRedactBridge } from "./redact.ts";
 import { GOAL_ENTRY, MAX_OBJECTIVE, goalDisabled, goalLimits, goalPrompt, isResumable, isRetired, nextActionKey, parseObjective, planEnabled, resolveVerifierModel, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
 import { parseVerdict, verifyGoal, type VerifierPlanInput } from "./verifier.ts";
-import { compareCriteria, firstUnchecked, planPathFor, planPathIsSafe, planProgress, readPlan, renderPlan, runPlanner } from "./plan.ts";
+import { compareCriteria, firstUnchecked, parsePlannerPlan, planPathFor, planPathIsSafe, planProgress, readPlan, renderPlan, runPlanner } from "./plan.ts";
 
 interface Flight {
   token: RunToken;
@@ -213,13 +213,21 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     planFlight = { goalId, abort: controller };
     ctx.ui.setWorkingMessage("pi-goal: planning the goal…");
     try {
-      const { plan, usage } = await runPlanner(ctx, goal.objective, controller, redactor());
+      const result = await runPlanner(ctx, goal.objective, controller, redactor());
       // A replace or clear during the planner call must not inherit this plan.
       if (!goal || goal.id !== goalId || goal.status !== "active") return;
-      goal.used += usage;
+      // Bill the response before validating it: a malformed or interrupted
+      // planner reply still consumed tokens, just like a rejected verifier reply.
+      goal.used += readTokenUsage(result);
+      checkpoint();
       // The planner's own cost can exhaust a small budget; check before
       // writing a plan for a goal that is already over.
       if (budgetReached(ctx)) return;
+      if (result.stopReason !== "stop" || result.content.some((part) => part.type === "toolCall")) {
+        throw new Error(`Planner ended with ${result.stopReason}, not a plan`);
+      }
+      const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      const plan = parsePlannerPlan(raw);
       const path = planPathFor(ctx);
       // `writeFile` follows a symlink. The plan is the gating contract and its
       // path is predictable, so a symlink planted there would redirect the

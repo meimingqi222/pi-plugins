@@ -26,10 +26,10 @@ line only prints when a pending candidate actually exists.
 
 ## Decision
 
-- `runPlanner` returns `{ plan, usage }`; `startPlan` adds the usage to
-  `goal.used` and runs `budgetReached` before writing the plan file, so a
-  planner that exhausts the budget stops the goal instead of planning for a
-  dead one.
+- `runPlanner` returns the model response; `startPlan` adds its usage to
+  `goal.used` and runs `budgetReached` before parsing and writing the plan,
+  so even an invalid paid reply is counted and a planner that exhausts the
+  budget stops the goal instead of planning for a dead one.
 - The verifier payload splits the field: `candidate` is only the pending
   claim, `requiredAction` carries the previous verdict's demand. The system
   prompt documents that they never appear together.
@@ -76,3 +76,9 @@ Proved: removing `goal.used += usage` after the planner call failed
 `plugins/goal/test/lifecycle.test.ts`'s "the planner's tokens are billed to the
 goal" with `Expected: 42, Received: 0`, then passed again after restoring the
 line. Full workspace after restoring: 582 pass, 0 fail; typecheck clean.
+
+Follow-up (2026-09-24): the original successful-plan test missed an invalid
+paid reply. `plugins/goal/test/lifecycle.test.ts::an invalid paid planner reply still exhausts the goal budget`
+failed before the accounting move with `Expected: 42, Received: 0`, then passed.
+The response is checkpointed before validation so a failure below budget also
+survives recovery; a provider error without a response has no reported usage.
