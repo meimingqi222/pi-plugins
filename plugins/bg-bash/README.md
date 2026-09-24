@@ -81,6 +81,12 @@ Threshold precedence, highest first:
 tool, while `background: true` still works. `PI_BG_BASH_LOG_DIR` overrides the
 log directory.
 
+Log files are named `<sessionId>-<jobId>.log`, so a new session never appends
+to a previous session's file and concurrent pi processes cannot interleave.
+On `session_start` the directory is swept: files older than
+`PI_BG_BASH_LOG_RETENTION_DAYS` (default `7`, `0` disables) are deleted, then
+at most the newest 200 files are kept.
+
 ```json
 // <cwd>/.pi/bg-bash.json
 { "autoBackgroundAfterSeconds": 60 }
@@ -91,14 +97,21 @@ log directory.
 - **Only the `bash` tool is wrapped.** On Windows pi also exposes `powershell`;
   a long PowerShell command is not auto-backgrounded and keeps the built-in
   blocking behaviour.
-- **Concurrent background jobs are capped at 20.** At the cap a new command is
-  refused with an actionable error rather than left running untracked.
+- **Explicit `background: true` is capped at 20 running jobs.** At the cap a
+  new background request is refused with an actionable error. Foreground
+  commands still run at capacity; one that outlives the threshold may exceed
+  the limit rather than block forever.
 - **No stdin.** Like the built-in tool, commands get no interactive input. Use
   tmux for something that genuinely needs a TTY.
 - **No wake-up for explicit `background: true` if the session ends first.** Jobs
   are killed on `session_shutdown`; only the foreground process tree is
   inherited by nothing.
-- **Logs are not pruned.** They accumulate under `~/.pi/bg-bash/logs/`.
+- **Log retention is coarse.** The sweep runs on `session_start`, so a
+  long-lived process only prunes when a session begins; between sweeps the
+  directory grows with every command.
+- **Logs hold raw output.** The files under `~/.pi/bg-bash/logs/` are the
+  command's bytes verbatim — secret-redaction extensions that rewrite tool
+  results do not rewrite these files.
 
 ## Layout
 

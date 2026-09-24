@@ -21,6 +21,7 @@ import {
 	formatBackgroundNotice,
 	formatForegroundOutput,
 	outcomeReason,
+	truncateOutput,
 	type BgBashDetails,
 } from "./format.ts";
 import type { Runtime } from "./runtime.ts";
@@ -66,7 +67,11 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 			const thresholdSeconds = runtime.autoBackgroundSeconds(ctx.cwd);
 			const explicitBackground = params.background === true;
 
-			if (runtime.registry.atCapacity()) {
+			// The cap guards explicit backgrounding only. A foreground command
+			// must still run — refusing `echo hi` because 20 jobs are up would be
+			// wrong — and if it outlives the threshold it may exceed the limit,
+			// which is preferable to blocking the tool call forever.
+			if (explicitBackground && runtime.registry.atCapacity()) {
 				throw new Error(
 					`Too many background jobs are running (limit ${runtime.backgroundLimit()}). ` +
 						`Inspect them with bg_tasks list and stop one with bg_tasks kill <id> before starting more.`,
@@ -78,13 +83,20 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				cwd: ctx.cwd,
 				mode: explicitBackground ? "background" : "foreground",
 			});
-			job.logPath = allocateLogPath(job.id);
+			const sessionId = sessionIdOf(ctx);
+			job.logPath = allocateLogPath(job.id, sessionId);
 
 			let streaming = true;
 			let updateTimer: ReturnType<typeof setTimeout> | undefined;
 			const emitUpdate = (): void => {
 				if (!onUpdate || !streaming) return;
-				onUpdate({ content: [{ type: "text", text: job.output.text() }], details: detailsFor(job) });
+				// Push the same capped tail the final result renders, not the whole
+				// 256KB buffer, on every throttled update.
+				const truncated = truncateOutput(job.output.text());
+				onUpdate({
+					content: [{ type: "text", text: truncated.text }],
+					details: detailsFor(job, Date.now(), truncated.result),
+				});
 			};
 			const clearUpdate = (): void => {
 				if (updateTimer) clearTimeout(updateTimer);
@@ -98,6 +110,7 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 					cwd: ctx.cwd,
 					env: buildEnv(ctx),
 					logPath: job.logPath,
+					logHeader: logHeader(job, sessionId),
 					timeoutMs: params.timeout && params.timeout > 0 ? params.timeout * 1000 : undefined,
 					signal,
 					onSpawn: (pid) => {
@@ -171,6 +184,21 @@ function startThresholdTimer(ms: number): { promise: Promise<typeof BACKGROUND>;
 		promise,
 		cancel: () => clearTimeout(handle),
 	};
+}
+
+/** Session id for log file naming; undefined when the context cannot provide one. */
+function sessionIdOf(ctx: ExtensionContext): string | undefined {
+	try {
+		return ctx.sessionManager.getSessionId();
+	} catch {
+		return undefined;
+	}
+}
+
+/** A `#`-prefixed provenance line at the top of each log file. */
+function logHeader(job: { id: string; command: string; cwd: string }, sessionId: string | undefined): string {
+	const command = job.command.replace(/\r?\n/g, " ⏎ ");
+	return `# job ${job.id} session ${sessionId ?? "unknown"} cwd ${job.cwd}\n# command ${command}\n`;
 }
 
 /** Mirror pi's session environment exposure for the spawned shell. */

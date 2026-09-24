@@ -12,6 +12,9 @@ export const DEFAULT_TAIL_BYTES = 256 * 1024;
 
 export class TailBuffer {
 	private buffer = "";
+	// Tracked incrementally: re-measuring the whole buffer on every append is
+	// quadratic for a chatty job.
+	private bufferBytes = 0;
 	private droppedBytes = 0;
 	private droppedLines = 0;
 
@@ -20,6 +23,7 @@ export class TailBuffer {
 	append(chunk: string): void {
 		if (!chunk) return;
 		this.buffer += chunk;
+		this.bufferBytes += Buffer.byteLength(chunk, "utf8");
 		this.trim();
 	}
 
@@ -34,11 +38,11 @@ export class TailBuffer {
 	}
 
 	byteLength(): number {
-		return Buffer.byteLength(this.buffer, "utf8");
+		return this.bufferBytes;
 	}
 
 	private trim(): void {
-		let remaining = Buffer.byteLength(this.buffer, "utf8");
+		let remaining = this.bufferBytes;
 		if (remaining <= this.maxBytes) return;
 
 		let cut = 0;
@@ -60,6 +64,7 @@ export class TailBuffer {
 		}
 
 		this.buffer = this.buffer.slice(cut);
+		this.bufferBytes = remaining;
 	}
 }
 

@@ -6,6 +6,10 @@ describe("isPureWaitCommand", () => {
 		expect(isPureWaitCommand("sleep 30")).toBe(true);
 		expect(isPureWaitCommand("  sleep 0.5  ")).toBe(true);
 		expect(isPureWaitCommand("sleep 10;")).toBe(true);
+		expect(isPureWaitCommand("sleep 30s")).toBe(true);
+		expect(isPureWaitCommand("sleep 1m")).toBe(true);
+		expect(isPureWaitCommand("sleep 30 # wait for the job")).toBe(true);
+		expect(isPureWaitCommand("Start-Sleep 30")).toBe(true);
 	});
 
 	test("leaves a sleep with a purpose alone", () => {

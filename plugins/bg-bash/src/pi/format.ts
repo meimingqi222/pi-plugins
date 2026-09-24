@@ -35,16 +35,21 @@ export function formatDuration(ms: number): string {
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function truncateOutput(text: string): { text: string; truncated: boolean; notice?: string } {
+export function truncateOutput(text: string): {
+	text: string;
+	truncated: boolean;
+	notice?: string;
+	result: ReturnType<typeof truncateTail>;
+} {
 	const result = truncateTail(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-	if (!result.truncated) return { text: result.content, truncated: false };
+	if (!result.truncated) return { text: result.content, truncated: false, result };
 	const startLine = result.totalLines - result.outputLines + 1;
 	const endLine = result.totalLines;
 	const reason =
 		result.truncatedBy === "lines"
 			? `[Showing lines ${startLine}-${endLine} of ${result.totalLines}.`
 			: `[Showing lines ${startLine}-${endLine} of ${result.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit).`;
-	return { text: result.content, truncated: true, notice: reason };
+	return { text: result.content, truncated: true, notice: reason, result };
 }
 
 function appendNotice(text: string, notice: string | undefined, logPath: string | undefined): string {
@@ -135,8 +140,12 @@ export function formatJobStatus(job: Job): string {
 		.join("\n");
 }
 
-export function detailsFor(job: Job, now = Date.now()): BgBashDetails {
-	const result = truncateTail(job.output.text(), { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+export function detailsFor(
+	job: Job,
+	now = Date.now(),
+	truncation?: ReturnType<typeof truncateTail>,
+): BgBashDetails {
+	const result = truncation ?? truncateTail(job.output.text(), { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
 	return {
 		jobId: job.id,
 		command: job.command,

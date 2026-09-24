@@ -43,14 +43,18 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 				}
 				case "log": {
 					const job = requireJob(registry, params.id);
-					if (!job.logPath) {
-						return { content: [{ type: "text", text: `Job ${job.id} has no log file.` }], details: undefined };
+					const lineCount = params.lines && params.lines > 0 ? Math.floor(params.lines) : 200;
+					// The in-memory tail is fresher than the file (the write stream
+					// buffers) and cannot contain another session's output; the file
+					// is the fallback for output the tail already dropped.
+					let text = job.output.text();
+					if (job.logPath && (!text.trim() || job.output.dropped().bytes > 0)) {
+						const fromFile = readLogTail(job.logPath);
+						if (fromFile.trim()) text = fromFile;
 					}
-					const text = readLogTail(job.logPath);
 					if (!text.trim()) {
 						return { content: [{ type: "text", text: `Job ${job.id} has produced no output yet.` }], details: undefined };
 					}
-					const lineCount = params.lines && params.lines > 0 ? Math.floor(params.lines) : 200;
 					return { content: [{ type: "text", text: tailLines(text, lineCount) }], details: undefined };
 				}
 				case "kill": {
@@ -62,10 +66,17 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 						};
 					}
 					registry.kill(job.id);
-					return {
-						content: [{ type: "text", text: `Stopping job ${job.id} (${job.command}).` }],
-						details: undefined,
-					};
+					// Give the outcome a moment to settle so the reply reports the
+					// terminal status instead of a stale "running".
+					const deadline = Date.now() + 2000;
+					while (job.status === "running" && Date.now() < deadline) {
+						await new Promise((resolve) => setTimeout(resolve, 50));
+					}
+					const result =
+						job.status === "running"
+							? `Stop requested for job ${job.id} (${job.command}); it is still terminating.`
+							: `Job ${job.id} ${job.status} (${job.command}).`;
+					return { content: [{ type: "text", text: result }], details: undefined };
 				}
 			}
 		},
