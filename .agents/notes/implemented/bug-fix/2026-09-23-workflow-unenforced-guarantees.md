@@ -1,6 +1,7 @@
 # Agent Note: Enforce the limits and promises pi-workflow advertises
 
 Status: implemented
+Partly-superseded-by: 2026-09-24-workflow-script-boundaries.md
 
 ## Problem
 
@@ -151,6 +152,14 @@ The panel preview is advisory against a race, not a fix for it. A script that
 launches two wide panels whose combined width exceeds the budget can still see
 the second one partially admitted and refused per call — which is the behavior
 that existed before, now confined to that narrow case.
+
+## Superseded
+
+The `pipeline()` width preview and the claim that any panel's task count equals
+its agent call count are superseded by `2026-09-24-workflow-script-boundaries.md`.
+`parallel()` retains its task-count preview for the one-agent-per-task convention;
+per-call admission remains the actual bound. The default cap, resume accounting,
+run cap and writer lock decisions above remain in force.
 
 ## Verification
 
