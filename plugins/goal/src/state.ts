@@ -205,6 +205,20 @@ export interface Goal {
    * verifier already said no". Cleared the moment a verdict is parsed.
    */
   candidatePending?: boolean;
+  /**
+   * `workRuns` index of the run that reported the pending candidate.
+   *
+   * The flag above says the candidate is unjudged; it does not say *when*.
+   * While that run is still going the candidate is not unjudged at all — the
+   * verifier has simply not had its turn yet, because `agent_settled` has not
+   * fired. Treated as one state, "has NOT been judged, re-report" is injected
+   * into the reporting run itself, where the only way to obey it is to
+   * re-report, which keeps the run alive and pushes the settle — and with it
+   * the verdict — further away. A real session looped on exactly that line for
+   * eleven minutes and 19M tokens inside a single run, where neither the run cap
+   * nor the stall guard can fire. Cleared with `candidatePending`.
+   */
+  candidateRun?: number;
   /** Session-scoped plan file, written once at goal creation.
    * Deliberately *not* recomputed for the session that restores the goal: a fork
    * of a session that is working through a plan should keep reading that plan and
@@ -242,7 +256,7 @@ export function isGoal(value: unknown): value is Goal {
     // question, answered by `coerceStatus` after restore — see its note.
     typeof g.status === "string" && !!g.status &&
     natural(g.used) && natural(g.elapsedMs) && natural(g.workRuns) && natural(g.blockerRuns) &&
-    optionalNatural(g.attemptRuns) && optionalNatural(g.stalledRuns) &&
+    optionalNatural(g.attemptRuns) && optionalNatural(g.stalledRuns) && optionalNatural(g.candidateRun) &&
     (g.budget === undefined || (natural(g.budget) && g.budget > 0)) &&
     (g.lastBlockerRun === undefined || natural(g.lastBlockerRun)) &&
     ["blocker", "blockerReason", "candidate", "progress", "reason", "nextActionKey", "verifierModel"].every(
@@ -362,7 +376,7 @@ export function isRetired(goal: Goal): boolean {
   return goalDisposition(goal) === "terminal";
 }
 
-export function goalPrompt(goal: Goal): string {
+export function goalPrompt(goal: Goal, currentRun?: number): string {
   // Every string the model can write is fenced before it is inlined. `progress`,
   // `candidate` and `blockerReason` are the implementer's own words; `planStep`
   // comes from the plan file, which the implementer is invited to edit; the
@@ -397,10 +411,22 @@ export function goalPrompt(goal: Goal): string {
   // required next action, and a goal paused mid-verification looks identical
   // to one the verifier rejected. An agent that cannot tell those apart
   // re-runs the whole attempt blindly after every resume.
+  //
+  // "Unjudged" is also not one state. A candidate reported by the run that is
+  // still going has not been judged *yet* — the verifier runs when the run
+  // settles, so re-reporting it is what keeps the run from settling. That
+  // branch used to fall into the re-report instruction below and to state, as
+  // fact, that the run had already ended, which is how a real session talked
+  // itself into re-reporting the same candidate seven times without ever
+  // reaching a verdict.
   const statusLines: string[] = [];
   if (shown.candidate && goal.candidatePending !== false) {
     statusLines.push(
-      "A candidate completion was reported but the run ended before verification; it has NOT been judged. Re-report candidate_complete with update_goal once the work still stands, so the verifier can judge it.",
+      goal.status !== "active"
+        ? "A candidate completion was reported but never verified; it has NOT been judged. It stays pending until the goal is resumed."
+        : currentRun !== undefined && currentRun === goal.candidateRun
+          ? "This run reported a candidate completion; finish this run with a final response so the verifier can judge it. Do not call update_goal again in this run."
+          : "A candidate completion was reported but the run ended before verification; it has NOT been judged. Re-report candidate_complete with update_goal once the work still stands, so the verifier can judge it.",
     );
   }
   // `verdict` is only ever stored for a rejection — a passing verdict finishes

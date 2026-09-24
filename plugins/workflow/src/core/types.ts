@@ -146,6 +146,8 @@ export interface WorkflowProgress {
   completedAgents: number;
   totalAgents: number;
   spentTokens: number;
+  /** Cache-inclusive live spend for a parent goal if the run loses its result. */
+  goalTokens?: number;
   message?: string;
 }
 
@@ -161,6 +163,8 @@ export interface WorkflowRunResult {
   startedAt: number;
   finishedAt: number;
   spentTokens: number;
+  /** Cache-inclusive usage for a parent goal; excludes journal cache hits. */
+  goalTokens?: number;
   cacheHits: number;
   agentCalls: number;
   phases: WorkflowPhase[];

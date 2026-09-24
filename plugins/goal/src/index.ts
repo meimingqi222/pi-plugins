@@ -6,8 +6,11 @@ import {
   ActiveTimer,
   appendRunSnapshot,
   ContinuationChannel,
+  GOAL_SPEND_REQUEST,
+  GOAL_SPEND_SERVICE,
   readTokenUsage,
   RunGuard,
+  type GoalSpendService,
   type RunToken,
 } from "pi-run-core";
 import { installRedactBridge } from "./redact.ts";
@@ -47,6 +50,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   let planFlight: { goalId: string; abort: AbortController } | undefined;
   let work: WorkRun | undefined;
   let endedRun: WorkRun | undefined;
+  let deferredRun: WorkRun | undefined;
+  const pendingDelegations = new Set<string>();
+  const settledDelegations = new Set<string>();
   let scheduled: ReturnType<typeof setTimeout> | undefined;
   // Persistence failures are surfaced once per streak rather than per boundary:
   // checkpointing runs at every run boundary, and a full disk would otherwise
@@ -97,6 +103,10 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   }
   function invalidate(): void {
     guard.invalidate();
+    // A paused, replaced or interrupted turn must not be verified when an old
+    // background delegation eventually settles. Its cost is still attributed
+    // to the same goal by the lease.
+    deferredRun = undefined;
     if (scheduled !== undefined) clearTimeout(scheduled);
     scheduled = undefined;
     // The planner is a model call like the verifier and needs the same
@@ -125,6 +135,47 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     finish(ctx, "budget_limited", "Token budget exhausted; set a new goal to authorize more work.");
     return true;
   }
+  const spendService: GoalSpendService = {
+    begin(ctx, callId) {
+      if (goal?.status === "budget_limited" && work?.goalId === goal.id) {
+        throw new Error("Goal token budget exhausted; no new delegation may start.");
+      }
+      if (!goal || goal.status !== "active" || !work || work.goalId !== goal.id ||
+        work.session !== guard.sessionId) return undefined;
+      if (budgetReached(ctx)) throw new Error("Goal token budget exhausted; no new delegation may start.");
+      const goalId = goal.id;
+      const session = guard.sessionId;
+      const sessionIdAtLaunch = ctx.sessionManager.getSessionId();
+      const key = `${goalId}:${callId}`;
+      if (pendingDelegations.has(key) || settledDelegations.has(key)) throw new Error(`Duplicate delegated call ${callId}`);
+      pendingDelegations.add(key);
+      const continuationDriven = work.continuationDriven;
+      let done = false;
+      return {
+        finish(tokens) {
+          if (done) return;
+          done = true;
+          pendingDelegations.delete(key);
+          settledDelegations.add(key);
+          if (!goal || goal.id !== goalId || guard.sessionId !== session ||
+            ctx.sessionManager.getSessionId() !== sessionIdAtLaunch) return;
+          goal.used += Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
+          if (goal.status === "active" && budgetReached(ctx) && continuationDriven) {
+            try { ctx.abort(); } catch { /* The goal is already budget limited. */ }
+          }
+          checkpoint();
+          display(ctx);
+          if (![...pendingDelegations].some((pending) => pending.startsWith(`${goalId}:`)) && deferredRun) {
+            const owner = deferredRun;
+            deferredRun = undefined;
+            queueMicrotask(() => { void settleGoalRun(owner, ctx); });
+          }
+        },
+      };
+    },
+  };
+  pi.events?.on(GOAL_SPEND_REQUEST, () => pi.events?.emit(GOAL_SPEND_SERVICE, spendService));
+  pi.events?.emit(GOAL_SPEND_SERVICE, spendService);
   function schedule(ctx: ExtensionContext): void {
     if (!goal || goal.status !== "active" || scheduled !== undefined || flight || !ctx.isIdle() || ctx.hasPendingMessages()) return;
     if (budgetReached(ctx)) return;
@@ -269,6 +320,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       // A parsed verdict is a judgment on whatever candidate was outstanding,
       // so the pending flag clears even when the verdict rejects.
       goal.candidatePending = false;
+      goal.candidateRun = undefined;
       if (verdict.passed) {
         finish(ctx, "complete", verdict.reason);
         return;
@@ -390,7 +442,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     // carry a decision the model must respect, so the injection condition has to
     // match the statuses whose prompt still says something beyond "this is done".
     if (goal && !isRetired(goal)) {
-      messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal), display: false, timestamp: Date.now() });
+      // The current work run, when there is one, is what decides whether a
+      // pending candidate is unjudged or merely awaiting its settle.
+      messages.push({ role: "custom", customType: "goal-context", content: goalPrompt(goal, work?.index), display: false, timestamp: Date.now() });
     }
     return { messages };
   });
@@ -401,6 +455,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (scheduled !== undefined) clearTimeout(scheduled);
     scheduled = undefined;
     endedRun = undefined;
+    deferredRun = undefined;
     work = undefined;
     if (goal?.status !== "active") {
       // The goal was paused or cleared after the continuation was queued. Pi
@@ -460,11 +515,14 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     // until the next boundary.
     display(ctx);
   });
-  pi.on("agent_settled", async (_event, ctx) => {
-    const owner = endedRun;
-    endedRun = undefined;
+  async function settleGoalRun(owner: WorkRun | undefined, ctx: ExtensionContext): Promise<void> {
     if (!owner || !goal || owner.goalId !== goal.id || owner.session !== guard.sessionId ||
       goal.status !== "active" || !ctx.isIdle() || ctx.hasPendingMessages() || flight) return;
+    const goalId = goal.id;
+    if ([...pendingDelegations].some((pending) => pending.startsWith(`${goalId}:`))) {
+      deferredRun = owner;
+      return;
+    }
     if (owner.stopReason === "error" || owner.stopReason === "aborted") {
       // A candidate reported in a run that ends here was never judged — the
       // verifier only sees clean stops. The pause reason says so, and the
@@ -482,6 +540,11 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       return;
     }
     await verify(ctx);
+  }
+  pi.on("agent_settled", async (_event, ctx) => {
+    const owner = endedRun;
+    endedRun = undefined;
+    await settleGoalRun(owner, ctx);
   });
 
   pi.registerCommand("goal", {
@@ -586,12 +649,21 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       if (!goal || goal.status !== "active" || !work || work.goalId !== goal.id) {
         return { content: [{ type: "text", text: "No active goal work run." }], details: { state: "none" } };
       }
+      if (params.kind === "candidate_complete" && goal.candidatePending && goal.candidateRun === work.index) {
+        return {
+          content: [{ type: "text", text: "A candidate is already recorded in this run. Finish this run with a final response so verification can start; do not call update_goal again." }],
+          details: structuredClone(goal),
+        };
+      }
       goal.progress = params.message;
       if (params.kind === "candidate_complete") {
         goal.candidate = params.message;
         // Until a verdict is parsed this candidate is unjudged; a run that
         // ends before verification must not read as a rejection.
         goal.candidatePending = true;
+        // Which run reported it decides what the next prompt may ask for: this
+        // one lets the run settle, an earlier or later one re-reports.
+        goal.candidateRun = work.index;
       }
       if (params.kind === "blocked") {
         const key = params.blockerKey?.trim() || params.message.trim();
@@ -606,7 +678,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       checkpoint();
       display(ctx);
       const reply = params.kind === "candidate_complete" && goal.status === "active"
-        ? "Goal active; candidate recorded. It will be verified when this run settles — if the run is interrupted first, the candidate stays unjudged and must be re-reported."
+        ? "Goal active; candidate recorded. Finish this run with a final response so the verifier can judge it. Do not call update_goal again in this run. If the run is interrupted first, re-report the candidate in the next run."
         : `Goal ${goal.status}; report recorded.`;
       return { content: [{ type: "text", text: reply }], details: structuredClone(goal) };
     },

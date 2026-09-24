@@ -1,6 +1,7 @@
 # Agent Note: An unjudged candidate must not read as a rejected one
 
 Status: implemented
+Partly-superseded-by: 2026-09-24-goal-candidate-current-run-loop.md
 
 ## Problem
 
@@ -33,6 +34,13 @@ re-submitted the same candidate on every resume.
   candidate was never verified."
 - `update_goal` tells the caller at record time that the candidate is verified
   only when the run settles, and must be re-reported if the run is interrupted.
+
+## Superseded
+
+The re-report instruction now applies only after a candidate's run actually
+ended without verification. While the reporting run is still active, the prompt
+must tell the agent to finish that run. The current-run distinction and repeated
+report handling are recorded in `2026-09-24-goal-candidate-current-run-loop.md`.
 
 ## Alternatives considered
 

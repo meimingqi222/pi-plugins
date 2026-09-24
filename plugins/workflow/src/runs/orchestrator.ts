@@ -228,6 +228,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
     completedAgents: agents.filter((agent) => agent.status === "completed" || agent.status === "cached").length,
     totalAgents: agents.length,
     spentTokens: workflowUsageTokens(usage),
+    goalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
     ...(message ? { message } : {}),
   });
 
@@ -487,6 +488,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
       startedAt,
       finishedAt: now(),
       spentTokens: workflowUsageTokens(usage),
+      goalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
       cacheHits,
       agentCalls: agents.length,
       phases,

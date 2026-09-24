@@ -89,8 +89,9 @@ another attempt rather than an unbounded extension.
 
 Snapshots are appended to the session as `goal-state` at run and verification
 boundaries, not once per assistant message — a long goal previously grew the
-session file without bound, and the budget is only enforced at a settled
-boundary anyway. Loading a session or navigating its tree restores the branch
+session file without bound. The budget is checked when each assistant message,
+delegated call, planner call or verifier call reports usage. Loading a session or
+navigating its tree restores the branch
 snapshot but pauses it until `/goal resume`. Counters added after the first
 schema-1 snapshots are backfilled, so a session written by an older build
 restores instead of being discarded.
@@ -101,12 +102,15 @@ continuation/verifier callbacks — including the planner, which is a model call
 like the verifier and would otherwise finish after the goal it belonged to was
 replaced. Token accounting deduplicates assistant message usage across events
 (the same object is counted once even if a field changed between the two events)
-and includes planner and verifier usage. A budget moves the goal to
-`budget_limited`**as soon as accounting sees the spend**, not at the next
-boundary: a run the plugin started is stopped there, a user turn is left to
-finish. It is still a soft budget — the message already in flight overshoots it —
-but the overshoot is now bounded by that message instead of by the run. Start a
-replacement goal to authorize more budget.
+and includes planner and verifier usage. Foreground subagents and background
+workflows launched during a goal work run report cache-inclusive usage through
+the same goal-owned service. A budget moves the goal to `budget_limited` as soon
+as reported spend reaches it: a run the plugin started is stopped there, a user
+turn is left to finish, and new delegations are refused. This is a soft budget:
+an in-flight model response or child process can overshoot before its usage is
+reported. A background result from a replaced goal or a different session is
+not charged to the current goal. Start a replacement goal to authorize more
+budget.
 
 A snapshot that cannot be written logs a warning and keeps the in-memory goal
 authoritative; the next boundary retries the write. A goal that is not workable

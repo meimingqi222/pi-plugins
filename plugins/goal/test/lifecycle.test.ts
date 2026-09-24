@@ -5,9 +5,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import goalPlugin from "../src/index.ts";
+import { subagentExtension } from "../../subagent/src/index.ts";
 import { parseObjective, restoreGoal } from "../src/state.ts";
 import { parseVerdict } from "../src/verifier.ts";
 import { withDeadline } from "pi-run-core";
+import { GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendService } from "pi-run-core";
 import { PLAN_FILE_NAME, renderPlan } from "../src/plan.ts";
 
 const planFileIn = (sessionDir: string): string => join(sessionDir, PLAN_FILE_NAME);
@@ -62,6 +64,7 @@ const plannerReply = (criteria = ["the objective is met"], steps = ["do the work
 
 function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?: (...args: any[]) => any) {
 	const handlers = new Map<string, Handler[]>();
+	const bus = new Map<string, Array<(value: unknown) => void>>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const sent: Array<{ message: any; options: any }> = [];
@@ -110,7 +113,14 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		},
 	};
 	const pi: any = {
-		events: { on() {}, emit() {} },
+		events: {
+			on(name: string, handler: (value: unknown) => void) {
+				bus.set(name, [...(bus.get(name) ?? []), handler]);
+			},
+			emit(name: string, value: unknown) {
+				for (const handler of bus.get(name) ?? []) handler(value);
+			},
+		},
 		on(name: string, handler: Handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); },
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		registerTool(tool: any) { tools.set(tool.name, tool); },
@@ -124,6 +134,14 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		return result;
 	};
 	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit };
+}
+
+function goalSpend(env: ReturnType<typeof setup>): GoalSpendService {
+  let service: GoalSpendService | undefined;
+  env.pi.events.on(GOAL_SPEND_SERVICE, (value: GoalSpendService) => { service = value; });
+  env.pi.events.emit(GOAL_SPEND_REQUEST, undefined);
+  if (!service) throw new Error("goal spend service unavailable");
+  return service;
 }
 
 async function run(command: any, args: string, ctx: any) { await command.handler(args, ctx); }
@@ -241,6 +259,70 @@ describe("goal safety boundaries", () => {
   expect((await state(env)).status).toBe("budget_limited");
   await endWork(env, [verdict(true, 100)]);
   expect((await state(env)).used).toBe(11);
+ });
+ test("delegated spend is counted once and exhausts the active goal", async () => {
+  const env = setup();
+  await run(env.commands.get("goal"), "task --tokens 10", env.ctx);
+  await env.emit("agent_start");
+  const lease = goalSpend(env).begin(env.ctx, "child-1");
+  expect(lease).toBeDefined();
+  lease!.finish(12);
+  lease!.finish(12);
+  expect((await state(env)).used).toBe(12);
+  expect((await state(env)).status).toBe("budget_limited");
+  expect(() => goalSpend(env).begin(env.ctx, "child-2")).toThrow("budget exhausted");
+ });
+ test("a real subagent tool reports child usage through the goal service", async () => {
+  const env = setup();
+  subagentExtension({
+   discover: () => [{ name: "scout", description: "Inspect code", systemPrompt: "Inspect code.", filePath: "scout.md" }],
+   executor: async () => ({ status: "completed", text: "done", usage: { input: 3, output: 2, cacheRead: 4, cacheWrite: 0, cost: 0, totalTokens: 9 } }),
+  })(env.pi);
+  await run(env.commands.get("goal"), "task", env.ctx);
+  await env.emit("agent_start");
+  const result = await env.tools.get("subagent").execute("real-child", { agent: "scout", task: "inspect" }, undefined, undefined, env.ctx);
+  expect(result.content[0].text).toBe("done");
+  expect((await state(env)).used).toBe(9);
+ });
+ test("verification waits for a background delegation and ignores its late duplicate", async () => {
+  let calls = 0;
+  const env = setup([], async () => { calls++; return verdict(true); });
+  await run(env.commands.get("goal"), "task", env.ctx);
+  await env.emit("agent_start");
+  const lease = goalSpend(env).begin(env.ctx, "workflow-1")!;
+  await env.emit("agent_end", { messages: [] });
+  await env.emit("agent_settled");
+  expect(calls).toBe(0);
+  lease.finish(7);
+  await waitFor(env, (s) => s.status === "complete");
+  lease.finish(7);
+  expect(calls).toBe(1);
+  expect((await state(env)).used).toBe(7);
+ });
+ test("pause and resume do not verify a stale settled run after its workflow finishes", async () => {
+  let calls = 0;
+  const env = setup([], async () => { calls++; return verdict(true); });
+  await run(env.commands.get("goal"), "task", env.ctx);
+  await env.emit("agent_start");
+  const lease = goalSpend(env).begin(env.ctx, "workflow-old")!;
+  await env.emit("agent_end", { messages: [] });
+  await env.emit("agent_settled");
+  await run(env.commands.get("goal"), "pause", env.ctx);
+  await run(env.commands.get("goal"), "resume", env.ctx);
+  lease.finish(7);
+  await tick();
+  expect(calls).toBe(0);
+  expect((await state(env)).used).toBe(7);
+ });
+ test("a replaced goal never inherits a late child report", async () => {
+  const env = setup();
+  await run(env.commands.get("goal"), "old", env.ctx);
+  await env.emit("agent_start");
+  const lease = goalSpend(env).begin(env.ctx, "old-child")!;
+  await run(env.commands.get("goal"), "replace new", env.ctx);
+  lease.finish(100);
+  expect((await state(env)).objective).toBe("new");
+  expect((await state(env)).used).toBe(0);
  });
  test("pending input wins over continuation and verifier", async () => {
   let calls = 0;
@@ -543,7 +625,7 @@ describe("goal candidate verification status", () => {
     await run(env.commands.get("goal"), "task", env.ctx);
     await env.emit("agent_start");
     const reply = await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
-    expect(reply.content[0].text).toContain("will be verified");
+    expect(reply.content[0].text).toContain("Finish this run with a final response");
     await env.emit("agent_end", { messages: [{ ...verdict(), stopReason: "error" }] });
     await env.emit("agent_settled");
     const paused = await state(env);
@@ -596,8 +678,67 @@ describe("goal candidate verification status", () => {
     await env.emit("agent_start");
     await update(env.tools.get("update_goal"), "candidate_complete", "done for real", env.ctx);
     const result = await env.emit("context", { messages: [] });
-    expect(result.messages[0].content).toContain("has NOT been judged");
+    // Reported in *this* run, so the prompt waits for the settle instead of
+    // asking for a re-report — see the loop regression below.
+    expect(result.messages[0].content).toContain("This run reported a candidate completion");
     expect(result.messages[0].content).toContain("predates the pending candidate");
+  });
+
+  test("a candidate reported inside the running run is not met with a re-report instruction", async () => {
+    // Regression: the prompt told the reporting run that its candidate "was
+    // reported but the run ended before verification … Re-report". The run had
+    // not ended — `context` fires on every turn of a run — so a model that
+    // followed the line kept re-reporting, the run never settled, and
+    // `agent_settled` (and therefore the verifier) never ran. Observed in a
+    // real session: seven re-reports, 19M tokens, one run, no verdict.
+    let calls = 0;
+    const env = setup([], async () => { calls++; return verdict(true); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    const first = await env.emit("context", { messages: [] });
+    // A second turn of the same run sees the same state; it must not escalate.
+    const second = await env.emit("context", { messages: [] });
+    for (const result of [first, second]) {
+      expect(result.messages[0].content).toContain("This run reported a candidate completion");
+      expect(result.messages[0].content).not.toContain("Re-report candidate_complete");
+      // The claim that drove the loop: the run had not ended, so saying it did
+      // was both false and an instruction the model could only obey by looping.
+      expect(result.messages[0].content).not.toContain("the run ended before verification");
+    }
+    // One run, one candidate, and the run still settles into exactly one verdict.
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await tick();
+    expect(calls).toBe(1);
+    expect((await state(env)).status).toBe("complete");
+  });
+
+  test("repeating candidate_complete in one run does not replace the pending claim", async () => {
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    const first = await update(env.tools.get("update_goal"), "candidate_complete", "first claim", env.ctx);
+    expect(first.content[0].text).toContain("Finish this run with a final response");
+    const repeated = await update(env.tools.get("update_goal"), "candidate_complete", "second claim", env.ctx);
+    expect(repeated.content[0].text).toContain("already recorded in this run");
+    expect((await state(env)).candidate).toBe("first claim");
+  });
+
+  test("a pending candidate from an earlier run is still re-reported after resume", async () => {
+    // The counterpart to the loop fix: a candidate whose run really did end
+    // unverified must still be re-reported, or the fix would silently drop the
+    // guarantee that an unjudged claim reaches the verifier.
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [{ ...verdict(), stopReason: "error" }] });
+    await env.emit("agent_settled");
+    await run(env.commands.get("goal"), "resume", env.ctx);
+    await env.emit("agent_start");
+    const result = await env.emit("context", { messages: [] });
+    expect(result.messages[0].content).toContain("Re-report candidate_complete");
   });
 
   test("a paused goal keeps its pause reason visible after resume", async () => {

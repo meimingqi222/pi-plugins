@@ -13,6 +13,7 @@ can be installed without pulling in its siblings.
 | [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
 | [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
 | [workflow](plugins/workflow) | `pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
+| [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: wait for the answer or let it run in the background. One-level fan-out, user-scoped agent definitions. |
 | [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
 
 ### Not a plugin: `pi-run-core`
@@ -24,6 +25,17 @@ staleness guards, dual-axis fail-closed budgets, active-time accounting, token
 accounting, branch-aware snapshot persistence, and continuation delivery. It
 has its own [README](plugins/run-core/README.md); plugins consume it as a
 workspace dependency.
+
+### Not a plugin: `pi-agent-runner`
+
+[`plugins/agent-runner`](plugins/agent-runner) (`pi-agent-runner`) is also a
+**library**, not an installable extension. It is the shared subprocess agent
+runner: how to spawn `pi` from a source launch or a compiled binary, how to fold
+a child's JSON event stream, when to kill it, and the one-level fan-out
+environment. `pi-workflow` and `pi-subagent` both delegate to it, so the process
+handling that has hung a real session lives in one place. It has its own
+[README](plugins/agent-runner/README.md); plugins consume it as a workspace
+dependency.
 
 
 Each plugin has its own README with configuration, architecture notes and
@@ -55,6 +67,7 @@ pi install -l ./plugins/jev-compact
 pi install -l ./plugins/ace-search
 pi install -l ./plugins/goal
 pi install -l ./plugins/bg-bash
+pi install -l ./plugins/subagent
 pi install npm:pi-redact               # once published
 ```
 

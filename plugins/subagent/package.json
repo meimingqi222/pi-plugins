@@ -1,19 +1,18 @@
 {
-	"name": "pi-workflow",
+	"name": "pi-subagent",
 	"version": "0.1.0",
-	"description": "Structured multi-agent workflows for pi: fan out isolated agents, coordinate them with a script, and resume from a journal.",
+	"description": "Delegate a single task to an isolated subagent: one child pi process, its own context window, its answer back in the calling turn.",
 	"type": "module",
 	"main": "./src/index.ts",
 	"exports": { ".": "./src/index.ts" },
 	"files": ["src", "README.md", "ATTRIBUTION.md"],
 	"pi": { "extensions": ["./src/index.ts"] },
 	"scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
-	"keywords": ["pi", "pi-package", "workflow", "orchestration", "subagent"],
+	"keywords": ["pi", "pi-package", "subagent", "delegation", "agent"],
 	"license": "MIT",
 	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.85.1" },
-	"dependencies": { "pi-agent-runner": "workspace:*", "pi-run-core": "workspace:*", "typebox": "^1.3.7" },
+	"dependencies": { "pi-agent-runner": "workspace:*", "pi-run-core": "workspace:*", "typebox": "^1.3.7", "@earendil-works/pi-tui": "^0.86.1" },
 	"devDependencies": {
-		"@earendil-works/pi-tui": "^0.86.1",
 		"@types/node": "^22.0.0",
 		"bun-types": "^1.4.2",
 		"typescript": "^5.6.0"

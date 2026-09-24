@@ -95,6 +95,23 @@ describe("workflow orchestration", () => {
     // Two calls at 1 input + 1 output each.
     expect(result.spentTokens).toBe(4);
   });
+
+  test("live progress keeps cache-inclusive spend for goal settlement", async () => {
+    const { executor } = recorder(() => ({ value: "ok", usage: { input: 3, output: 2, cacheRead: 5, cacheWrite: 1 } } as never));
+    const snapshots: Array<{ spentTokens: number; goalTokens?: number }> = [];
+    const result = await runWorkflow({
+      script: "return await agent('hi', {});",
+      args: null,
+      name: "t",
+      cwd: process.cwd(),
+      executor,
+      timeoutMs: TIMEOUT_MS,
+      onProgress: (progress) => snapshots.push(progress),
+    });
+    expect(result.spentTokens).toBe(5);
+    expect(result.goalTokens).toBe(11);
+    expect(snapshots.some((progress) => progress.goalTokens === 11)).toBe(true);
+  });
 });
 
 describe("workflow enforcement", () => {
