@@ -1,6 +1,7 @@
 # Agent Note: Bound goal continuation instead of relying on a budget
 
 Status: implemented
+Partly-superseded-by: 2026-09-24-goal-work-run-efficiency.md
 
 ## Problem
 
@@ -36,6 +37,10 @@ Both limits are read per call rather than captured at load, so `/reload` picks
 up a change. `attemptRuns` and `stalledRuns` are optional in the schema and
 backfilled by `restoreGoal`, so a session written before this change restores
 instead of being discarded as a bad snapshot.
+
+## Superseded
+
+The run cap and stall guard still apply, but an unfinished clean run now continues without a verifier call. The earlier every-run verification behavior is superseded by `2026-09-24-goal-work-run-efficiency.md`.
 
 ## Alternatives considered
 

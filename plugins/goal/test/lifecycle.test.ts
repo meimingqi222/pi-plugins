@@ -165,6 +165,7 @@ async function waitFor(env: ReturnType<typeof setup>, predicate: (state: any) =>
 }
 async function round(env: ReturnType<typeof setup>, messages: any[] = []) {
   await env.emit("agent_start");
+  await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
   await env.emit("agent_end", { messages });
   await env.emit("agent_settled");
   await tick();
@@ -183,6 +184,7 @@ async function state(env: ReturnType<typeof setup>) {
 }
 async function endWork(env: ReturnType<typeof setup>, messages: any[] = []) {
  await env.emit("agent_start");
+ await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
  await env.emit("agent_end", { messages });
  return env.emit("agent_settled");
 }
@@ -253,6 +255,7 @@ describe("goal safety boundaries", () => {
   await env.emit("agent_start");
   const message = verdict(true, 5);
   await env.emit("message_end", { message });
+  await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
   await env.emit("agent_end", { messages: [structuredClone(message)] });
   await env.emit("agent_settled");
   expect((await state(env)).used).toBe(11);
@@ -290,6 +293,7 @@ describe("goal safety boundaries", () => {
   await run(env.commands.get("goal"), "task", env.ctx);
   await env.emit("agent_start");
   const lease = goalSpend(env).begin(env.ctx, "workflow-1")!;
+  await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
   await env.emit("agent_end", { messages: [] });
   await env.emit("agent_settled");
   expect(calls).toBe(0);
@@ -472,6 +476,24 @@ describe("goal continuation provenance", () => {
 
 describe("goal continuation bounds", () => {
 
+  test("unfinished runs still stop at the run cap without verifier calls", async () => {
+    process.env.PI_GOAL_MAX_RUNS = "2";
+    let calls = 0;
+    const env = setup([], async () => { calls++; return verdict(true); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    for (let index = 0; index < 2; index += 1) {
+      await env.emit("agent_start");
+      await update(env.tools.get("update_goal"), "progress", `unfinished run ${index + 1}`, env.ctx);
+      await env.emit("agent_end", { messages: [verdict(false, 1)] });
+      await env.emit("agent_settled");
+      await tick();
+    }
+    expect(calls).toBe(0);
+    expect((await state(env)).status).toBe("paused");
+    expect((await state(env)).used).toBe(2);
+  });
+
   test("work run cap pauses before paying for another verification", async () => {
     process.env.PI_GOAL_MAX_RUNS = "2";
     let calls = 0;
@@ -615,6 +637,22 @@ describe("goal continuation bounds", () => {
 });
 
 describe("goal candidate verification status", () => {
+  test("an unfinished work run continues without paying for verification", async () => {
+    let calls = 0;
+    const env = setup([], async () => { calls++; return verdict(true, 100); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "progress", "first step done; more work remains", env.ctx);
+    await env.emit("agent_end", { messages: [verdict(false, 5)] });
+    await env.emit("agent_settled");
+    await tick();
+    expect(calls).toBe(0);
+    expect((await state(env)).status).toBe("active");
+    expect((await state(env)).used).toBe(5);
+    expect(env.sent).toHaveLength(2);
+  });
+
   // Regression: a candidate_complete reported in a run that then errored was
   // indistinguishable from a rejected one — `candidate` was set either way and
   // the prompt said nothing about it, so the agent re-ran the whole attempt
@@ -808,7 +846,21 @@ describe("goal candidate verification status", () => {
 describe("goal plan", () => {
   const criteria = ["the objective is met"];
 
-  test("a plan is written before the first run and its step reaches the continuation", async () => {
+  test("an edited checklist does not receive a stale authoritative step during the same run", async () => {
+    const env = setup();
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    const initial = await env.emit("context", { messages: [] });
+    expect(initial.messages[0].content).toContain("Starting point (first unchecked checklist item): do the work");
+    await checkOff(env, ["do the work", "test the work"], [true, false]);
+    const result = await env.emit("context", { messages: [] });
+    const prompt = result.messages[0].content;
+    expect(prompt).not.toContain("Next step (first unchecked item");
+    expect(prompt).not.toContain('"planStep":"do the work"');
+    expect(prompt).toContain("continue through the checklist in this run");
+  });
+
+  test("a plan is written before the first run and its step reaches the first context", async () => {
     const env = setup();
     await run(env.commands.get("goal"), "task", env.ctx);
     await tick();
@@ -822,11 +874,13 @@ describe("goal plan", () => {
     expect(created.planPath).toBe(file);
     expect(created.planCriteria).toEqual(criteria);
     expect(created.planStep).toBe("do the work");
-    // The continuation names the plan and the mined next step explicitly, so the
-    // model is not left to choose between them and the verifier's own nudge.
-    expect(env.sent[0].message.content).toContain(file);
-    expect(env.sent[0].message.content).toContain("Next step (first unchecked item");
-    expect(env.sent[0].message.content).toContain("do the work");
+    // The queued message only starts a turn. The context hook gets the step
+    // after agent_start refreshes it, and does not carry an obsolete snapshot.
+    expect(env.sent[0].message.content).toBe("Continue the active goal.");
+    await env.emit("agent_start");
+    const context = await env.emit("context", { messages: [] });
+    expect(context.messages[0].content).toContain(file);
+    expect(context.messages[0].content).toContain("Starting point (first unchecked checklist item): do the work");
   });
 
   test("checking a box advances the step the next run is given", async () => {
@@ -834,10 +888,17 @@ describe("goal plan", () => {
     await run(env.commands.get("goal"), "task", env.ctx);
     await tick();
     expect((await state(env)).planStep).toBe("do the work");
-    await checkOff(env, ["do the work", "test the work"], [true, false]);
     await env.emit("agent_start");
+    await env.emit("context", { messages: [] });
+    await checkOff(env, ["do the work", "test the work"], [true, false]);
+    await env.emit("agent_end", { messages: [] });
+    await env.emit("agent_settled");
     await tick();
+    expect(env.sent.at(-1)?.message.content).toBe("Continue the active goal.");
+    await env.emit("agent_start");
     expect((await state(env)).planStep).toBe("test the work");
+    const context = await env.emit("context", { messages: [] });
+    expect(context.messages[0].content).toContain("Starting point (first unchecked checklist item): test the work");
   });
 
   test("deleting the plan clears the step instead of nagging a stale one", async () => {
@@ -985,9 +1046,7 @@ describe("goal lifecycle", () => {
 	test("valid completion verdict becomes terminal complete", async () => {
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "tests pass", evidence: "tool output" }) }] }));
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		const state = (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 		expect(state.status).toBe("complete");
 	});
@@ -1000,9 +1059,7 @@ describe("goal lifecycle", () => {
 		const live = await env.emit("context", { messages: [] });
 		expect(live.messages).toHaveLength(1);
 		expect(live.messages[0].content).toContain("task");
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect((await state(env)).status).toBe("complete");
 		// The completed goal is withheld entirely: no "goal complete" line for the
 		// model to narrate on the user's next unrelated request.
@@ -1048,9 +1105,7 @@ describe("goal lifecycle", () => {
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
 		env.catalogue.set("other/judge", { provider: "other", id: "judge" });
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect(env.judgedBy.at(-1)).toBe("other/judge");
 		expect((await state(env)).verifierModel).toBe("other/judge");
 	});
@@ -1058,9 +1113,7 @@ describe("goal lifecycle", () => {
 	test("no configured verifier model keeps the active model", async () => {
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect(env.judgedBy.at(-1)).toBe("test/model");
 		expect((await state(env)).verifierModel).toBe("test/model");
 	});
@@ -1069,9 +1122,7 @@ describe("goal lifecycle", () => {
 		process.env.PI_GOAL_VERIFIER_MODEL = "other/typo";
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect(env.judgedBy.at(-1)).toBe("test/model");
 		expect((await state(env)).verifierModel).toBe("test/model");
 		expect((await state(env)).status).toBe("complete");
@@ -1083,9 +1134,7 @@ describe("goal lifecycle", () => {
 		env.catalogue.set("other/nokey", { provider: "other", id: "nokey" });
 		env.authless.add("other/nokey");
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect(env.judgedBy.at(-1)).toBe("test/model");
 		expect((await state(env)).status).toBe("complete");
 	});
@@ -1095,18 +1144,14 @@ describe("goal lifecycle", () => {
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
 		env.catalogue.set("test/judge", { provider: "test", id: "judge" });
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		expect(env.judgedBy.at(-1)).toBe("test/model");
 	});
 
 	test("malformed verifier output pauses instead of completing", async () => {
 		const env = setup([], async () => ({ content: [{ type: "text", text: "not json" }] }));
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		const state = (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 		expect(state.status).toBe("paused");
 	});
@@ -1114,9 +1159,7 @@ describe("goal lifecycle", () => {
 	test("provider rejection pauses instead of completing", async () => {
 		const env = setup([], async () => { throw new Error("provider unavailable"); });
 		await run(env.commands.get("goal"), "task", env.ctx);
-		await env.emit("agent_start");
-		await env.emit("agent_end");
-		await env.emit("agent_settled");
+		await endWork(env);
 		const state = (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 		expect(state.status).toBe("paused");
 	});
