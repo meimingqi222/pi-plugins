@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readTokenUsage, withDeadline } from "pi-run-core";
+import { withDeadline } from "pi-run-core";
 import type { RedactService } from "./redact.ts";
 
 /**
@@ -240,7 +240,7 @@ export function parsePlannerPlan(raw: string): GoalPlan {
 export async function runPlanner(
   ctx: ExtensionContext, objective: string, controller: AbortController,
   redactor: RedactService | undefined,
-): Promise<{ plan: GoalPlan; usage: number }> {
+) {
   const model = ctx.model;
   if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
     throw new Error("Current model has no configured authentication");
@@ -257,11 +257,5 @@ export async function runPlanner(
     PLANNER_TIMEOUT_MS,
     "Planning",
   );
-  if (result.stopReason !== "stop" || result.content.some((part) => part.type === "toolCall")) {
-    throw new Error(`Planner ended with ${result.stopReason}, not a plan`);
-  }
-  const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-  // The planner is a model call like the verifier; its tokens belong to the
-  // goal's accounting or a budget would not see them.
-  return { plan: parsePlannerPlan(raw), usage: readTokenUsage(result) };
+  return result;
 }

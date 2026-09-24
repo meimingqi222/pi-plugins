@@ -833,6 +833,20 @@ describe("goal candidate verification status", () => {
     expect((await state(env)).used).toBe(42);
   });
 
+  test("an invalid paid planner reply still exhausts the goal budget", async () => {
+    const env = setup([], undefined, async () => ({
+      stopReason: "stop", usage: { totalTokens: 42 },
+      content: [{ type: "text", text: "not json" }],
+    }));
+    await run(env.commands.get("goal"), "task --tokens 10", env.ctx);
+    await tick();
+    const created = await state(env);
+    expect(created.used).toBe(42);
+    expect(created.status).toBe("budget_limited");
+    expect(created.planPath).toBeUndefined();
+    expect(env.sent).toHaveLength(0);
+  });
+
   test("the status bar reflects usage at the end of a run", async () => {
     const env = setup();
     await run(env.commands.get("goal"), "task", env.ctx);
