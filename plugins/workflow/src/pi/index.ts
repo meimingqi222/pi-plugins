@@ -16,9 +16,9 @@
  * - **No `onUpdate` progress.** `onUpdate` is only live while `execute` runs, and
  *   `execute` returns at once, so progress streamed through it could never reach
  *   the model. `/workflows` is the progress surface instead.
- * - **No `renderShell: "self"`.** That flag declares a tool paints its own frame,
- *   which is only meaningful alongside `renderCall`/`renderResult`. With no
- *   renderers, pi's own fallback row is what should show.
+ * - **A custom result-message renderer.** The launch tool uses pi's ordinary
+ *   row; the later completion is a custom message with its own compact and
+ *   expanded TUI presentation.
  *
  * The tool is always registered. "Is this tool available" and "should the model
  * use it now" are different questions, and conflating them makes the capability
@@ -27,7 +27,8 @@
  */
 
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Markdown, Text } from "@earendil-works/pi-tui";
 import { connectGoalSpend, type GoalSpendLease } from "pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
@@ -79,6 +80,8 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     if (options.enabled === false || workflowsDisabled()) return;
     const goalSpend = connectGoalSpend(pi);
     const goalLeases = new Map<string, GoalSpendLease>();
+    let sessionGeneration = 0;
+    const origins = new Map<string, { isCurrent: () => boolean; notify: (message: string) => void }>();
     const executor = options.executor ?? createPiExecutor();
     const cwd = (ctx: ExtensionContext): string => options.cwd ?? ctx.cwd;
 
@@ -98,6 +101,19 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         );
       });
 
+    pi.registerMessageRenderer<RunRecord>("workflow-result", (message, { expanded }, theme) => {
+      const record = message.details;
+      const content = typeof message.content === "string" ? message.content : "Workflow result unavailable";
+      if (!record || !record.runId) return new Text(content, 0, 0);
+      if (expanded) return new Markdown(content, 0, 0, getMarkdownTheme());
+      const color = record.status === "completed" ? "success" : record.status === "running" ? "accent" : "error";
+      return new Text(
+        `${theme.fg(color, `Workflow ${record.status}`)} ${theme.fg("muted", record.runId)} · ${record.name}\n` +
+        theme.fg("dim", "Expand to read the full result"),
+        0, 0,
+      );
+    });
+
     // A footer entry that outlives the notification. Both of its dependencies on
     // the registry are lazy, so it can be declared first and read the registry
     // only once something has happened. Attached lazily too, from a context that
@@ -116,17 +132,27 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
       onSettled(record) {
         goalLeases.get(record.runId)?.finish(record.result?.goalTokens ?? record.progress?.goalTokens ?? 0);
         goalLeases.delete(record.runId);
+        const origin = origins.get(record.runId);
+        origins.delete(record.runId);
+        if (!origin?.isCurrent()) {
+          return;
+        }
         // A run stopped by the user or ended by a failure has no result to
         // render; the notice still matters.
-        if (record.result) {
-          deliver(pi, record);
-        } else {
-          pi.sendMessage({
-            customType: "workflow-result",
-            content: formatRun(record),
-            display: true,
-            details: record,
-          });
+        try {
+          if (record.result) {
+            deliver(pi, record);
+          } else {
+            pi.sendMessage({
+              customType: "workflow-result",
+              content: formatRun(record),
+              display: true,
+              details: record,
+            }, record.status === "failed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+          }
+        } catch (error) {
+          const message = `Workflow ${record.runId} finished, but its result could not be delivered: ${error instanceof Error ? error.message : String(error)}`;
+          try { origin.notify(message); } catch { console.error(message); }
         }
         // The footer follows the registry: the last settlement is what clears
         // the slot and stops the tick.
@@ -148,7 +174,13 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         // background where it cannot.
         const source = await resolveWorkflowSource(workDir, params as Record<string, never>);
         const runId = newWorkflowRunId();
+        const sessionId = ctx.sessionManager.getSessionId();
+        const generation = sessionGeneration;
         const lease = goalSpend()?.begin(ctx, runId);
+        origins.set(runId, {
+          isCurrent: () => generation === sessionGeneration && ctx.sessionManager.getSessionId() === sessionId,
+          notify: (message) => ctx.ui.notify(message, "error"),
+        });
         if (lease) goalLeases.set(runId, lease);
         const agentTimeoutMs = (params as { agentTimeoutMs?: number }).agentTimeoutMs;
 
@@ -169,11 +201,12 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
             onProgress: (progress) => {
               registry.setProgress(runId, progress);
               // A phase change is news; the ticker only refreshes the clock.
-              footer.sync();
+              if (origins.get(runId)?.isCurrent()) footer.sync();
             },
           }),
           );
         } catch (error) {
+          origins.delete(runId);
           goalLeases.delete(runId);
           lease?.finish(0);
           throw error;
@@ -355,11 +388,19 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
       },
     });
 
-    pi.on("session_shutdown", () => {
+    const leaveSession = () => {
+      sessionGeneration += 1;
       registry.stopAll();
+      footer.dispose();
+    };
+    pi.on("session_before_switch", leaveSession);
+    pi.on("session_before_tree", leaveSession);
+    pi.on("session_before_fork", leaveSession);
+    pi.on("session_start", () => { sessionGeneration += 1; });
+    pi.on("session_shutdown", () => {
+      leaveSession();
       // Settlement after a shutdown may never arrive, so the slot is released
       // here rather than waiting for a callback that has nowhere to go.
-      footer.dispose();
     });
   };
 }
