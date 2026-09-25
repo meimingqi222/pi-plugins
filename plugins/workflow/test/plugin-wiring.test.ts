@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { workflowExtension } from "../src/pi/index.ts";
 import type { AgentExecutor } from "../src/runner/agent-runner.ts";
 
@@ -33,9 +34,11 @@ interface Captured {
   tool: { name: string; execute: (...args: any[]) => Promise<any> };
   tools: Map<string, { name: string; execute: (...args: any[]) => Promise<any> }>;
   command: { handler: (args: string, ctx: any) => Promise<void> };
-  delivered: Array<{ customType: string; content: unknown; details?: unknown }>;
+  delivered: Array<{ customType: string; content: unknown; details?: unknown; options?: unknown }>;
   shutdown: Array<() => void>;
+  events: Map<string, Array<(event?: any, ctx?: any) => void>>;
   toolCalls: Array<(event: any) => any>;
+  messageRenderers: Map<string, (...args: any[]) => any>;
 }
 
 function fakePi(): { pi: any; captured: Captured } {
@@ -46,7 +49,9 @@ function fakePi(): { pi: any; captured: Captured } {
     command: undefined as never,
     delivered: [],
     shutdown: [],
+    events: new Map(),
     toolCalls: [],
+    messageRenderers: new Map(),
   };
   const pi = {
     registerTool(tool: any) {
@@ -58,14 +63,18 @@ function fakePi(): { pi: any; captured: Captured } {
       captured.command = command;
     },
     registerShortcut() {},
+    registerMessageRenderer(type: string, renderer: (...args: any[]) => any) {
+      captured.messageRenderers.set(type, renderer);
+    },
     registerFlag() {},
     on(event: string, handler: any) {
+      captured.events.set(event, [...(captured.events.get(event) ?? []), handler]);
       if (event === "session_shutdown") captured.shutdown.push(handler);
       if (event === "tool_call") captured.toolCalls.push(handler);
       return () => {};
     },
-    sendMessage(message: any) {
-      captured.delivered.push({ customType: message.customType, content: message.content, details: message.details });
+    sendMessage(message: any, options?: unknown) {
+      captured.delivered.push({ customType: message.customType, content: message.content, details: message.details, options });
     },
     events: {
       on(name: string, handler: (value: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
@@ -111,6 +120,57 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
 const SCRIPT = "return await agent('hi', {});";
 
 describe("workflow tool launches a background run", () => {
+  test("a run cannot deliver into a later session", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let sessionId = "first";
+    const ctx = fakeCtx(cwd);
+    ctx.sessionManager.getSessionId = () => sessionId;
+    workflowExtension({ cwd, executor: async () => { await gate; return { status: "completed", text: "old answer", usage: { input: 1, output: 1 } }; } })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    sessionId = "second";
+    release();
+    await waitForStatus(captured, cwd, "Settled runs:");
+    expect(captured.delivered).toHaveLength(0);
+  });
+
+  test("leaving a session stops its workflow even when the session id stays the same", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    workflowExtension({ cwd, executor: async () => { await gate; return { status: "completed", text: "old answer", usage: { input: 1, output: 1 } }; } })(pi);
+    const ctx = fakeCtx(cwd);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    for (const handler of captured.events.get("session_before_tree") ?? []) handler({}, ctx);
+    release();
+    await waitForStatus(captured, cwd, "Settled runs:");
+    expect(captured.delivered).toHaveLength(0);
+  });
+
+  test("a failed background run wakes the caller with its failure", async () => {
+    const cwd = await tempCwd();
+    await mkdir(join(cwd, ".pi", "workflows"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "workflows", "runs"), "blocked");
+    const { pi, captured } = fakePi();
+    workflowExtension({ cwd, executor: fakeExecutor })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd));
+    await waitFor(() => captured.delivered.length === 1);
+    expect(captured.delivered[0]?.content).toContain("failed");
+    expect(captured.delivered[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+  });
+
+  test("delivery failure is visible instead of silently swallowed", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const notices: string[] = [];
+    workflowExtension({ cwd, executor: fakeExecutor, deliver: () => { throw new Error("delivery broke"); } })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd, notices));
+    await waitFor(() => notices.some((notice) => notice.includes("delivery broke")));
+    expect(captured.delivered).toHaveLength(0);
+  });
   test("reports cache-inclusive live spend to the goal when it settles", async () => {
     const cwd = await tempCwd();
     const { pi, captured } = fakePi();
@@ -164,6 +224,32 @@ describe("workflow tool launches a background run", () => {
     const record = captured.delivered[0].details as { result: { status: string } };
     expect(record.result.status).toBe("failed");
     expect(String(captured.delivered[0].content)).toContain("JSON");
+  });
+
+  test("a multiline workflow answer is delivered as readable text with an expandable TUI renderer", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    workflowExtension({
+      cwd,
+      executor: async () => ({ status: "completed", text: "## Assessment\n\n- first\n- second", usage: { input: 1, output: 1 } }),
+    })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd));
+    await waitFor(() => captured.delivered.length === 1);
+    const body = String(captured.delivered[0].content);
+    expect(body).toContain("## Assessment\n\n- first\n- second");
+    expect(body).not.toContain("\\n");
+    expect(body).not.toContain('"value":');
+    const render = captured.messageRenderers.get("workflow-result");
+    expect(render).toBeDefined();
+    const theme = { fg: (_color: string, text: string) => text };
+    const message = { ...captured.delivered[0], content: body };
+    const collapsed = render!(message, { expanded: false, outputPad: 0 }, theme).render(120).join("\n");
+    expect(collapsed).toContain("Workflow completed");
+    expect(collapsed).not.toContain("## Assessment");
+    initTheme("dark", false);
+    const expanded = render!(message, { expanded: true, outputPad: 0 }, theme).render(120).join("\n");
+    expect(expanded).toContain("Assessment");
+    expect(expanded).toContain("first");
   });
 
   test("the handle's runId is the run's own id", async () => {

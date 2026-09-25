@@ -154,20 +154,18 @@ export async function executeWorkflow(
   return result;
 }
 
-/** Render a completed run for the model, bounded so a result cannot flood context. */
+/** Render a settled run's answer as text, preserving the child's own newlines. */
 export function renderWorkflowResult(result: WorkflowRunResult): string {
-  const summary = {
-    runId: result.runId,
-    status: result.status,
-    value: result.value,
-    phases: result.phases.map((phase) => phase.title),
-    agentCalls: result.agentCalls,
-    cacheHits: result.cacheHits,
-    spentTokens: result.spentTokens,
-    ...(result.stopReason ? { stopReason: result.stopReason } : {}),
-    ...(result.scriptPath ? { scriptPath: result.scriptPath } : {}),
-  };
-  return JSON.stringify(summary, null, 2);
+  const value = typeof result.value === "string"
+    ? result.value
+    : result.value === undefined || result.value === null
+      ? "(no result value)"
+      : JSON.stringify(result.value, null, 2);
+  return [
+    ...(result.stopReason ? [`Reason: ${result.stopReason}`, ""] : []),
+    "Result:",
+    value,
+  ].join("\n");
 }
 
 export type { ExtensionContext };

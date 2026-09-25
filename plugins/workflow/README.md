@@ -21,6 +21,11 @@ reviewing 200 files, migrating a few hundred call sites, running a panel of
 reviewers over a diff. For a single lookup or a one-file edit it is strictly
 worse than a direct tool call, and the tool's own guidelines say so.
 
+Runs belong to the session and history branch that launched them. Leaving that
+session or branch stops its live runs; late results are not posted into the new
+conversation. A harness failure wakes the originating conversation with its
+error so the agent can respond instead of waiting for a result that cannot arrive.
+
 ## The surface
 
 - **`workflow` tool** — takes exactly one of `script` (inline JavaScript),
@@ -72,6 +77,11 @@ the settled result is delivered back into the conversation as a
 a tool that blocked the turn would hold the conversation hostage for the whole
 run. `/workflows` is the user's progress surface, and the footer entry is what
 makes a run visible without asking.
+
+The result message contains a short run summary followed by the answer with
+its original line breaks. In the TUI it is compact by default and expands to
+render the full answer as Markdown. The run record remains in message details
+for programmatic inspection; structured answers are pretty-printed as JSON.
 
 Because nothing forces the turn to end, a model with nothing else to do will
 often hedge by polling: `bash: sleep 30`, again and again. Two things close that
