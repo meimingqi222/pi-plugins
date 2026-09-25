@@ -104,8 +104,11 @@ at most the newest 200 files are kept.
 - **No stdin.** Like the built-in tool, commands get no interactive input. Use
   tmux for something that genuinely needs a TTY.
 - **No wake-up for explicit `background: true` if the session ends first.** Jobs
-  are killed on `session_shutdown`; only the foreground process tree is
-  inherited by nothing.
+  are killed on `session_shutdown` and on every leave of the launching
+  conversation (`session_before_switch`, `session_before_tree`,
+  `session_before_fork`). A completion that arrives after that leave is
+  dropped instead of injected into the next branch; the log file remains for
+  diagnosis.
 - **Log retention is coarse.** The sweep runs on `session_start`, so a
   long-lived process only prunes when a session begins; between sweeps the
   directory grows with every command.

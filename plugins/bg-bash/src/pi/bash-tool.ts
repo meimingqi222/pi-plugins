@@ -78,12 +78,15 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				);
 			}
 
-			const job = runtime.registry.create({
+				const job = runtime.registry.create({
 				command: params.command,
 				cwd: ctx.cwd,
-				mode: explicitBackground ? "background" : "foreground",
-			});
-			const sessionId = sessionIdOf(ctx);
+					mode: explicitBackground ? "background" : "foreground",
+				});
+				// Capture before the first await. A session can change while a
+				// foreground command waits for the auto-background threshold.
+				const isCurrent = runtime.captureOrigin(ctx);
+				const sessionId = sessionIdOf(ctx);
 			job.logPath = allocateLogPath(job.id, sessionId);
 
 			let streaming = true;
@@ -138,9 +141,12 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 
 			if (winner === BACKGROUND) {
 				runtime.registry.promote(job.id);
-				void running.result.then((outcome) => {
-					runtime.registry.finish(job.id, outcome);
-					runtime.deliver(job, outcome, ctx);
+					void running.result.then((outcome) => {
+						// A new session resets ids to bg001. An old completion must
+						// not settle the new job that inherited the same id.
+						if (runtime.registry.get(job.id) !== job) return;
+						runtime.registry.finish(job.id, outcome);
+					runtime.deliver(job, outcome, ctx, isCurrent);
 				});
 				return { content: [{ type: "text", text: formatBackgroundNotice(job) }], details: detailsFor(job) };
 			}

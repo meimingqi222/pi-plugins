@@ -146,8 +146,95 @@ describe("workflow tool launches a background run", () => {
     await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
     for (const handler of captured.events.get("session_before_tree") ?? []) handler({}, ctx);
     release();
-    await waitForStatus(captured, cwd, "Settled runs:");
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(captured.delivered).toHaveLength(0);
+    expect(await statusText(captured, cwd)).toContain("No workflow runs in this session");
+  });
+
+  test("leaving a session releases the goal lease and origin handles even when the run never settles", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reported: number[] = [];
+    workflowExtension({
+      cwd,
+      // Ignores abort: settlement only happens after the leave, the case in
+      // which stopAll alone would leave the lease and origin maps populated.
+      executor: async () => {
+        await gate;
+        return { status: "completed", text: "late answer", usage: { input: 4, output: 4 } };
+      },
+    })(pi);
+    pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: (tokens: number) => reported.push(tokens) }) });
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd));
+
+    for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, fakeCtx(cwd));
+    // The lease is closed at zero instead of waiting for a settle that abort
+    // cannot force.
+    expect(reported).toEqual([0]);
+
+    // The work may settle later or abort before the executor starts. Either
+    // way, the old session must not deliver or report spend a second time.
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(captured.delivered).toHaveLength(0);
+    expect(reported).toEqual([0]);
+  });
+
+  test("leaving a session bills the workflow usage already reported in progress", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reported: number[] = [];
+    let calls = 0;
+    let secondReturned = false;
+    workflowExtension({
+      cwd,
+      executor: async () => {
+        calls += 1;
+        if (calls === 2) await gate;
+        if (calls === 2) secondReturned = true;
+        return { status: "completed", text: "done", usage: { input: 4, output: 5 } };
+      },
+    })(pi);
+    pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: (tokens: number) => reported.push(tokens) }) });
+    const script = "await agent('first', {}); return await agent('second', {});";
+    const ctx = fakeCtx(cwd);
+    await captured.tool.execute("call", { script }, undefined, undefined, ctx);
+    await waitFor(() => calls === 2);
+    for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, ctx);
+    expect(reported).toEqual([9]);
+    release();
+    await waitFor(() => secondReturned);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reported).toEqual([9]);
+  });
+
+  test("leaving a session releases the active run slot even if abort is ignored", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const previousLimit = process.env.PI_WORKFLOW_MAX_ACTIVE_RUNS;
+    process.env.PI_WORKFLOW_MAX_ACTIVE_RUNS = "1";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      workflowExtension({ cwd, executor: async () => {
+        await gate;
+        return { status: "completed", text: "done", usage: { input: 1, output: 1 } };
+      } })(pi);
+      const ctx = fakeCtx(cwd);
+      await captured.tool.execute("first", { script: SCRIPT }, undefined, undefined, ctx);
+      for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, ctx);
+      await expect(captured.tool.execute("second", { script: SCRIPT }, undefined, undefined, ctx)).resolves.toBeDefined();
+      release();
+      await waitForStatus(captured, cwd, "Settled runs:");
+    } finally {
+      release();
+      if (previousLimit === undefined) delete process.env.PI_WORKFLOW_MAX_ACTIVE_RUNS;
+      else process.env.PI_WORKFLOW_MAX_ACTIVE_RUNS = previousLimit;
+    }
   });
 
   test("a failed background run wakes the caller with its failure", async () => {

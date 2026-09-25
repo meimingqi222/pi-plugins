@@ -25,6 +25,13 @@ Users can begin the next goal naturally. The prior terminal snapshot remains in 
 - `plugins/goal/test/lifecycle.test.ts`
 - `plugins/goal/test/lifecycle.test.ts::a completed goal can be followed by a new goal without replace`
 - `plugins/goal/test/lifecycle.test.ts::a budget limited goal can be followed by a new goal without replace`
+- `plugins/goal/test/lifecycle.test.ts::an invalid paid planner reply can be followed by a new goal without replace`
 - `plugins/goal/test/lifecycle.test.ts::an active or paused goal still requires an explicit replace`
 
 Proved: before the guard change, the first two tests failed because the prior terminal goal remained current. Both pass after the change; the third pins overwrite protection.
+
+Follow-up (2026-09-25): the new test combines an invalid-shaped paid planner
+reply that exhausts the first goal's budget and leaves `planPath` unset with a
+plain second `/goal <objective>`. Proved: temporarily restoring the old
+`if (goal && verb !== "replace")` guard made the new test fail at the new-ID
+assertion; restoring `!isRetired(goal)` made it pass.

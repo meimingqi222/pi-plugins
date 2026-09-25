@@ -5,6 +5,10 @@
  * mid-request, injecting a `triggerTurn` races with the in-flight provider call,
  * so completions that arrive while the agent is busy are queued and flushed on
  * `agent_end`, which is the event-driven idle boundary.
+ *
+ * A background job is a real OS process owned by the conversation that launched
+ * it. Leaving the session or switching history branch kills it and drops any
+ * late completion, the same way a workflow run is stopped outside its origin.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -35,19 +39,52 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	const registry = new JobRegistry({ runningLimit: BACKGROUND_JOB_LIMIT });
 	const pendingFollowUps: Array<() => void> = [];
 	let shuttingDown = false;
+	let sessionGeneration = 0;
 
-	const sendFollowUp = (job: Job, ctx: ExtensionContext | undefined): void => {
-		if (shuttingDown) return;
+	const captureOrigin = (ctx: ExtensionContext): (() => boolean) => {
+		const generation = sessionGeneration;
+		// The tool context can be torn down while the detached command is still
+		// starting, so neither read may assume a live session manager. A failed
+		// capture is permanently stale: suppressing a completion is safer than
+		// injecting one into an unknown session.
+		let sessionId: string;
+		try {
+			sessionId = ctx.sessionManager.getSessionId();
+		} catch {
+			return () => false;
+		}
+		return () => {
+			if (generation !== sessionGeneration) return false;
+			try {
+				return ctx.sessionManager.getSessionId() === sessionId;
+			} catch {
+				return false;
+			}
+		};
+	};
+
+	const sendFollowUp = (job: Job, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void => {
+		if (shuttingDown || !isCurrent()) return;
 		const content = formatCompletionMessage(job);
 		const details: BgBashDetails = detailsFor(job);
 		const deliver = (): void => {
-			if (shuttingDown) return;
+			if (shuttingDown || !isCurrent()) return;
 			pi.sendMessage(
 				{ customType: BG_BASH_CUSTOM_TYPE, content, display: true, details },
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
 		};
-		if (ctx && !ctx.isIdle()) {
+		let shouldQueue = false;
+		if (ctx) {
+			try {
+				shouldQueue = !ctx.isIdle();
+			} catch {
+				// A torn-down context cannot host a follow-up; drop rather than
+				// let the exception escape into the completion callback.
+				return;
+			}
+		}
+		if (shouldQueue) {
 			pendingFollowUps.push(deliver);
 			return;
 		}
@@ -59,13 +96,30 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		registry,
 		autoBackgroundSeconds: (cwd) => resolveAutoBackgroundSeconds(loadThresholdSources(cwd)),
 		backgroundLimit: () => BACKGROUND_JOB_LIMIT,
-		deliver: (job, _outcome: RunOutcome, ctx) => sendFollowUp(job, ctx),
+		captureOrigin,
+		deliver: (job, _outcome: RunOutcome, ctx, isCurrent) => sendFollowUp(job, ctx, isCurrent),
 	};
+
+	/**
+	 * Leaving the conversation kills its background processes and drops any
+	 * queued or late completion. Jobs are not inherited by the next branch:
+	 * they are owned by the context that launched them.
+	 */
+	const leaveSession = () => {
+		sessionGeneration += 1;
+		pendingFollowUps.length = 0;
+		registry.killAll();
+	};
+
+	pi.on("session_before_switch", leaveSession);
+	pi.on("session_before_tree", leaveSession);
+	pi.on("session_before_fork", leaveSession);
 
 	pi.on("session_start", () => {
 		shuttingDown = false;
 		// A new session must not inherit the previous one's job list or id
 		// counter; shutdown already killed anything still running.
+		leaveSession();
 		registry.reset();
 		// Bound the log directory: files past the retention window are deleted,
 		// then the newest MAX_LOG_FILES are kept.
@@ -74,8 +128,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
-		pendingFollowUps.length = 0;
-		registry.killAll();
+		leaveSession();
 	});
 
 	pi.on("agent_end", () => {

@@ -215,6 +215,13 @@ export class RunRegistry {
     }
   }
 
+  /** Leave the current conversation without letting abort-ignoring work hold its run slots. */
+  reset(): void {
+    this.stopAll();
+    this.active.clear();
+    this.settled.length = 0;
+  }
+
   private settle(record: RunRecord): void {
     if (!this.active.delete(record.runId)) return;
     record.finishedAt = this.now();
