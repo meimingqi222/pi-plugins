@@ -7,6 +7,7 @@ import {
   parsePlan,
   parsePlannerPlan,
   planProgress,
+  planPathFor,
   readPlan,
   renderPlan,
 } from "../src/plan.ts";
@@ -25,6 +26,10 @@ const plan = {
 };
 
 describe("plan file", () => {
+  test("separate goals in one session keep separate plan files", () => {
+    const ctx = { sessionManager: { getSessionDir: () => "/tmp/pi-session" } } as any;
+    expect(planPathFor(ctx, "goal-a")).not.toBe(planPathFor(ctx, "goal-b"));
+  });
   test("render round-trips through parse with checkbox state intact", () => {
     const parsed = parsePlan(renderPlan("ship the CLI", plan));
     expect(parsed).toEqual(plan);

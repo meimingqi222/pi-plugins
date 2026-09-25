@@ -50,18 +50,28 @@ test("redaction bridge supports either extension load order", () => {
 });
 
 
-test("bounded transcript keeps whole entries and elides the oldest", () => {
+test("bounded transcript keeps whole entries from both ends", () => {
   const entries = Array.from({ length: 20 }, (_, i) => ({ type: "message", body: `entry-${i}-${"x".repeat(200)}` }));
   const { text, truncated } = boundedTranscript(entries, 1_000);
   expect(truncated).toBe(true);
-  // Newest evidence survives; the oldest is what gets elided.
+  // Early and recent evidence survives; the middle is elided.
   expect(text).toContain("entry-19");
-  expect(text).not.toContain("entry-0");
+  expect(text).toContain("entry-0");
+  expect(text).not.toContain("entry-10");
   // Every kept line is a complete JSON document — the cut never lands inside one.
   for (const line of text.split("\n")) expect(() => JSON.parse(line)).not.toThrow();
   // Chronological order, not the reverse-walk order.
   const order = text.split("\n").map((line) => /entry-(\d+)/.exec(line)![1]).map(Number);
   expect(order).toEqual([...order].sort((a, b) => a - b));
+});
+
+test("bounded transcript preserves early and recent evidence in a long goal", () => {
+  const entries = Array.from({ length: 20 }, (_, i) => ({ type: "message", body: `evidence-${i}-${"x".repeat(180)}` }));
+  const result = boundedTranscript(entries, 1_000);
+  expect(result.truncated).toBe(true);
+  expect(result.text).toContain("evidence-0-");
+  expect(result.text).toContain("evidence-19-");
+  for (const line of result.text.split("\n")) expect(() => JSON.parse(line)).not.toThrow();
 });
 
 test("bounded transcript reports no truncation when everything fits", () => {
@@ -108,6 +118,7 @@ test("verifier payload keeps whole entries under a tight context window", async 
   await verifyGoal(ctx, goal, new AbortController(), undefined, undefined, ctx.model);
   const transcript = JSON.parse(captured.messages[0].content[0].text).transcript;
   expect(transcript).toContain("entry-29");
-  expect(transcript).not.toContain("entry-0");
+  expect(transcript).toContain("entry-0");
+  expect(transcript).not.toContain("entry-15");
   for (const line of transcript.split("\n")) expect(() => JSON.parse(line)).not.toThrow();
 });

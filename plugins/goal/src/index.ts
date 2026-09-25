@@ -228,7 +228,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       }
       const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
       const plan = parsePlannerPlan(raw);
-      const path = planPathFor(ctx);
+      const path = planPathFor(ctx, goalId);
       // `writeFile` follows a symlink. The plan is the gating contract and its
       // path is predictable, so a symlink planted there would redirect the
       // contract outside the session while the plugin believed it wrote the plan.
@@ -631,7 +631,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
         schedule(ctx);
         return;
       }
-      if (goal && verb !== "replace") {
+      if (goal && !isRetired(goal) && verb !== "replace") {
         ctx.ui.notify("A goal already exists; use /goal replace <objective> or /goal clear.", "warning");
         return;
       }

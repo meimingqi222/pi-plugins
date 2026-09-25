@@ -10,9 +10,7 @@ import { parseObjective, restoreGoal } from "../src/state.ts";
 import { parseVerdict } from "../src/verifier.ts";
 import { withDeadline } from "pi-run-core";
 import { GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendService } from "pi-run-core";
-import { PLAN_FILE_NAME, renderPlan } from "../src/plan.ts";
-
-const planFileIn = (sessionDir: string): string => join(sessionDir, PLAN_FILE_NAME);
+import { planPathFor, renderPlan } from "../src/plan.ts";
 
 /**
  * Whether this process may create a symlink at all.
@@ -47,7 +45,7 @@ async function checkOff(
   env: ReturnType<typeof setup>, labels: string[], done: boolean[],
   criteria: string[] = ["the objective is met"],
 ): Promise<void> {
-  await writeFile(planFileIn(env.sessionDir), renderPlan("task", {
+  await writeFile((await state(env)).planPath, renderPlan("task", {
     criteria,
     checklist: labels.map((label, index) => ({ label, done: done[index] ?? false })),
   }), { encoding: "utf-8", mode: 0o600 });
@@ -878,7 +876,7 @@ describe("goal plan", () => {
     const env = setup();
     await run(env.commands.get("goal"), "task", env.ctx);
     await tick();
-    const file = planFileIn(env.sessionDir);
+    const file = (await state(env)).planPath;
     expect(existsSync(file)).toBe(true);
     const body = await readFile(file, "utf8");
     expect(body).toContain("## Acceptance criteria");
@@ -895,6 +893,22 @@ describe("goal plan", () => {
     const context = await env.emit("context", { messages: [] });
     expect(context.messages[0].content).toContain(file);
     expect(context.messages[0].content).toContain("Starting point (first unchecked checklist item): do the work");
+  });
+
+  test("an old goal branch retains its plan after a later goal is created", async () => {
+    const entries: any[] = [];
+    const env = setup(entries);
+    await run(env.commands.get("goal"), "first objective", env.ctx);
+    const first = await state(env);
+    const oldBranch = [...entries];
+    await run(env.commands.get("goal"), "replace second objective", env.ctx);
+    const second = await state(env);
+    expect(second.planPath).not.toBe(first.planPath);
+    expect(await readFile(first.planPath, "utf8")).toContain("first objective");
+    entries.splice(0, entries.length, ...oldBranch);
+    await env.emit("session_tree");
+    expect((await state(env)).planPath).toBe(first.planPath);
+    expect(await readFile(first.planPath, "utf8")).toContain("first objective");
   });
 
   test("checking a box advances the step the next run is given", async () => {
@@ -919,7 +933,7 @@ describe("goal plan", () => {
     const env = setup();
     await run(env.commands.get("goal"), "task", env.ctx);
     await tick();
-    await Bun.write(planFileIn(env.sessionDir), "## Unrelated\n\nno plan here\n");
+    await Bun.write((await state(env)).planPath, "## Unrelated\n\nno plan here\n");
     await env.emit("agent_start");
     await tick();
     expect((await state(env)).planStep).toBeUndefined();
@@ -957,7 +971,7 @@ describe("goal plan", () => {
     );
     await run(env.commands.get("goal"), "task", env.ctx);
     // The implementer rewrites its own acceptance criteria to something easier.
-    await writeFile(planFileIn(env.sessionDir), renderPlan("task", {
+    await writeFile((await state(env)).planPath, renderPlan("task", {
       criteria: ["weakened"],
       checklist: [{ label: "step one", done: false }],
     }), { encoding: "utf-8", mode: 0o600 });
@@ -977,7 +991,7 @@ describe("goal plan", () => {
     expect(created.planStep).toBeUndefined();
     // Continuation still happens; only the plan is missing.
     expect(env.sent).toHaveLength(1);
-    expect(existsSync(planFileIn(env.sessionDir))).toBe(false);
+    expect(created.planPath).toBeUndefined();
   });
 
   test("PI_GOAL_PLAN=false skips planning entirely", async () => {
@@ -1063,6 +1077,47 @@ describe("goal lifecycle", () => {
 		await endWork(env);
 		const state = (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 		expect(state.status).toBe("complete");
+	});
+
+	test("a completed goal can be followed by a new goal without replace", async () => {
+		const env = setup([], async () => verdict(true, 3));
+		await run(env.commands.get("goal"), "first objective --tokens 20", env.ctx);
+		await endWork(env, [verdict(true, 5)]);
+		const finished = await state(env);
+		expect(finished.status).toBe("complete");
+		await run(env.commands.get("goal"), "second objective", env.ctx);
+		const next = await state(env);
+		expect(next.status).toBe("active");
+		expect(next.objective).toBe("second objective");
+		expect(next.id).not.toBe(finished.id);
+		expect(next.used).toBe(0);
+		expect(next.budget).toBeUndefined();
+		expect(next.workRuns).toBe(0);
+		expect(next.verdict).toBeUndefined();
+		expect(env.notices.some((notice) => notice.includes("A goal already exists"))).toBe(false);
+	});
+
+	test("a budget limited goal can be followed by a new goal without replace", async () => {
+		const env = setup();
+		await run(env.commands.get("goal"), "first objective --tokens 1", env.ctx);
+		await env.emit("agent_start");
+		await env.emit("message_end", { message: verdict(false, 2) });
+		expect((await state(env)).status).toBe("budget_limited");
+		await run(env.commands.get("goal"), "second objective", env.ctx);
+		expect((await state(env)).objective).toBe("second objective");
+		expect((await state(env)).status).toBe("active");
+	});
+
+	test("an active or paused goal still requires an explicit replace", async () => {
+		const env = setup();
+		await run(env.commands.get("goal"), "first objective", env.ctx);
+		const first = await state(env);
+		await run(env.commands.get("goal"), "second objective", env.ctx);
+		expect((await state(env)).id).toBe(first.id);
+		await run(env.commands.get("goal"), "pause", env.ctx);
+		await run(env.commands.get("goal"), "second objective", env.ctx);
+		expect((await state(env)).id).toBe(first.id);
+		expect(env.notices.filter((notice) => notice.includes("A goal already exists"))).toHaveLength(2);
 	});
 
 	test("a completed goal stops being injected and leaves the status bar", async () => {
@@ -1234,12 +1289,19 @@ describe("goal await windows", () => {
   });
 
   test.skipIf(!canCreateSymlinks)("a plan path squatted by a symlink is refused, not written through", async () => {
-    const env = setup();
+    let release!: () => void;
+    let planning!: () => void;
+    const started = new Promise<void>((resolve) => { planning = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const env = setup([], undefined, async () => { planning(); await gate; return plannerReply(); });
     const target = join(env.sessionDir, "outside.md");
     await writeFile(target, "untouched", { encoding: "utf-8" });
-    await symlink(target, planFileIn(env.sessionDir));
-
-    await run(env.commands.get("goal"), "task", env.ctx);
+    const creation = run(env.commands.get("goal"), "task", env.ctx);
+    await started;
+    const id = (await state(env)).id;
+    await symlink(target, planPathFor(env.ctx, id));
+    release();
+    await creation;
     await tick();
     // `writeFile` follows the link, so without the lstat check the gating
     // contract would have been written outside the session directory.

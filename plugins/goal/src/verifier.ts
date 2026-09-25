@@ -26,39 +26,47 @@ export interface VerifierPlanInput {
 }
 
 /**
- * Serializes whole session entries from the newest end until `limit` bytes.
+ * Serializes whole entries from the beginning and end of the branch.
  *
  * The previous implementation stringified the entire branch and sliced the
  * tail, which had two costs: the cut could land inside a serialized entry and
  * hand the verifier a half-written JSON object, and keeping only the tail
  * systematically dropped the earliest evidence — what was actually built — in
  * favour of the most recent narration. Walking backwards and keeping whole
- * entries bounds the payload without corrupting it; the oldest entries are the
- * ones elided, which is the right trade for a completion audit.
+ * entries bounds the payload without corrupting it. A long goal also needs
+ * early implementation evidence, so reserve a quarter of the window for it.
  */
 export function boundedTranscript(
   entries: readonly unknown[],
   limit: number,
 ): { text: string; truncated: boolean } {
-  const kept: string[] = [];
+  const tail: string[] = [];
   let used = 0;
-  let truncated = false;
+  let tailStart = entries.length;
+  const tailBudget = Math.floor(limit * 0.75);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const serialized = JSON.stringify(entries[index]) ?? "";
-    if (used + serialized.length + 1 > limit) {
-      truncated = true;
-      break;
-    }
-    kept.push(serialized);
-    used += serialized.length + 1;
+    const line = JSON.stringify(entries[index]) ?? "";
+    const size = line.length + (tail.length ? 1 : 0);
+    if (used + size > (tail.length === 0 ? limit : tailBudget)) break;
+    tail.unshift(line);
+    used += size;
+    tailStart = index;
   }
   // Degenerate case: the newest entry alone exceeds the budget. An empty
   // transcript would leave the verifier nothing to judge, so it is clipped
   // rather than dropped — the one place a partial entry is still sent.
-  if (kept.length === 0 && entries.length > 0) {
+  if (tail.length === 0 && entries.length > 0) {
     return { text: (JSON.stringify(entries[entries.length - 1]) ?? "").slice(-limit), truncated: true };
   }
-  return { text: kept.reverse().join("\n"), truncated };
+  const head: string[] = [];
+  for (let index = 0; index < tailStart; index += 1) {
+    const line = JSON.stringify(entries[index]) ?? "";
+    const size = line.length + 1;
+    if (used + size > limit) break;
+    head.push(line);
+    used += size;
+  }
+  return { text: [...head, ...tail].join("\n"), truncated: head.length + tail.length < entries.length };
 }
 export interface Verdict {
   passed: boolean;
