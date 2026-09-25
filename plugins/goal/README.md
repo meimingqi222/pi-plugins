@@ -10,6 +10,9 @@ pi install -l ./plugins/goal
 `pi-goal` keeps one user-controlled objective with the session. Start it with
 `/goal <objective> [--tokens N]`; inspect it with `/goal status`; use
 `/goal pause`, `/goal resume`, `/goal clear`, or `/goal replace <objective>`.
+After a goal completes or reaches its token budget, `/goal <objective>` starts
+a fresh goal directly. An active or resumable goal still requires `replace` or
+`clear` before starting a different objective.
 
 The agent can call `get_goal` and `update_goal` to report material progress, a
 candidate completion, or a blocker. It cannot resume a paused goal or declare
@@ -42,7 +45,7 @@ model, bounded by the same 45-second deadline as verification, and a failure
 costs only the plan — the goal still runs, it just falls back to the verifier's
 own next action. Set `PI_GOAL_PLAN=false` to skip it entirely.
 
-The plan lives at `<session dir>/goal-plan.md` and holds exactly two sections:
+Each goal's plan lives at `<session dir>/goal-plan-<goal id>.md` and holds exactly two sections:
 
 ```markdown
 ## Acceptance criteria
@@ -135,9 +138,9 @@ aborted by a blocker report. Setting or resuming starts work immediately;
 setting/replacing is rejected while the normal agent is busy.
 
 The verifier reviews a bounded transcript (including tool results and session
-summaries), not the filesystem or external services directly. The transcript is
-bounded by whole entries taken from the newest end — the oldest are elided
-rather than cutting a serialized entry in half — capped between 2,000 and 64,000
+summaries), not the filesystem or external services directly. The transcript keeps
+whole entries from the start and end of a long goal, eliding the middle when
+necessary, and is capped between 2,000 and 64,000
 characters by the model's context window. A valid verdict is a model judgment,
 not a guarantee of correctness. Each verification incurs an additional model
 request and has a 45-second deadline. Cancellation releases the plugin

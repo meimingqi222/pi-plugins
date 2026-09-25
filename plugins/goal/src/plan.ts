@@ -15,7 +15,6 @@ import type { RedactService } from "./redact.ts";
  * are not produced here.
  */
 
-export const PLAN_FILE_NAME = "goal-plan.md";
 /**
  * Deadline for the one planner call, matching the verifier's.
  *
@@ -60,8 +59,11 @@ const PLANNER_SYSTEM_PROMPT = [
 ].join("\n");
 
 /** Session-scoped so the plan never lands in the user's workspace. */
-export function planPathFor(ctx: ExtensionContext): string {
-  return join(ctx.sessionManager.getSessionDir(), PLAN_FILE_NAME);
+export function planPathFor(ctx: ExtensionContext, goalId: string): string {
+  // A session can contain several goals, and an old branch can be resumed after
+  // a later goal was created. Keep each goal's mutable checklist independent.
+  if (!/^[a-zA-Z0-9-]+$/.test(goalId)) throw new Error("Invalid goal id for plan path");
+  return join(ctx.sessionManager.getSessionDir(), `goal-plan-${goalId}.md`);
 }
 
 /** The plugin renders the file, so its shape is stable regardless of who edits it. */
