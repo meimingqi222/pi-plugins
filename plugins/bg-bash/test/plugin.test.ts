@@ -61,11 +61,16 @@ function setup(): Harness {
 			messages.push({ message, options });
 		},
 	};
+	let sessionId = "test-session";
 	const ctx: any = {
 		cwd: process.cwd(),
 		isIdle: () => true,
 		hasUI: false,
-		sessionManager: { getSessionId: () => "test-session", getSessionFile: () => undefined },
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getSessionFile: () => undefined,
+			setSessionId(next: string) { sessionId = next; },
+		},
 		model: undefined,
 		thinkingLevel: undefined,
 	};
@@ -242,6 +247,126 @@ describe("session lifecycle", () => {
 		const result = await bash(harness).execute("t10", { command: "echo second-session", background: true }, undefined, undefined, harness.ctx);
 		expect(textOf(result)).toContain("bg001");
 	});
+
+	test("a background job cannot deliver into a later session", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute(
+			"t20",
+			{ command: "sleep 0.2; echo stale-delivery", background: true },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		harness.ctx.sessionManager.setSessionId("later-session");
+		// The process finishes on its own; the completion must not arrive.
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("an old job cannot settle a reused id after session_start", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("old", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		await harness.emit("session_start");
+		harness.ctx.sessionManager.setSessionId("new-session");
+		await bash(harness).execute("new", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const list = textOf(await tasks(harness).execute("list", { action: "list" }, undefined, undefined, harness.ctx));
+		expect(list).toContain("bg001");
+		expect(list).toContain("running");
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("auto-backgrounding keeps the session where the command started", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "0.1";
+		const harness = setup();
+		const result = bash(harness).execute(
+			"auto-origin", { command: "sleep 0.3; echo old-session" },
+			undefined, undefined, harness.ctx,
+		);
+		harness.ctx.sessionManager.setSessionId("later-session");
+		expect(textOf(await result)).toContain("running in the background");
+		await new Promise((resolve) => setTimeout(resolve, 350));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("leaving a session kills its background jobs and drops the completion", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute(
+			"t21",
+			{ command: "sleep 5; echo leftover", background: true },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		await harness.emit("session_before_tree");
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		expect(harness.messages).toHaveLength(0);
+		const list = textOf(await tasks(harness).execute("l4", { action: "list" }, undefined, undefined, harness.ctx));
+		expect(list).not.toContain("running");
+	}, 15000);
+
+	test("a follow-up queued for a busy agent is dropped when the session leaves", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await bash(harness).execute(
+			"t22",
+			{ command: "sleep 0.2; echo queued-then-dropped", background: true },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(harness.messages).toHaveLength(0);
+		await harness.emit("session_before_switch");
+		await harness.emit("agent_end");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("a completion from a torn-down session manager is dropped, not thrown", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute(
+			"t23",
+			{ command: "sleep 0.2; echo after-teardown", background: true },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		// The launching context is torn down before the process settles.
+		harness.ctx.sessionManager.getSessionId = () => { throw new Error("session manager unavailable"); };
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("a completion is dropped, not thrown, when isIdle is also torn down", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		const escaped: unknown[] = [];
+		const onUnhandled = (reason: unknown) => { escaped.push(reason); };
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			await bash(harness).execute(
+				"t24",
+				{ command: "sleep 0.2; echo after-idle-teardown", background: true },
+				undefined,
+				undefined,
+				harness.ctx,
+			);
+			// Session identity still matches, so the isCurrent gate opens; only the
+			// idle probe is gone. The completion must be dropped, not thrown.
+			harness.ctx.isIdle = () => { throw new Error("context torn down"); };
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			expect(harness.messages).toHaveLength(0);
+			expect(escaped).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	}, 15000);
 });
 
 describe("poll guard", () => {

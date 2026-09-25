@@ -56,6 +56,12 @@ Each goal's plan lives at `<session dir>/goal-plan-<goal id>.md` and holds exact
 - [ ] <step the implementer has not>
 ```
 
+The plugin keeps these files after `/goal clear`, `/goal replace`, and terminal
+completion. An older session branch or a fork can still reference a previous
+goal's plan, so there is no per-session file-count or age limit. Remove plan
+files only when the session history and any forks that reference them are no
+longer needed.
+
 `## Acceptance criteria` is the gating bar: short, outcome-shaped, anchored to
 the literal objective, never naming a file or a function. `## Task checklist` is
 the implementer's own progress record. The plugin reads the **first unchecked

@@ -390,13 +390,21 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
 
     const leaveSession = () => {
       sessionGeneration += 1;
-      registry.stopAll();
       footer.dispose();
+      // Settlement after a leave may never arrive (an executor that ignores
+      // abort would otherwise hang the entry). Bill usage already reported
+      // through progress, then release the leases and origin handles now.
+      for (const [runId, lease] of goalLeases) {
+        lease.finish(registry.get(runId)?.progress?.goalTokens ?? 0);
+      }
+      goalLeases.clear();
+      origins.clear();
+      registry.reset();
     };
     pi.on("session_before_switch", leaveSession);
     pi.on("session_before_tree", leaveSession);
     pi.on("session_before_fork", leaveSession);
-    pi.on("session_start", () => { sessionGeneration += 1; });
+    pi.on("session_start", leaveSession);
     pi.on("session_shutdown", () => {
       leaveSession();
       // Settlement after a shutdown may never arrive, so the slot is released

@@ -34,7 +34,9 @@ export interface VerifierPlanInput {
  * systematically dropped the earliest evidence — what was actually built — in
  * favour of the most recent narration. Walking backwards and keeping whole
  * entries bounds the payload without corrupting it. A long goal also needs
- * early implementation evidence, so reserve a quarter of the window for it.
+ * early implementation evidence, so the tail is capped at 75% of the window
+ * and the head fills whatever is left — tail preference, not a hard 25%
+ * reservation, so one oversized newest entry can still crowd the head.
  */
 export function boundedTranscript(
   entries: readonly unknown[],

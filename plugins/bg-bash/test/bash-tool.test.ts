@@ -19,6 +19,7 @@ function runtimeWith(registry: JobRegistry): Runtime {
 		registry,
 		autoBackgroundSeconds: () => 30,
 		backgroundLimit: () => 1,
+		captureOrigin: () => () => true,
 		deliver: () => {},
 	};
 }

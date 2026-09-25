@@ -15,6 +15,11 @@ export interface Runtime {
 	autoBackgroundSeconds(cwd: string): number;
 	/** Maximum number of concurrent background jobs. */
 	backgroundLimit(): number;
+	/**
+	 * Snapshot the launching session identity, so a completion that arrives
+	 * after a session or branch switch can be dropped instead of injected.
+	 */
+	captureOrigin(ctx: ExtensionContext): () => boolean;
 	/** Hand a finished background job to the session as a follow-up message. */
-	deliver(job: Job, outcome: RunOutcome, ctx: ExtensionContext | undefined): void;
+	deliver(job: Job, outcome: RunOutcome, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void;
 }

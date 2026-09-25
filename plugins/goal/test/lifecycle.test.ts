@@ -1108,6 +1108,33 @@ describe("goal lifecycle", () => {
 		expect((await state(env)).status).toBe("active");
 	});
 
+	test("an invalid paid planner reply can be followed by a new goal without replace", async () => {
+		let plannerCalls = 0;
+		const env = setup([], undefined, async () => {
+			plannerCalls += 1;
+			return plannerCalls === 1
+				? { stopReason: "stop", usage: { totalTokens: 42 }, content: [{ type: "text", text: "not json" }] }
+				: plannerReply();
+		});
+		await run(env.commands.get("goal"), "first objective --tokens 10", env.ctx);
+		const first = await state(env);
+		expect(first.status).toBe("budget_limited");
+		expect(first.used).toBe(42);
+		expect(first.planPath).toBeUndefined();
+		expect(env.sent).toHaveLength(0);
+
+		await run(env.commands.get("goal"), "second objective", env.ctx);
+		const next = await state(env);
+		expect(next.id).not.toBe(first.id);
+		expect(next.objective).toBe("second objective");
+		expect(next.status).toBe("active");
+		expect(next.used).toBe(0);
+		expect(next.budget).toBeUndefined();
+		expect(next.planPath).toBeDefined();
+		expect(plannerCalls).toBe(2);
+		expect(env.notices.some((notice) => notice.includes("A goal already exists"))).toBe(false);
+	});
+
 	test("an active or paused goal still requires an explicit replace", async () => {
 		const env = setup();
 		await run(env.commands.get("goal"), "first objective", env.ctx);

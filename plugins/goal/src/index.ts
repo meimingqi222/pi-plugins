@@ -238,7 +238,8 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       }
       await writeFile(path, renderPlan(goal.objective, plan), { encoding: "utf-8", mode: 0o600 });
       // Writing is an await too: a clear landing in it leaves no goal to attach
-      // the plan to, and the file is then an orphan the next goal will overwrite.
+      // the plan to. The file stays because local session state cannot prove
+      // that no branch or fork references it.
       if (!goal || goal.id !== goalId) return;
       goal.planPath = path;
       goal.planCriteria = plan.criteria;
