@@ -16,13 +16,20 @@
 import { Type, type Static } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { createAgentExecutor, type AgentActivity, type AgentExecutor, type AgentUsage } from "pi-agent-runner";
-import { discoverAgents, findAgent, formatAgentNames, type SubagentDefinition } from "./agents.ts";
+import { discoverAgents, formatAgentNames, type SubagentDefinition } from "./agents.ts";
+import { resolveAgent } from "./catalog.ts";
+import {
+  AGENT_PARAM_DESCRIPTION,
+  ALIAS_PARAM_DESCRIPTION,
+  SUBAGENT_DESCRIPTION,
+  SUBAGENT_GUIDELINES,
+  TASK_PARAM_DESCRIPTION,
+} from "./contract.ts";
 
 export const SubagentParams = Type.Object({
-  agent: Type.String({ description: "Agent name. Built-in: explore (read-only codebase inspection). User definitions may add names or replace explore." }),
+  agent: Type.String({ description: AGENT_PARAM_DESCRIPTION }),
   task: Type.String({
-    description:
-      "The task for the subagent. It starts with a fresh context, so state the goal, the relevant paths, and what a good answer looks like.",
+    description: TASK_PARAM_DESCRIPTION,
   }),
   model: Type.Optional(
     Type.String({ description: "Model override as provider/modelId. Omit to inherit the current session's model." }),
@@ -30,25 +37,14 @@ export const SubagentParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({ description: "Return a task ID immediately and continue independent work. Omit or false to wait for the answer in this call." }),
   ),
+  alias: Type.Optional(Type.String({ description: ALIAS_PARAM_DESCRIPTION })),
 });
 
 export type SubagentToolParams = Static<typeof SubagentParams>;
 
-export const SUBAGENT_DESCRIPTION = [
-  "Delegate one task to a named subagent running in its own pi process with its own context window.",
-  "The built-in explore agent searches and reads code without editing; user-defined agents can be added in ~/.pi/agent/agents/.",
-  "By default the call waits for the answer. Set background=true for independent work; a task ID returns immediately and the answer arrives when it finishes.",
-  "Use it for a self-contained piece of work that would otherwise fill this conversation with material you do not need to keep.",
-  "Do not use it for a lookup a grep or read answers, and do not chain many of them by hand — `pi-workflow` is the tool for structured fan-out.",
-].join(" ");
-
-export const SUBAGENT_GUIDELINES: string[] = [
-  "Use `subagent` for a single self-contained task that benefits from its own context window.",
-  "Omit `background` when the next step needs the answer. Set `background=true` when you can continue independent work; use `subagent_tasks` to inspect or cancel it.",
-  "A subagent starts fresh: include the goal, the relevant paths, and the shape of the answer you want. It cannot see this conversation.",
-  "Agents are named definitions on disk; an unknown name lists the available ones.",
-  "Use `explore` for a bounded read-only codebase investigation.",
-];
+// The description/guideline text lives in contract.ts; re-exported so callers
+// importing from tool.ts keep working.
+export { SUBAGENT_DESCRIPTION, SUBAGENT_GUIDELINES };
 
 /** Maximum bytes returned to the model per subagent. The full text stays in details. */
 export const MAX_RESULT_BYTES = 50 * 1024;
@@ -157,7 +153,7 @@ export async function executeSubagent(
   const executor = options.executor ?? createAgentExecutor();
   const cwd = options.cwd ?? ctx.cwd;
   const agents = (options.discover ?? (() => discoverAgents()))(cwd);
-  const agent = findAgent(agents, params.agent);
+  const agent = resolveAgent(agents, params.agent);
 
   if (!agent) {
     return {

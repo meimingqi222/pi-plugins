@@ -74,14 +74,14 @@ describe("discoverAgents", () => {
       await writeFile(join(dir, "planner.md"), "---\nname: planner\ndescription: plans\n---\nplan");
       await writeFile(join(dir, "notes.txt"), "not an agent");
       const agents = discoverAgents(dir);
-      expect(agents.map((agent) => agent.name)).toEqual(["explore", "planner", "worker"]);
+      expect(agents.map((agent) => agent.name)).toEqual(["explore", "general", "planner", "review", "worker"]);
     } finally {
       await cleanup();
     }
   });
 
   test("a missing user directory still exposes explore", () => {
-    expect(discoverAgents("/nonexistent/pi-subagent/agents").map((agent) => agent.name)).toEqual(["explore"]);
+    expect(discoverAgents("/nonexistent/pi-subagent/agents").map((agent) => agent.name)).toEqual(["explore", "review", "general"]);
   });
 
   test("the built-in explore uses only Pi's read-only inspection tools", () => {
@@ -101,7 +101,7 @@ describe("discoverAgents", () => {
       await writeFile(join(dir, "good.md"), "---\nname: good\ndescription: fine\n---\nbody");
       await writeFile(join(dir, "broken.md"), "---\nname: [unclosed\n---\nbody");
       expect(readAgentFile(join(dir, "broken.md"))).toBeUndefined();
-      expect(discoverAgents(dir).map((agent) => agent.name)).toEqual(["explore", "good"]);
+      expect(discoverAgents(dir).map((agent) => agent.name)).toEqual(["explore", "general", "good", "review"]);
     } finally {
       await cleanup();
     }
@@ -112,7 +112,7 @@ describe("discoverAgents", () => {
     try {
       await writeFile(join(dir, "explore.md"), "---\nname: explore\ndescription: custom exploration\ntools: read\n---\nCustom prompt.");
       const agents = discoverAgents(dir);
-      expect(agents).toHaveLength(1);
+      expect(agents).toHaveLength(3);
       expect(agents[0]?.description).toBe("custom exploration");
       expect(agents[0]?.tools).toEqual(["read"]);
     } finally {

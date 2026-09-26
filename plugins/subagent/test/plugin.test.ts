@@ -201,6 +201,40 @@ describe("the extension registers delegation and task tools", () => {
     expect(settled.content[0].text).toContain("completed");
   });
 
+  test("wait blocks until settle and returns the record; a timeout returns it still running", async () => {
+    const { pi, tools } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
+    const launched = await tools[0]!.execute!("bg-wait", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    const id = launched.details.taskId as string;
+    // A zero-timeout wait returns immediately with the running record.
+    const immediate = await tools[1]!.execute!("w1", { action: "wait", id, timeout: 0 }, undefined, undefined, ctx);
+    expect(immediate.content[0].text).toContain("running");
+    // A real wait resolves when the child settles, with the settled record.
+    const waiting = tools[1]!.execute!("w2", { action: "wait", id, timeout: 5 }, undefined, undefined, ctx);
+    finish!({ status: "completed", text: "done", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
+    const settled = await waiting;
+    expect(settled.content[0].text).toContain("completed");
+    // Unknown ids report rather than hang.
+    const missing = await tools[1]!.execute!("w3", { action: "wait", id: "sa-nope", timeout: 0 }, undefined, undefined, ctx);
+    expect(missing.content[0].text).toContain("No subagent task");
+  });
+
+  test("launch records the alias, defaulting to a task slug", async () => {
+    const { pi, tools } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
+    const named = await tools[0]!.execute!("bg-a1", { agent: "explore", task: "Inspect", background: true, alias: "auth-audit" }, undefined, undefined, ctx);
+    const shown = await tools[1]!.execute!("s1", { action: "show", id: named.details.taskId }, undefined, undefined, ctx);
+    expect(shown.details.alias).toBe("auth-audit");
+    const unnamed = await tools[0]!.execute!("bg-a2", { agent: "explore", task: "Map the retry path", background: true }, undefined, undefined, ctx);
+    const shown2 = await tools[1]!.execute!("s2", { action: "show", id: unnamed.details.taskId }, undefined, undefined, ctx);
+    expect(shown2.details.alias).toBe("Map the retry path");
+    finish!({ status: "aborted", text: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
+  });
+
   test("a background task is cancelled on tree navigation and late results cannot wake the new branch", async () => {
     const { pi, tools, messages, emit } = fakePi();
     let childSignal: AbortSignal | undefined;

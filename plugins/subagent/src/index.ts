@@ -19,7 +19,9 @@ import { BackgroundRegistry, formatBackground } from "./background.ts";
 import { formatFleetListing } from "./fleet.ts";
 import { createSubagentsPanel } from "./panel.ts";
 import { createFleetReporter } from "./widget.ts";
-import { discoverAgents, findAgent, formatAgentNames } from "./agents.ts";
+import { discoverAgents, formatAgentNames } from "./agents.ts";
+import { resolveAgent } from "./catalog.ts";
+import { WAIT_TIMEOUT_DEFAULT_SECONDS, WAIT_TIMEOUT_MAX_SECONDS } from "./contract.ts";
 import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, SUBAGENT_LOG_MAX_LINES, sweepSubagentLogs } from "./logs.ts";
 import {
   SUBAGENT_DESCRIPTION,
@@ -302,7 +304,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           }
           const cwd = options.cwd ?? ctx.cwd;
           const agents = (options.discover ?? (() => discoverAgents()))(cwd);
-          if (!findAgent(agents, params.agent)) {
+          if (!resolveAgent(agents, params.agent)) {
             return {
               content: [{ type: "text", text: `Unknown agent "${params.agent}". Available agents: ${formatAgentNames(agents)}.` }],
               details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
@@ -323,7 +325,8 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
           };
           try {
-            const record = registry.launch(params.agent, params.task, sessionId, (runSignal, id) => {
+            const resolved = resolveAgent(agents, params.agent);
+            const record = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
               const logPath = subagentLogPath(id, sessionId);
               registry.setLogPath(id, logPath);
               return executeSubagent(params, {
@@ -333,7 +336,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
                 onProgress: (progress) => registry.setProgress(id, progress),
               }, options);
-            });
+            }, params.alias);
             pending.set(record.id, {
               ...(lease ? { lease } : {}),
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
@@ -401,8 +404,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       description: "List background subagent tasks, inspect status, recent activity, or explicitly read/search the raw event log, or cancel a task from this session. Raw logs include prompts and tool data; request them only for debugging. A finished task's answer is also delivered automatically.",
       promptSnippet: "Inspect a background subagent's status, recent events, or diagnostic log; cancel by task ID",
       parameters: Type.Object({
-        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel")]),
-        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, or cancel." })),
+        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel"), Type.Literal("wait")]),
+        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, cancel, or wait." })),
+        timeout: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_TIMEOUT_MAX_SECONDS, description: `Seconds to wait for the task to settle (0–${WAIT_TIMEOUT_MAX_SECONDS}, default ${WAIT_TIMEOUT_DEFAULT_SECONDS}).` })),
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum recent activity events to return (1–10)." })),
         query: Type.Optional(Type.String({ maxLength: 200, description: "Optional case-insensitive substring to search in raw JSONL log lines." })),
         lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Maximum matching log lines to return (1–50, default 20)." })),
@@ -414,6 +418,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           return { content: [{ type: "text", text: records.length ? records.map(formatBackground).join("\n") : "No background subagent tasks in this session." }], details: records };
         }
         if (!params.id) return { content: [{ type: "text", text: `An id is required for ${params.action}.` }], details: undefined };
+        if (params.action === "wait") {
+          const seconds = Math.min(WAIT_TIMEOUT_MAX_SECONDS, Math.max(0, params.timeout ?? WAIT_TIMEOUT_DEFAULT_SECONDS));
+          const record = await registry.waitFor(sessionId, params.id, seconds * 1_000);
+          if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
+          const tail = record.status === "running" ? ` Still running after ${seconds}s — its answer will arrive when it finishes.` : "";
+          return { content: [{ type: "text", text: `${formatBackground(record)}.${tail}` }], details: record };
+        }
         const record = registry.get(sessionId, params.id);
         if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
         if (params.action === "cancel") {

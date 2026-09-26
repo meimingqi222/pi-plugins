@@ -18,6 +18,7 @@ function record(partial: Partial<BackgroundRecord> = {}): BackgroundRecord {
 	return {
 		id: "sa-1",
 		agent: "explore",
+		alias: partial.alias ?? "explore",
 		task: "Inspect the runner",
 		sessionId: "session-a",
 		status: "running",

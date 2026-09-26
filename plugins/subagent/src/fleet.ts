@@ -65,12 +65,12 @@ function outputTokens(record: BackgroundRecord): number {
 	return record.result?.details?.usage?.output ?? 0;
 }
 
-/** A child as shared work: kind = agent name, label = task, metric = output tokens. */
+/** A child as shared work: kind = alias (the human name), label = task, metric = output tokens. */
 export function toWorkItem(record: BackgroundRecord, now: number): WorkItem {
 	const tokens = outputTokens(record);
 	return {
 		id: record.id,
-		kind: record.agent,
+		kind: record.alias || record.agent,
 		label: record.task,
 		state: STATE_TO_WORK[deriveChildState(record, now)],
 		startedAt: record.startedAt,
@@ -139,7 +139,7 @@ export function formatFleetListing(records: BackgroundRecord[]): string {
 export function formatChildDetail(record: BackgroundRecord, theme: FleetTheme, now: number): string[] {
 	const state = deriveChildState(record, now);
 	const lines: string[] = [
-		`${stateIcon(state, theme)} ${theme.bold(record.agent)}  ${theme.fg("muted", record.id)}`,
+		`${stateIcon(state, theme)} ${theme.bold(record.alias || record.agent)}  ${theme.fg("muted", `${record.agent} · ${record.id}`)}`,
 		"",
 		theme.fg("muted", "Task"),
 		...record.task.split("\n").map((line) => `  ${theme.fg("dim", line)}`),
