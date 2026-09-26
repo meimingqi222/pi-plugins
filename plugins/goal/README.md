@@ -23,6 +23,33 @@ evidence. Invalid JSON, provider errors, redactor errors, cancellation, and
 timeouts pause safely rather than pretending success. Completion is only
 reported after a valid verifier verdict.
 
+Each completion claim has a monotonic generation and one phase: `reported`
+while its work run is open, `ready` after a clean final response or when
+`pi-goal` terminates a post-candidate tool batch, `verifying` while the isolated
+judge runs, or `interrupted` when a fresh report is needed.
+Verification is deferred to the next event-loop turn after Pi emits
+`agent_settled`, giving other synchronous extension handlers a chance to
+deliver follow-ups before the idle check. A verdict is applied
+only to the generation and run epoch it started with, with no queued messages;
+follow-ups arriving during verification defer judgment to the later transcript.
+Older goal snapshots are migrated when restored, and any claim left in flight
+is treated as interrupted.
+
+If a background completion queues a follow-up as the reporting run ends, the
+cleanly reported candidate remains ready for verification. The follow-up may
+arrive before the verifier can run; its next clean settlement verifies the
+existing candidate without asking the agent to re-report or repeat the tests.
+After reporting a candidate, further tool calls in that run are blocked with
+termination requested. When Pi ends on that goal-blocked tool batch (`toolUse`),
+the candidate stays ready and is verified after settlement; no final text
+response is expected from that run. Pi only stops a tool batch early when every
+call in it terminates, so `pi-goal` also pauses and aborts after two more turns
+if the run still has not settled. An errored or aborted run still requires a fresh
+report after resume.
+If another extension starts a turn while verification is in flight, the older
+verdict is discarded and the pending candidate is judged after that turn, with
+the newly delivered result in the transcript.
+
 A goal that reaches a terminal status — `complete` or `budget_limited`, exactly
 the two `/goal resume` refuses — is **retired**: it stops being injected into the
 model context and drops out of the status bar. The snapshot is kept, so
@@ -80,13 +107,17 @@ weigh that against the evidence it finds itself.
 
 ## Continuation bounds
 
-Two guards stop a goal from driving itself forever. A verifier that can always
+Three guards stop a goal from driving itself forever. A verifier that can always
 name *some* next action otherwise never terminates a goal that has no token
 budget set.
 
 - **Run cap** — after `PI_GOAL_MAX_RUNS` work runs (default 12) in one attempt,
-  the goal pauses, including when none reported completion. The cap is checked
+  the goal pauses, including when none reported completion or plugin follow-ups
+  prevent `agent_settled`. The cap is checked before another run starts and
   *before* a verifier round, so the last round is never paid for and discarded.
+- **Candidate turn cap** — after a candidate is reported, at most two further
+  turns may start in one run before the goal pauses. It aborts only a turn
+  started by the goal; a user-owned turn is left running.
 - **Stall detection** — a verifier `nextAction` is folded to a fingerprint
   (lowercased, punctuation and whitespace collapsed, and high-entropy tokens
   such as a scratch path, uuid or generated id normalised away). Repeating the

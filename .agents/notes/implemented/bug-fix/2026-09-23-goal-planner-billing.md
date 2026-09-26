@@ -1,6 +1,7 @@
 # Agent Note: goal review fixes — planner billing, verifier evidence split, stale status bar
 
 Status: implemented
+Partly-superseded-by: 2026-09-26-goal-candidate-generation-state-machine.md
 
 ## Problem
 
@@ -82,3 +83,9 @@ paid reply. `plugins/goal/test/lifecycle.test.ts::an invalid paid planner reply 
 failed before the accounting move with `Expected: 42, Received: 0`, then passed.
 The response is checkpointed before validation so a failure below budget also
 survives recovery; a provider error without a response has no reported usage.
+
+## Superseded
+
+The verifier evidence split, planner billing, and status display still hold.
+The legacy `candidatePending === undefined` normalization described above is
+replaced by candidate generation and phase migration in the successor note.

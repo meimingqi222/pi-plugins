@@ -6,7 +6,7 @@
  * same `truncation`/`fullOutputPath` detail fields.
  */
 
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail, type BashToolDetails } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail, type BashToolDetails, type TruncationResult } from "@earendil-works/pi-coding-agent";
 import type { Job } from "../core/jobs.ts";
 import type { JobMode, JobStatus, RunOutcome } from "../core/types.ts";
 
@@ -38,31 +38,37 @@ export function formatDuration(ms: number): string {
 export function truncateOutput(text: string): {
 	text: string;
 	truncated: boolean;
-	notice?: string;
-	result: ReturnType<typeof truncateTail>;
+	result: TruncationResult;
 } {
 	const result = truncateTail(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-	if (!result.truncated) return { text: result.content, truncated: false, result };
-	const startLine = result.totalLines - result.outputLines + 1;
-	const endLine = result.totalLines;
-	const reason =
-		result.truncatedBy === "lines"
-			? `[Showing lines ${startLine}-${endLine} of ${result.totalLines}.`
-			: `[Showing lines ${startLine}-${endLine} of ${result.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit).`;
-	return { text: result.content, truncated: true, notice: reason, result };
+	return { text: result.content, truncated: result.truncated, result };
 }
 
-function appendNotice(text: string, notice: string | undefined, logPath: string | undefined): string {
-	if (!notice) return text;
-	const full = logPath ? ` Full output: ${logPath}]` : "]";
-	return `${text}\n\n${notice}${full}`;
+/**
+ * The bracketed pointer appended under truncated output.
+ *
+ * One builder for both readers: the model gets it appended to its result, and
+ * the TUI renderer matches the same string to lift the footer out of the body
+ * and show it as a warning rather than as a line of output.
+ */
+export function truncationNotice(result: TruncationResult, logPath: string | undefined): string {
+	const startLine = result.totalLines - result.outputLines + 1;
+	const reason =
+		result.truncatedBy === "lines"
+			? `Showing lines ${startLine}-${result.totalLines} of ${result.totalLines}.`
+			: `Showing lines ${startLine}-${result.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit).`;
+	return logPath ? `[${reason} Full output: ${logPath}]` : `[${reason}]`;
+}
+
+function appendNotice(text: string, notice: string | undefined): string {
+	return notice ? `${text}\n\n${notice}` : text;
 }
 
 /** Body of a finished foreground command, with the log pointer when truncated. */
 export function formatForegroundOutput(job: Job): string {
-	const { text, notice } = truncateOutput(job.output.text());
-	const body = text || "(no output)";
-	return appendNotice(body, notice, job.logPath);
+	const { text, result } = truncateOutput(job.output.text());
+	const notice = result.truncated ? truncationNotice(result, job.logPath) : undefined;
+	return appendNotice(text || "(no output)", notice);
 }
 
 /** Attach a status line below output that already exists. */
@@ -90,24 +96,65 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 	timedout: "timed out",
 };
 
+/** The status sentence a completion message opens with. */
+export function completionHeader(
+	id: string,
+	status: JobStatus,
+	exitCode: number | null,
+	elapsedMs: number,
+): string {
+	const exit =
+		status === "exited" ? `exit code 0` : exitCode === null ? "" : `exit code ${exitCode}`;
+	return `Background bash job ${id} ${STATUS_LABEL[status]} after ${formatDuration(elapsedMs)}${exit ? ` (${exit})` : ""}.`;
+}
+
+/** A completion message split into the pieces the model reads and the TUI draws. */
+export interface CompletionParts {
+	header: string;
+	commandLine: string;
+	output: string;
+	notice?: string;
+}
+
+export function completionParts(job: Job): CompletionParts {
+	const { text, result } = truncateOutput(job.output.text());
+	return {
+		header: completionHeader(job.id, job.status, job.exitCode, durationMs(job)),
+		commandLine: `Command: ${job.command}`,
+		output: text || "(no output)",
+		notice: result.truncated ? truncationNotice(result, job.logPath) : undefined,
+	};
+}
+
 /** The follow-up message injected when a background job terminates. */
 export function formatCompletionMessage(job: Job): string {
-	const elapsed = formatDuration(durationMs(job));
-	const exit =
-		job.status === "exited"
-			? `exit code 0`
-			: job.exitCode === null
-				? ""
-				: `exit code ${job.exitCode}`;
-	const header = `Background bash job ${job.id} ${STATUS_LABEL[job.status]} after ${elapsed}${exit ? ` (${exit})` : ""}.`;
-	const { text, notice } = truncateOutput(job.output.text());
-	return [
-		header,
-		`Command: ${job.command}`,
-		appendNotice(text || "(no output)", notice, job.logPath),
-	]
-		.filter(Boolean)
-		.join("\n");
+	const parts = completionParts(job);
+	return [parts.header, parts.commandLine, appendNotice(parts.output, parts.notice)].join("\n");
+}
+
+/**
+ * Recover a completion message's parts for the TUI renderer.
+ *
+ * The renderer only has the stored message, and the output tail lives in the
+ * content rather than in `details`. The header and the footer are therefore
+ * removed by exact match against the strings `formatCompletionMessage` wrote;
+ * a message this version did not write falls back to showing its whole content
+ * rather than being mis-split.
+ */
+export function splitCompletionContent(
+	content: string,
+	details: BgBashDetails | undefined,
+): { output: string; notice?: string } {
+	if (!details) return { output: content };
+	const header = completionHeader(details.jobId, details.status, details.exitCode, details.durationMs);
+	const prefix = `${header}\nCommand: ${details.command}\n`;
+	let output = content.startsWith(prefix) ? content.slice(prefix.length) : content;
+	const notice =
+		details.truncation?.truncated === true
+			? truncationNotice(details.truncation, details.fullOutputPath ?? details.logPath)
+			: undefined;
+	if (notice && output.endsWith(notice)) output = output.slice(0, -notice.length).trimEnd();
+	return { output, notice };
 }
 
 /** `bg_tasks list` output. */

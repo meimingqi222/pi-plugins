@@ -25,6 +25,12 @@ Runs belong to the session and history branch that launched them. Leaving that
 session or branch stops its live runs; late results are not posted into the new
 conversation. A harness failure wakes the originating conversation with its
 error so the agent can respond instead of waiting for a result that cannot arrive.
+Results that settle during another agent turn are handed to Pi at
+`agent_settled`, when a `followUp` can safely start a turn. Idle results are
+delivered immediately. Results settling after the launching
+session has been left are discarded.
+A failure in goal spend reporting is surfaced without suppressing the workflow
+result or preventing session cleanup.
 
 ## The surface
 

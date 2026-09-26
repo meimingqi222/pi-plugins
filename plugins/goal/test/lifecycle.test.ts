@@ -126,12 +126,20 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		sendMessage(message: any, options: any) { sent.push({ message, options }); },
 	};
 	goalPlugin(pi);
-	const emit = async (name: string, event: any = {}) => {
+	const emitRaw = async (name: string, event: any = {}) => {
 		let result: any;
 		for (const handler of handlers.get(name) ?? []) result = await handler({ type: name, messages: [], ...event }, ctx);
 		return result;
 	};
-	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit };
+	const emit = async (name: string, event: any = {}) => {
+		const result = await emitRaw(name, event);
+		// Production settlement runs on the next event-loop turn. Most lifecycle
+		// tests assert its completed effect; emitRaw keeps the ordering window
+		// available to tests that exercise another extension's settled handler.
+		if (name === "agent_settled") await new Promise((resolve) => setTimeout(resolve, 10));
+		return result;
+	};
+	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit, emitRaw };
 }
 
 function goalSpend(env: ReturnType<typeof setup>): GoalSpendService {
@@ -161,7 +169,7 @@ async function waitFor(env: ReturnType<typeof setup>, predicate: (state: any) =>
   }
   throw new Error(`condition not reached; last state: ${JSON.stringify(await state(env))}`);
 }
-async function round(env: ReturnType<typeof setup>, messages: any[] = []) {
+async function round(env: ReturnType<typeof setup>, messages: any[] = [verdict()]) {
   await env.emit("agent_start");
   await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
   await env.emit("agent_end", { messages });
@@ -180,7 +188,7 @@ const verdict = (passed = true, tokens = 0) => ({
 async function state(env: ReturnType<typeof setup>) {
  return (await env.tools.get("get_goal").execute("id", {}, undefined, undefined, env.ctx)).details;
 }
-async function endWork(env: ReturnType<typeof setup>, messages: any[] = []) {
+async function endWork(env: ReturnType<typeof setup>, messages: any[] = [verdict()]) {
  await env.emit("agent_start");
  await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
  await env.emit("agent_end", { messages });
@@ -292,12 +300,50 @@ describe("goal safety boundaries", () => {
   await env.emit("agent_start");
   const lease = goalSpend(env).begin(env.ctx, "workflow-1")!;
   await update(env.tools.get("update_goal"), "candidate_complete", "work ready for verification", env.ctx);
-  await env.emit("agent_end", { messages: [] });
+  await env.emit("agent_end", { messages: [verdict()] });
   await env.emit("agent_settled");
   expect(calls).toBe(0);
   lease.finish(7);
   await waitFor(env, (s) => s.status === "complete");
   lease.finish(7);
+  expect(calls).toBe(1);
+  expect((await state(env)).used).toBe(7);
+ });
+ test("goal and subagent deliver a late child at settlement before verifying its candidate", async () => {
+  let calls = 0;
+  const env = setup([], async () => { calls++; return verdict(true); });
+  let finishChild!: (result: any) => void;
+  subagentExtension({ executor: () => new Promise((resolve) => { finishChild = resolve; }) })(env.pi);
+  await run(env.commands.get("goal"), "task", env.ctx);
+  await env.emit("agent_start");
+  env.ctx.isIdle = () => false;
+  await env.tools.get("subagent").execute("late-child", { agent: "explore", task: "inspect", background: true }, undefined, undefined, env.ctx);
+  await update(env.tools.get("update_goal"), "candidate_complete", "done", env.ctx);
+  await env.emit("agent_end", { messages: [verdict()] });
+  let wakeups = 0;
+  let queued = false;
+  const send = env.pi.sendMessage;
+  env.pi.sendMessage = (message: any, options: any) => {
+   send(message, options);
+   if (options?.triggerTurn) {
+    queued = true;
+    // Pi's final queue check has passed: only an idle send can wake a turn.
+    if (env.ctx.isIdle()) wakeups++;
+   }
+  };
+  env.ctx.hasPendingMessages = () => queued;
+  finishChild({ status: "completed", text: "child evidence", usage: { input: 4, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 7 } });
+  await tick();
+  env.ctx.isIdle = () => true;
+  await env.emit("agent_settled");
+  expect(wakeups).toBe(1);
+  expect(calls).toBe(0);
+  expect((await state(env)).used).toBe(7);
+  queued = false;
+  await env.emit("agent_start");
+  await env.emit("agent_end", { messages: [verdict()] });
+  await env.emit("agent_settled");
+  await waitFor(env, (s) => s.status === "complete");
   expect(calls).toBe(1);
   expect((await state(env)).used).toBe(7);
  });
@@ -474,6 +520,23 @@ describe("goal continuation provenance", () => {
 
 describe("goal continuation bounds", () => {
 
+  test("run cap pauses across plugin continuations even without agent_settled", async () => {
+    process.env.PI_GOAL_MAX_RUNS = "2";
+    const env = setup();
+    await run(env.commands.get("goal"), "task", env.ctx);
+    for (let index = 0; index < 2; index += 1) {
+      await env.emit("agent_start");
+      await env.emit("agent_end", { messages: [verdict()] });
+      // Another plugin queues a follow-up before Pi emits agent_settled.
+    }
+    let aborts = 0;
+    env.ctx.abort = () => { aborts += 1; };
+    await env.emit("agent_start");
+    expect((await state(env)).status).toBe("paused");
+    expect((await state(env)).workRuns).toBe(2);
+    expect(aborts).toBe(0);
+  });
+
   test("unfinished runs still stop at the run cap without verifier calls", async () => {
     process.env.PI_GOAL_MAX_RUNS = "2";
     let calls = 0;
@@ -632,6 +695,36 @@ describe("goal continuation bounds", () => {
     expect(restored.attemptRuns).toBe(0);
     expect(restored.stalledRuns).toBe(0);
   });
+
+  test("candidate snapshot migration keeps rejected claims judged and interrupts old in-flight claims", async () => {
+    const base = { schema: 1, id: "g1", objective: "legacy", status: "paused", used: 0, elapsedMs: 0, workRuns: 2, blockerRuns: 0 };
+    const env = setup();
+    const rejected = restoreGoal({ ...env.ctx, sessionManager: { ...env.ctx.sessionManager, getBranch: () => [{
+      type: "custom", customType: "goal-state", data: { ...base, candidate: "run tests", candidateGeneration: 1 },
+    }] } } as any)!;
+    expect(rejected.candidateState).toBeUndefined();
+    expect(rejected.candidateGeneration).toBe(1);
+
+    const legacy = restoreGoal({ ...env.ctx, sessionManager: { ...env.ctx.sessionManager, getBranch: () => [{
+      type: "custom", customType: "goal-state", data: { ...base, candidate: "done", candidatePending: true, candidateReady: true, candidateRun: 2 },
+    }] } } as any)!;
+    expect(legacy.candidateState).toMatchObject({ generation: 1, phase: "interrupted", reportedRun: 2 });
+    expect((legacy as any).candidatePending).toBeUndefined();
+  });
+
+  test("an unknown candidate phase pauses without losing the saved goal", async () => {
+    const env = setup([{
+      type: "custom", customType: "goal-state", data: {
+        schema: 1, id: "g1", objective: "saved task", status: "active", used: 9, elapsedMs: 0,
+        workRuns: 2, blockerRuns: 0, candidate: "done", candidateGeneration: 3,
+        candidateState: { generation: 3, phase: "future-phase", reportedRun: 2 },
+      },
+    }]);
+    const restored = restoreGoal(env.ctx)!;
+    expect(restored.objective).toBe("saved task");
+    expect(restored.status).toBe("paused");
+    expect(restored.candidateState?.phase).toBe("interrupted");
+  });
 });
 
 describe("goal candidate verification status", () => {
@@ -666,7 +759,8 @@ describe("goal candidate verification status", () => {
     await env.emit("agent_settled");
     const paused = await state(env);
     expect(paused.status).toBe("paused");
-    expect(paused.candidatePending).toBe(true);
+    expect(paused.candidateState).toMatchObject({ generation: 1, phase: "interrupted", reportedRun: 1 });
+    expect(paused.candidatePending).toBeUndefined();
     expect(paused.reason).toContain("never verified");
     // The verifier must not have run on an errored run.
     expect(calls).toBe(0);
@@ -676,6 +770,17 @@ describe("goal candidate verification status", () => {
     expect(result.messages[0].content).toContain("has NOT been judged");
     expect(result.messages[0].content).toContain("never verified");
     expect(result.messages[0].content).not.toContain("Required next action");
+  });
+
+  test("a candidate is not ready when the run has no clean final assistant response", async () => {
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [] });
+    await env.emit("agent_settled");
+    expect((await state(env)).candidateState?.phase).toBe("interrupted");
+    expect((await state(env)).status).toBe("active");
   });
 
   test("a rejected candidate clears pending and the prompt names the verdict and next action", async () => {
@@ -691,7 +796,8 @@ describe("goal candidate verification status", () => {
     await tick();
     const active = await state(env);
     expect(active.status).toBe("active");
-    expect(active.candidatePending).toBe(false);
+    expect(active.candidateState).toBeUndefined();
+    expect(active.candidateGeneration).toBe(1);
     expect(active.candidate).toBe("run the suite");
     const result = await env.emit("context", { messages: [] });
     expect(result.messages[0].content).toContain("verdict was not passed: tests missing");
@@ -713,6 +819,7 @@ describe("goal candidate verification status", () => {
     // The continuation run starts; the agent reports a fresh candidate.
     await env.emit("agent_start");
     await update(env.tools.get("update_goal"), "candidate_complete", "done for real", env.ctx);
+    expect((await state(env)).candidateState).toMatchObject({ generation: 2, phase: "reported", reportedRun: 2 });
     const result = await env.emit("context", { messages: [] });
     // Reported in *this* run, so the prompt waits for the settle instead of
     // asking for a re-report — see the loop regression below.
@@ -750,6 +857,160 @@ describe("goal candidate verification status", () => {
     expect((await state(env)).status).toBe("complete");
   });
 
+  test("a clean candidate survives a background follow-up and verifies without a second report", async () => {
+    let calls = 0;
+    const env = setup([], async () => { calls++; return verdict(true); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    env.ctx.hasPendingMessages = () => true;
+    await env.emit("agent_settled");
+    expect(calls).toBe(0);
+
+    // A bg-bash follow-up starts the next run before the verifier can run.
+    env.ctx.hasPendingMessages = () => false;
+    await env.emit("agent_start");
+    const prompt = (await env.emit("context", { messages: [] })).messages[0].content;
+    expect(prompt).not.toContain("Re-report candidate_complete");
+    expect(prompt).toContain("awaiting verification");
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    expect(calls).toBe(1);
+    expect((await state(env)).status).toBe("complete");
+  });
+
+  test("an external follow-up during verification defers the verdict until its turn settles", async () => {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const env = setup([], async () => {
+      calls += 1;
+      if (calls === 1) await first;
+      return verdict(true);
+    });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    const settling = env.emit("agent_settled");
+    await waitFor(env, (goal) => goal.status === "verifying");
+
+    await env.emit("agent_start");
+    const statusAfterFollowUp = (await state(env)).status;
+    release();
+    await settling;
+    expect(statusAfterFollowUp).toBe("active");
+    expect((await state(env)).status).toBe("active");
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    expect(calls).toBe(2);
+    expect((await state(env)).status).toBe("complete");
+  });
+
+  test("a queued follow-up invalidates a verdict before its run starts", async () => {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const env = setup([], async () => {
+      calls += 1;
+      if (calls === 1) await first;
+      return verdict(true);
+    });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    const settling = env.emit("agent_settled");
+    await waitFor(env, (goal) => goal.candidateState?.phase === "verifying");
+    env.ctx.hasPendingMessages = () => true;
+    release();
+    await settling;
+    expect((await state(env)).status).toBe("active");
+    expect((await state(env)).candidateState).toMatchObject({ generation: 1, phase: "ready" });
+    env.ctx.hasPendingMessages = () => false;
+    await env.emit("agent_start");
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    expect(calls).toBe(2);
+    expect((await state(env)).status).toBe("complete");
+  });
+
+  test("another settled handler can start a follow-up before verification begins", async () => {
+    let calls = 0;
+    const env = setup([], async () => { calls += 1; return verdict(true); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emitRaw("agent_settled");
+    // A later agent_settled handler in another plugin starts a follow-up.
+    await env.emit("agent_start");
+    await tick();
+    expect(calls).toBe(0);
+    await env.emit("agent_end", { messages: [verdict()] });
+    await env.emit("agent_settled");
+    await waitFor(env, (current) => current.status === "complete");
+    expect(calls).toBe(1);
+  });
+
+  test("tool calls after candidate completion are terminated so the run can settle", async () => {
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    const result = await env.emit("tool_call", { toolName: "bash", input: { command: "pytest -q" } });
+    expect(result).toMatchObject({ block: true, terminate: true });
+    expect(result.reason).toContain("verifier will judge it");
+  });
+
+  test("a goal-terminated tool batch leaves its candidate ready for verification", async () => {
+    let calls = 0;
+    const env = setup([], async () => { calls += 1; return verdict(true); });
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    const blocked = await env.emit("tool_call", { toolName: "bash", input: { command: "pytest -q" } });
+    expect(blocked).toMatchObject({ block: true, terminate: true });
+
+    // Pi ends on the toolUse assistant message when every tool result in the
+    // batch requests termination; it does not ask for another final response.
+    await env.emit("agent_end", { messages: [{ ...verdict(), stopReason: "toolUse" }] });
+    await env.emit("agent_settled");
+
+    expect(calls).toBe(1);
+    expect((await state(env)).status).toBe("complete");
+  });
+
+  test("candidate loops stop within one run even when tool termination cannot settle it", async () => {
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await tick();
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    let aborts = 0;
+    env.ctx.abort = () => { aborts += 1; };
+    await env.emit("turn_start");
+    await env.emit("turn_start");
+    expect(aborts).toBe(0);
+    await env.emit("turn_start");
+    expect(aborts).toBe(1);
+    expect((await state(env)).status).toBe("paused");
+    expect((await state(env)).reason).toContain("candidate");
+  });
+
+  test("candidate turn cap leaves a user-owned turn running", async () => {
+    const env = setup([], async () => verdict(true));
+    await run(env.commands.get("goal"), "task", env.ctx);
+    await env.emit("agent_start");
+    await update(env.tools.get("update_goal"), "candidate_complete", "all done", env.ctx);
+    let aborts = 0;
+    env.ctx.abort = () => { aborts += 1; };
+    for (let index = 0; index < 3; index += 1) await env.emit("turn_start");
+    expect((await state(env)).status).toBe("paused");
+    expect(aborts).toBe(0);
+  });
+
   test("repeating candidate_complete in one run does not replace the pending claim", async () => {
     const env = setup([], async () => verdict(true));
     await run(env.commands.get("goal"), "task", env.ctx);
@@ -757,7 +1018,7 @@ describe("goal candidate verification status", () => {
     const first = await update(env.tools.get("update_goal"), "candidate_complete", "first claim", env.ctx);
     expect(first.content[0].text).toContain("Finish this run with a final response");
     const repeated = await update(env.tools.get("update_goal"), "candidate_complete", "second claim", env.ctx);
-    expect(repeated.content[0].text).toContain("already recorded in this run");
+    expect(repeated.content[0].text).toContain("already awaiting verification");
     expect((await state(env)).candidate).toBe("first claim");
   });
 

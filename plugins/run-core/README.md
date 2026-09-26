@@ -1,5 +1,10 @@
 # pi-run-core
 
+Background plugins share `SettledDeliveryQueue`: idle results send immediately;
+busy results wait for `agent_settled`. Callers clear the queue at session or branch
+boundaries and recheck the result's origin inside the send callback. bg-bash,
+workflow and subagent use this primitive so their wake-up timing stays consistent.
+
 Shared run primitives for pi extensions that own a *run* rather than a *turn*.
 
 A run is an execution with its own identity, budget, and snapshot: `pi-goal`'s

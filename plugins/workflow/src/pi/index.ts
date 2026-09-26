@@ -29,7 +29,7 @@
 import { Type } from "typebox";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, type GoalSpendLease } from "pi-run-core";
+import { connectGoalSpend, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
 import { renderLiveStatus } from "../runs/live-status.ts";
@@ -81,7 +81,8 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     const goalSpend = connectGoalSpend(pi);
     const goalLeases = new Map<string, GoalSpendLease>();
     let sessionGeneration = 0;
-    const origins = new Map<string, { isCurrent: () => boolean; notify: (message: string) => void }>();
+    const delivery = new SettledDeliveryQueue(pi);
+    const origins = new Map<string, { isCurrent: () => boolean; isIdle: () => boolean; notify: (message: string) => void }>();
     const executor = options.executor ?? createPiExecutor();
     const cwd = (ctx: ExtensionContext): string => options.cwd ?? ctx.cwd;
 
@@ -130,30 +131,41 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     const registry = new RunRegistry({
       maxActiveRuns: maxActiveRunsCeiling(),
       onSettled(record) {
-        goalLeases.get(record.runId)?.finish(record.result?.goalTokens ?? record.progress?.goalTokens ?? 0);
+        const lease = goalLeases.get(record.runId);
         goalLeases.delete(record.runId);
         const origin = origins.get(record.runId);
         origins.delete(record.runId);
+        try {
+          lease?.finish(record.result?.goalTokens ?? record.progress?.goalTokens ?? 0);
+        } catch (error) {
+          try { origin?.notify(`Workflow ${record.runId} finished, but goal spend could not be reported: ${String(error)}`); }
+          catch { /* A torn-down UI cannot show the warning. */ }
+        }
         if (!origin?.isCurrent()) {
+          footer.sync();
           return;
         }
-        // A run stopped by the user or ended by a failure has no result to
-        // render; the notice still matters.
-        try {
-          if (record.result) {
-            deliver(pi, record);
-          } else {
-            pi.sendMessage({
-              customType: "workflow-result",
-              content: formatRun(record),
-              display: true,
-              details: record,
-            }, record.status === "failed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+        const send = () => {
+          if (!origin.isCurrent()) return;
+          try {
+            if (record.result) {
+              deliver(pi, record);
+            } else {
+              pi.sendMessage({
+                customType: "workflow-result",
+                content: formatRun(record),
+                display: true,
+                details: record,
+              }, record.status === "failed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+            }
+          } catch (error) {
+            const message = `Workflow ${record.runId} finished, but its result could not be delivered: ${error instanceof Error ? error.message : String(error)}`;
+            try { origin.notify(message); } catch { console.error(message); }
           }
-        } catch (error) {
-          const message = `Workflow ${record.runId} finished, but its result could not be delivered: ${error instanceof Error ? error.message : String(error)}`;
-          try { origin.notify(message); } catch { console.error(message); }
-        }
+        };
+        // An active run has already passed Pi's final queue check by the time
+        // it emits agent_settled. Hand results to Pi at that idle boundary.
+        delivery.deliver(origin.isIdle, send);
         // The footer follows the registry: the last settlement is what clears
         // the slot and stops the tick.
         footer.sync();
@@ -178,7 +190,12 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         const generation = sessionGeneration;
         const lease = goalSpend()?.begin(ctx, runId);
         origins.set(runId, {
-          isCurrent: () => generation === sessionGeneration && ctx.sessionManager.getSessionId() === sessionId,
+          isIdle: () => ctx.isIdle(),
+          isCurrent: () => {
+            if (generation !== sessionGeneration) return false;
+            try { return ctx.sessionManager.getSessionId() === sessionId; }
+            catch { return false; }
+          },
           notify: (message) => ctx.ui.notify(message, "error"),
         });
         if (lease) goalLeases.set(runId, lease);
@@ -390,12 +407,18 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
 
     const leaveSession = () => {
       sessionGeneration += 1;
+      delivery.clear();
       footer.dispose();
       // Settlement after a leave may never arrive (an executor that ignores
       // abort would otherwise hang the entry). Bill usage already reported
       // through progress, then release the leases and origin handles now.
       for (const [runId, lease] of goalLeases) {
-        lease.finish(registry.get(runId)?.progress?.goalTokens ?? 0);
+        try {
+          lease.finish(registry.get(runId)?.progress?.goalTokens ?? 0);
+        } catch (error) {
+          try { origins.get(runId)?.notify(`Workflow ${runId} left its session, but goal spend could not be reported: ${String(error)}`); }
+          catch { /* The old session's UI may already be gone. */ }
+        }
       }
       goalLeases.clear();
       origins.clear();

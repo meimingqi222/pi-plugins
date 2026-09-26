@@ -1,10 +1,8 @@
 /**
- * Extension wiring: registry, lifecycle, and the follow-up queue.
+ * Extension wiring: registry, lifecycle, and Pi follow-up delivery.
  *
- * The follow-up cannot be sent the instant a job finishes. If the agent is
- * mid-request, injecting a `triggerTurn` races with the in-flight provider call,
- * so completions that arrive while the agent is busy are queued and flushed on
- * `agent_end`, which is the event-driven idle boundary.
+ * Results completed during a run wait for agent_settled, when Pi can start a
+ * follow-up turn. Idle completions are sent immediately.
  *
  * A background job is a real OS process owned by the conversation that launched
  * it. Leaving the session or switching history branch kills it and drops any
@@ -12,12 +10,14 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SettledDeliveryQueue } from "pi-run-core";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
 import type { RunOutcome } from "../core/types.ts";
 import { createBgBashTool } from "./bash-tool.ts";
 import { createBgTasksTool } from "./tasks-tool.ts";
 import { formatCompletionMessage, detailsFor, type BgBashDetails } from "./format.ts";
+import { renderCompletion } from "./render.ts";
 import { loadThresholdSources, sweepLogDir } from "./settings.ts";
 import { isPureWaitCommand, pollBlockReason } from "./poll-guard.ts";
 import type { Runtime } from "./runtime.ts";
@@ -37,9 +37,9 @@ export const BACKGROUND_JOB_LIMIT = 20;
 
 export default function bgBashExtension(pi: ExtensionAPI): void {
 	const registry = new JobRegistry({ runningLimit: BACKGROUND_JOB_LIMIT });
-	const pendingFollowUps: Array<() => void> = [];
 	let shuttingDown = false;
 	let sessionGeneration = 0;
+	const delivery = new SettledDeliveryQueue(pi);
 
 	const captureOrigin = (ctx: ExtensionContext): (() => boolean) => {
 		const generation = sessionGeneration;
@@ -67,28 +67,21 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		if (shuttingDown || !isCurrent()) return;
 		const content = formatCompletionMessage(job);
 		const details: BgBashDetails = detailsFor(job);
-		const deliver = (): void => {
-			if (shuttingDown || !isCurrent()) return;
+		try {
 			pi.sendMessage(
 				{ customType: BG_BASH_CUSTOM_TYPE, content, display: true, details },
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
-		};
-		let shouldQueue = false;
-		if (ctx) {
-			try {
-				shouldQueue = !ctx.isIdle();
-			} catch {
-				// A torn-down context cannot host a follow-up; drop rather than
-				// let the exception escape into the completion callback.
-				return;
-			}
+		} catch (error) {
+			try { ctx?.ui.notify(`Background job ${job.id} finished, but its result could not be delivered: ${String(error)}`, "warning"); }
+			catch { /* A torn-down UI cannot show the warning. */ }
 		}
-		if (shouldQueue) {
-			pendingFollowUps.push(deliver);
-			return;
-		}
-		deliver();
+	};
+	const deliver = (job: Job, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void => {
+		if (shuttingDown || !isCurrent()) return;
+		// Pi checks its native queue before it emits agent_settled. Enqueuing in
+		// that gap can leave a follow-up with no run to wake it.
+		delivery.deliver(() => ctx?.isIdle() ?? true, () => sendFollowUp(job, ctx, isCurrent));
 	};
 
 	const runtime: Runtime = {
@@ -97,17 +90,17 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		autoBackgroundSeconds: (cwd) => resolveAutoBackgroundSeconds(loadThresholdSources(cwd)),
 		backgroundLimit: () => BACKGROUND_JOB_LIMIT,
 		captureOrigin,
-		deliver: (job, _outcome: RunOutcome, ctx, isCurrent) => sendFollowUp(job, ctx, isCurrent),
+		deliver: (job, _outcome: RunOutcome, ctx, isCurrent) => deliver(job, ctx, isCurrent),
 	};
 
 	/**
 	 * Leaving the conversation kills its background processes and drops any
-	 * queued or late completion. Jobs are not inherited by the next branch:
+	 * late completion. Jobs are not inherited by the next branch:
 	 * they are owned by the context that launched them.
 	 */
 	const leaveSession = () => {
 		sessionGeneration += 1;
-		pendingFollowUps.length = 0;
+		delivery.clear();
 		registry.killAll();
 	};
 
@@ -131,18 +124,13 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		leaveSession();
 	});
 
-	pi.on("agent_end", () => {
-		if (pendingFollowUps.length === 0) return;
-		const queued = pendingFollowUps.splice(0);
-		// Defer a macrotask so pi can finish unwinding the just-ended turn.
-		const handle = setTimeout(() => {
-			for (const deliver of queued) deliver();
-		}, 0);
-		handle.unref?.();
-	});
-
 	pi.registerTool(createBgBashTool(runtime));
 	pi.registerTool(createBgTasksTool(runtime));
+
+	// The follow-up content stays a flat report for the model; only the terminal
+	// view is reshaped, so a person sees a status line and a bounded preview
+	// instead of the report rendered as markdown.
+	pi.registerMessageRenderer<BgBashDetails>(BG_BASH_CUSTOM_TYPE, renderCompletion);
 
 	// A bare `sleep` while a background job is running is a poll. Blocking it and
 	// terminating the batch ends the turn cleanly; the job's completion wakes the

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AceApiError, type AceClient } from "../src/client.ts";
@@ -47,6 +47,32 @@ function configFor(dataDir: string, overrides: Record<string, string> = {}) {
 }
 
 describe("runAceSearch", () => {
+  test("gitignore rules exclude upload bodies and retrieval hashes with nested overrides", async () => {
+    const { root, dataDir } = await workspace();
+    try {
+      await mkdir(join(root, "nested"));
+      await mkdir(join(root, "private"));
+      await mkdir(join(root, "node_modules"));
+      await writeFile(join(root, ".gitignore"), "/private.json\n*.local.json\nprivate/\n");
+      await writeFile(join(root, "nested", ".gitignore"), "!keep.local.json\n/hidden.json\n");
+      await writeFile(join(root, "private", ".gitignore"), "!keep.ts\n");
+      const files = ["public.ts", "private.json", "secret.local.json", "nested/private.json", "nested/keep.local.json", "nested/hidden.json", "private/keep.ts", "node_modules/x.ts"];
+      for (const file of files) await writeFile(join(root, file), "fixture");
+      const { client, calls } = fakeClient();
+      const config = configFor(dataDir);
+      await runAceSearch({ projectRoot: root, query: "test", config, client });
+      const uploads = calls.filter((call) => call.method === "uploadBlobs")
+        .flatMap((call) => call.payload as { path: string }[]).map((blob) => blob.path).sort();
+      const kept = ["nested/keep.local.json", "nested/private.json", "public.ts"];
+      expect(uploads).toEqual(kept);
+      const request = calls.find((call) => call.method === "search")!.payload as { addedBlobs: string[] };
+      expect(request.addedBlobs.sort()).toEqual(kept.map((file) => chunkFileContent(file, "fixture", config)[0]!.hash).sort());
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test("a cold project uploads every chunk, then retrieves with hashes", async () => {
     const { root, dataDir } = await workspace();
     await writeFile(join(root, "a.ts"), "line1\nline2\n");

@@ -151,6 +151,7 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				return { content: [{ type: "text", text: formatBackgroundNotice(job) }], details: detailsFor(job) };
 			}
 
+			runtime.registry.finish(job.id, winner);
 			runtime.registry.remove(job.id);
 			const body = formatForegroundOutput(job);
 			const reason = outcomeReason(winner, params.timeout);

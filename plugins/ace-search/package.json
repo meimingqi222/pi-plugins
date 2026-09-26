@@ -38,6 +38,9 @@
     "augment"
   ],
   "license": "MIT",
+  "dependencies": {
+    "ignore": "^7.0.5"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0"
   },

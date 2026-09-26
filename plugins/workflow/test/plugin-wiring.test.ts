@@ -300,6 +300,92 @@ describe("workflow tool launches a background run", () => {
     expect(String(captured.delivered[0].content)).toContain("echo:hi");
   });
 
+  test("a workflow result after agent_end reaches Pi at agent_settled", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ctx = fakeCtx(cwd);
+    ctx.isIdle = () => false;
+    workflowExtension({ executor: async () => {
+      await gate;
+      return { status: "completed", text: "done", usage: { input: 1, output: 1 } };
+    }, cwd })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    for (const handler of captured.events.get("agent_end") ?? []) handler({}, ctx);
+    release();
+    await waitForStatus(captured, cwd, "Settled runs:");
+    expect(captured.delivered).toHaveLength(0);
+    ctx.isIdle = () => true;
+    for (const handler of captured.events.get("agent_settled") ?? []) handler({}, ctx);
+    await waitFor(() => captured.delivered.length === 1);
+    expect(captured.delivered[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+  });
+
+  test("a queued workflow result is discarded when its session leaves before agent_settled", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const ctx = fakeCtx(cwd);
+    ctx.isIdle = () => false;
+    workflowExtension({ executor: fakeExecutor, cwd })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    await waitForStatus(captured, cwd, "Settled runs:");
+    expect(captured.delivered).toHaveLength(0);
+    for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, ctx);
+    ctx.isIdle = () => true;
+    for (const handler of captured.events.get("agent_settled") ?? []) handler({}, ctx);
+    expect(captured.delivered).toHaveLength(0);
+  });
+
+  test("a workflow result settling after a session switch is discarded", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const ctx = fakeCtx(cwd);
+    ctx.isIdle = () => false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    workflowExtension({ executor: async () => {
+      await gate;
+      return { status: "completed", text: "late", usage: { input: 1, output: 1 } };
+    }, cwd })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, ctx);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(captured.delivered).toHaveLength(0);
+  });
+
+  test("a failing goal spend lease does not swallow a workflow result", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    const notices: string[] = [];
+    workflowExtension({ executor: fakeExecutor, cwd })(pi);
+    pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: () => { throw new Error("lease failed"); } }) });
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd, notices));
+    await waitFor(() => captured.delivered.length === 1);
+    expect(notices.some((notice) => notice.includes("lease failed"))).toBe(true);
+  });
+
+  test("a failing goal spend lease cannot prevent session cleanup", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    workflowExtension({ cwd, executor: async () => {
+      await gate;
+      return { status: "completed", text: "late", usage: { input: 1, output: 1 } };
+    } })(pi);
+    pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: () => { throw new Error("lease failed"); } }) });
+    const ctx = fakeCtx(cwd);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, ctx);
+    try {
+      for (const handler of captured.events.get("session_before_switch") ?? []) handler({}, ctx);
+      expect(await statusText(captured, cwd)).toContain("No workflow runs in this session");
+    } finally {
+      release();
+    }
+  });
+
   test("a non-JSON script result delivers a failed run rather than disappearing", async () => {
     const cwd = await tempCwd();
     const { pi, captured } = fakePi();

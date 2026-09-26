@@ -171,6 +171,26 @@ describe("the extension registers delegation and task tools", () => {
     expect(settled.content[0].text).toContain("completed");
   });
 
+  test("a background task is cancelled on tree navigation and late results cannot wake the new branch", async () => {
+    const { pi, tools, messages, emit } = fakePi();
+    let childSignal: AbortSignal | undefined;
+    let resolveChild!: (value: any) => void;
+    subagentExtension({ executor: (input) => {
+      childSignal = input.signal;
+      return new Promise((resolve) => { resolveChild = resolve; });
+    } })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "same-session" } };
+    await tools[0]!.execute!("tree-job", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    emit("session_before_tree");
+    try {
+      expect(childSignal?.aborted).toBe(true);
+    } finally {
+      resolveChild({ status: "completed", text: "Old branch answer", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 2 } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(messages).toHaveLength(0);
+  });
+
   test("a background task can be cancelled and cannot notify a switched session", async () => {
     const { pi, tools, messages, emit } = fakePi();
     let childSignal: AbortSignal | undefined;

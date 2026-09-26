@@ -57,6 +57,15 @@ export interface GoalLimits {
   stallRuns: number;
 }
 
+export type CandidatePhase = "reported" | "ready" | "verifying" | "interrupted";
+
+/** One claim has one generation and one phase; transitions cannot combine contradictory booleans. */
+export interface CandidateState {
+  generation: number;
+  phase: CandidatePhase;
+  reportedRun: number;
+}
+
 export function goalLimits(env: Record<string, string | undefined> = process.env): GoalLimits {
   const positive = (raw: string | undefined, fallback: number): number => {
     const parsed = Number.parseInt(raw ?? "", 10);
@@ -196,29 +205,9 @@ export interface Goal {
   blockerReason?: string;
   lastBlockerRun?: number;
   candidate?: string;
-  /**
-   * True while a reported `candidate_complete` has not been judged: the run
-   * that carried it ended (error, abort, pause) before verification ran.
-   * Without this flag an unverified candidate is indistinguishable from a
-   * rejected one — both leave `candidate` set and the goal active — so the
-   * next run cannot tell "re-report and let the verifier judge" from "the
-   * verifier already said no". Cleared the moment a verdict is parsed.
-   */
-  candidatePending?: boolean;
-  /**
-   * `workRuns` index of the run that reported the pending candidate.
-   *
-   * The flag above says the candidate is unjudged; it does not say *when*.
-   * While that run is still going the candidate is not unjudged at all — the
-   * verifier has simply not had its turn yet, because `agent_settled` has not
-   * fired. Treated as one state, "has NOT been judged, re-report" is injected
-   * into the reporting run itself, where the only way to obey it is to
-   * re-report, which keeps the run alive and pushes the settle — and with it
-   * the verdict — further away. A real session looped on exactly that line for
-   * eleven minutes and 19M tokens inside a single run, where neither the run cap
-   * nor the stall guard can fire. Cleared with `candidatePending`.
-   */
-  candidateRun?: number;
+  /** Monotonic claim id, retained after a verdict so a later claim cannot reuse it. */
+  candidateGeneration?: number;
+  candidateState?: CandidateState;
   /** Session-scoped plan file, written once at goal creation.
    * Deliberately *not* recomputed for the session that restores the goal: a fork
    * of a session that is working through a plan should keep reading that plan and
@@ -257,12 +246,20 @@ export function isGoal(value: unknown): value is Goal {
     typeof g.status === "string" && !!g.status &&
     natural(g.used) && natural(g.elapsedMs) && natural(g.workRuns) && natural(g.blockerRuns) &&
     optionalNatural(g.attemptRuns) && optionalNatural(g.stalledRuns) && optionalNatural(g.candidateRun) &&
+    optionalNatural(g.candidateGeneration) &&
+    (g.candidateState === undefined || (g.candidateState !== null && typeof g.candidateState === "object" &&
+      natural((g.candidateState as Record<string, unknown>).generation) &&
+      (g.candidateState as Record<string, unknown>).generation !== 0 &&
+      natural((g.candidateState as Record<string, unknown>).reportedRun) &&
+      typeof (g.candidateState as Record<string, unknown>).phase === "string" &&
+      !!(g.candidateState as Record<string, unknown>).phase)) &&
     (g.budget === undefined || (natural(g.budget) && g.budget > 0)) &&
     (g.lastBlockerRun === undefined || natural(g.lastBlockerRun)) &&
     ["blocker", "blockerReason", "candidate", "progress", "reason", "nextActionKey", "verifierModel"].every(
       (key) => g[key] === undefined || typeof g[key] === "string",
     ) &&
     (g.candidatePending === undefined || typeof g.candidatePending === "boolean") &&
+    (g.candidateReady === undefined || typeof g.candidateReady === "boolean") &&
     (g.planPath === undefined || typeof g.planPath === "string") &&
     (g.planStep === undefined || typeof g.planStep === "string") &&
     (g.planCriteria === undefined || (Array.isArray(g.planCriteria) &&
@@ -285,6 +282,31 @@ export function restoreGoal(ctx: ExtensionContext): Goal | undefined {
   // session written by an older build restores instead of being discarded.
   goal.attemptRuns = goal.attemptRuns ?? 0;
   goal.stalledRuns = goal.stalledRuns ?? 0;
+  // Old schema-1 snapshots used three independent flags. Read them once and
+  // write only the phase form thereafter. A restored in-flight claim cannot
+  // assume that its old run or transcript is still available for verification.
+  const legacy = goal as Goal & { candidatePending?: boolean; candidateReady?: boolean; candidateRun?: number };
+  if (goal.candidateState && !["reported", "ready", "verifying", "interrupted"].includes(goal.candidateState.phase)) {
+    goal.reason = `Candidate phase "${fenceModelText(goal.candidateState.phase, 60)}" was written by a newer version; paused.`;
+    goal.status = "paused";
+    goal.candidateState.phase = "interrupted";
+  }
+  if (!goal.candidateState && goal.candidate && goal.candidateGeneration === undefined &&
+    legacy.candidatePending !== false) {
+    goal.candidateGeneration = Math.max(goal.candidateGeneration ?? 0, 1);
+    goal.candidateState = {
+      generation: goal.candidateGeneration,
+      phase: "interrupted",
+      reportedRun: legacy.candidateRun ?? goal.workRuns,
+    };
+  }
+  goal.candidateGeneration = Math.max(goal.candidateGeneration ?? 0, goal.candidateState?.generation ?? 0);
+  delete legacy.candidatePending;
+  delete legacy.candidateReady;
+  delete legacy.candidateRun;
+  if (goal.candidateState && goal.candidateState.phase !== "interrupted") {
+    goal.candidateState.phase = "interrupted";
+  }
   const restored = coerceStatus(goal.status);
   if (restored !== goal.status) {
     // Say so, or the goal appears to have paused itself for no reason.
@@ -413,26 +435,18 @@ export function goalPrompt(goal: Goal, currentRun?: number, showPlanStep = true)
         "Use its `## Acceptance criteria` as the completion bar. Mark checklist items done once as you complete them; do not undo completed items merely because an earlier step was mentioned in a prompt.",
       ]
     : [];
-  // The candidate/verdict status is spelled out because the JSON alone is
-  // ambiguous: `candidate` holds either an unjudged claim or the verifier's
-  // required next action, and a goal paused mid-verification looks identical
-  // to one the verifier rejected. An agent that cannot tell those apart
-  // re-runs the whole attempt blindly after every resume.
-  //
-  // "Unjudged" is also not one state. A candidate reported by the run that is
-  // still going has not been judged *yet* — the verifier runs when the run
-  // settles, so re-reporting it is what keeps the run from settling. That
-  // branch used to fall into the re-report instruction below and to state, as
-  // fact, that the run had already ended, which is how a real session talked
-  // itself into re-reporting the same candidate seven times without ever
-  // reaching a verdict.
+  // Candidate instructions derive from one phase. In particular, a report
+  // made by the current run must never be described as an interrupted claim.
   const statusLines: string[] = [];
-  if (shown.candidate && goal.candidatePending !== false) {
+  const phase = goal.candidateState?.phase;
+  if (shown.candidate && phase) {
     statusLines.push(
       goal.status !== "active"
         ? "A candidate completion was reported but never verified; it has NOT been judged. It stays pending until the goal is resumed."
-        : currentRun !== undefined && currentRun === goal.candidateRun
-          ? "This run reported a candidate completion; finish this run with a final response so the verifier can judge it. Do not call update_goal again in this run."
+        : phase === "ready" || phase === "verifying"
+          ? "A candidate completion is awaiting verification after a clean response. Finish this run so the verifier can judge it. Do not re-report candidate_complete."
+          : phase === "reported" && currentRun !== undefined && currentRun === goal.candidateState?.reportedRun
+            ? "This run reported a candidate completion; finish this run with a final response so the verifier can judge it. Do not call update_goal again in this run."
           : "A candidate completion was reported but the run ended before verification; it has NOT been judged. Re-report candidate_complete with update_goal once the work still stands, so the verifier can judge it.",
     );
   }
@@ -441,7 +455,7 @@ export function goalPrompt(goal: Goal, currentRun?: number, showPlanStep = true)
   if (shown.verdict) {
     statusLines.push(
       `The verifier's last verdict was not passed: ${shown.verdict.reason} (evidence: ${shown.verdict.evidence}).`,
-      goal.candidate && goal.candidatePending !== false
+      goal.candidateState !== undefined
         ? "That verdict predates the pending candidate above."
         : shown.candidate
           ? `Required next action: ${shown.candidate}`
@@ -458,7 +472,10 @@ export function goalPrompt(goal: Goal, currentRun?: number, showPlanStep = true)
     ...planLines,
     ...statusLines,
     goal.status === "active"
-      ? "Work toward this goal within the user's permissions. Honor new user requests. Report material progress only when it changes the work, and report candidate_complete once all requirements are met; only then will the verifier run. Do not call get_goal or update_goal merely to acknowledge a checklist step. For a persistent blocker, report a stable blockerKey and observed reason. Ask for required authority rather than retrying unauthorized actions."
+      ? phase === "ready" || phase === "verifying" ||
+          (phase === "reported" && currentRun !== undefined && currentRun === goal.candidateState?.reportedRun)
+        ? "Finish this run with a final response so the pending candidate can be verified. Do not make further tool calls."
+        : "Work toward this goal within the user's permissions. Honor new user requests. Report material progress only when it changes the work, and report candidate_complete once all requirements are met; only then will the verifier run. Do not call get_goal or update_goal merely to acknowledge a checklist step. For a persistent blocker, report a stable blockerKey and observed reason. Ask for required authority rather than retrying unauthorized actions."
       : "This goal is not active. Do not resume goal work automatically; answer the current user request. Only /goal resume or a new user-managed goal starts it.",
   ].join("\n");
 }

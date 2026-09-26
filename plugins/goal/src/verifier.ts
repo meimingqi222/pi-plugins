@@ -120,8 +120,8 @@ export async function verifyGoal(
     // unjudged, and the verifier's own required next action after a
     // rejection. Sending it under one name would let the verifier mistake its
     // own instruction for a fresh claim, so the two are split here.
-    candidate: goal.candidatePending ? goal.candidate : undefined,
-    requiredAction: goal.candidatePending ? undefined : goal.candidate,
+    candidate: goal.candidateState ? goal.candidate : undefined,
+    requiredAction: goal.candidateState ? undefined : goal.candidate,
     ...(plan
       ? {
           criteria: plan.criteria,

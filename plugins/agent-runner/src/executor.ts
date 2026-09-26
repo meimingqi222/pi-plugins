@@ -24,6 +24,7 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { jsonRunArgs, resolvePiInvocation, type PiInvocation } from "./spawn.ts";
+import { killAgentTree } from "./process.ts";
 
 export interface AgentUsage {
   input: number;
@@ -131,6 +132,10 @@ export const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60 * 1_000;
 const MAX_STDERR_CHARS = 8_000;
 /** Bounded so a runaway child cannot grow the parent's heap through its own output. */
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
+/** A descendant must not keep the result pending through an inherited pipe. */
+const STDIO_GRACE_MS = 200;
+/** Give Pi time to abort detached tools before enforcing a hard stop. */
+const TERMINATION_GRACE_MS = 1000;
 
 export function emptyAgentUsage(): AgentUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
@@ -363,6 +368,8 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           // Rule 1: never piped. A piped stdin is a handle the child can wait on.
           stdio: ["ignore", "pipe", "pipe"],
           env: agentChildEnv(),
+          detached: process.platform !== "win32",
+          windowsHide: true,
         });
 
         const state = emptyStreamState();
@@ -370,6 +377,11 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         let stderr = "";
         let settled = false;
         let killedBy: "timeout" | "abort" | undefined;
+        let terminationRequested = false;
+        let forceKilled = false;
+        let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+        let drainTimer: ReturnType<typeof setTimeout> | undefined;
+        let exitCode: number | null = null;
 
         // Evidence sink: the child's raw event stream, one JSON object per line.
         // Appends are ordered through one queue and best-effort, so a write
@@ -394,7 +406,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           timeoutMs > 0
             ? setTimeout(() => {
                 killedBy = "timeout";
-                kill();
+                terminate();
               }, timeoutMs)
             : undefined;
         // `unref` so a one-shot run is not held open by a timer nobody can see.
@@ -402,27 +414,56 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
 
         const onAbort = (): void => {
           killedBy = "abort";
-          kill();
+          terminate();
         };
         if (input.signal) {
           if (input.signal.aborted) onAbort();
           else input.signal.addEventListener("abort", onAbort, { once: true });
         }
 
-        function kill(): void {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // Already dead.
+        function terminate(): void {
+          if (terminationRequested) return;
+          terminationRequested = true;
+          if (process.platform === "win32") {
+            kill();
+            boundDrain();
+            return;
           }
+          // Pi's print-mode SIGTERM handler cleans up shell process groups and
+          // shuts down extensions. SIGKILL would bypass both cleanup paths.
+          try { child.kill("SIGTERM"); } catch { /* Hard stop below is the fallback. */ }
+          terminationTimer = setTimeout(() => {
+            kill();
+            boundDrain();
+          }, TERMINATION_GRACE_MS);
+        }
+
+        function kill(): void {
+          if (forceKilled) return;
+          forceKilled = true;
+          killAgentTree(child.pid);
+        }
+
+        function boundDrain(): void {
+          if (!drainTimer && !settled) drainTimer = setTimeout(finish, STDIO_GRACE_MS);
         }
 
         function finish(): void {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
+          if (terminationTimer) clearTimeout(terminationTimer);
+          if (drainTimer) clearTimeout(drainTimer);
           input.signal?.removeEventListener("abort", onAbort);
           kill();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+
+          if (state.errorMessage === undefined && stderr.trim()) state.errorMessage = stderr.trim().slice(0, 2_000);
+          if (state.errorMessage === undefined && exitCode !== null && exitCode !== 0) {
+            state.errorMessage = `The agent exited with code ${exitCode}.`;
+          }
 
           let outcome: AgentRunResult;
           if (killedBy) {
@@ -502,14 +543,14 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           state.errorMessage = error instanceof Error ? error.message : String(error);
           finish();
         });
+        child.on("exit", (code) => {
+          exitCode = code;
+          if (timer) clearTimeout(timer);
+          // Drain already-buffered events, but do not wait for a descendant's EOF.
+          boundDrain();
+        });
         child.on("close", (code) => {
-          // A non-zero exit is a failure even when the stream carried no error
-          // event: the exit code is the last word, and reading it is what makes
-          // a silent child diagnosable.
-          if (state.errorMessage === undefined && stderr.trim()) state.errorMessage = stderr.trim().slice(0, 2_000);
-          if (state.errorMessage === undefined && typeof code === "number" && code !== 0) {
-            state.errorMessage = `The agent exited with code ${code}.`;
-          }
+          exitCode = code;
           finish();
         });
       });

@@ -50,4 +50,11 @@ describe("bash tool capacity", () => {
 		const result = await tool.execute("c2", { command: "echo still-ran" }, undefined, undefined, ctx);
 		expect(result.content.map((part: any) => part.text).join("")).toContain("still-ran");
 	});
+
+	test("returns terminal details for a completed foreground command", async () => {
+		const tool = createBgBashTool(runtimeWith(new JobRegistry()));
+		const result = await tool.execute("c3", { command: "echo completed" }, undefined, undefined, ctx);
+
+		expect(result.details).toMatchObject({ status: "exited", exitCode: 0, mode: "foreground" });
+	});
 });

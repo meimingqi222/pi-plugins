@@ -1,6 +1,7 @@
 # Agent Note: Let a reported candidate's run settle
 
 Status: implemented
+Partly-superseded-by: 2026-09-26-goal-background-candidate-settlement.md
 
 ## Problem
 
@@ -52,3 +53,10 @@ Proved: the prompt test failed against the old prompt with the premature
 "run ended before verification" instruction. Disabling the duplicate guard
 failed the repeated-report test: the second call returned the ordinary
 "candidate recorded" reply instead of "already recorded in this run".
+
+## Superseded
+
+The decision to ask for a fresh report after every run that ended without a
+verdict no longer applies to a clean run followed immediately by a queued
+background message. The new note preserves that candidate until a clean
+follow-up settles. Interrupted or errored runs still require a fresh report.
