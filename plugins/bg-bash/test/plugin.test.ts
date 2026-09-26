@@ -18,6 +18,8 @@ type Handler = (event: any, ctx: any) => unknown;
 interface Harness {
 	tools: Map<string, any>;
 	messages: Array<{ message: any; options: any }>;
+	notices: string[];
+	messageRenderers: Map<string, any>;
 	ctx: any;
 	emit(name: string, event?: any): Promise<unknown>;
 }
@@ -43,9 +45,11 @@ afterEach(async () => {
 	rmSync(logDir, { recursive: true, force: true });
 });
 
-function setup(): Harness {
+function setup(onSend?: (message: any, options: any) => void): Harness {
 	const tools = new Map<string, any>();
 	const messages: Array<{ message: any; options: any }> = [];
+	const notices: string[] = [];
+	const messageRenderers = new Map<string, any>();
 	const handlers = new Map<string, Handler[]>();
 	const pi: any = {
 		events: { on() {}, emit() {} },
@@ -57,7 +61,11 @@ function setup(): Harness {
 		registerTool(tool: any) {
 			tools.set(tool.name, tool);
 		},
+		registerMessageRenderer(customType: string, renderer: any) {
+			messageRenderers.set(customType, renderer);
+		},
 		sendMessage(message: any, options: any) {
+			if (onSend) return onSend(message, options);
 			messages.push({ message, options });
 		},
 	};
@@ -66,6 +74,7 @@ function setup(): Harness {
 		cwd: process.cwd(),
 		isIdle: () => true,
 		hasUI: false,
+		ui: { notify(message: string) { notices.push(message); } },
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionFile: () => undefined,
@@ -78,6 +87,8 @@ function setup(): Harness {
 	const harness: Harness = {
 		tools,
 		messages,
+		notices,
+		messageRenderers,
 		ctx,
 		async emit(name: string, event: any = {}) {
 			let result: unknown;
@@ -101,10 +112,17 @@ function textOf(result: any): string {
 	return result.content.map((part: any) => part.text ?? "").join("\n");
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
+/** The completion renderer only needs `fg`/`bg`/`bold`; a real Theme is not needed here. */
+const themeStub = {
+	fg: (_color: string, text: string) => text,
+	bg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as any;
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 10000): Promise<void> {
 	const started = Date.now();
 	while (Date.now() - started < timeoutMs) {
-		if (predicate()) return;
+		if (await predicate()) return;
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	throw new Error("condition not reached before timeout");
@@ -163,6 +181,23 @@ describe("bash tool", () => {
 		await waitFor(() => harness.messages.length > 0);
 		expect(harness.messages[0].message.content).toContain("explicit-bg");
 	});
+
+	test("the follow-up is registered with a renderer that reshapes it for a person", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("t25", { command: "echo rendered-for-humans", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.messages.length > 0);
+
+		const render = harness.messageRenderers.get(BG_BASH_CUSTOM_TYPE);
+		expect(render).toBeDefined();
+		const message = harness.messages[0].message;
+		const view = render(message, { expanded: false, outputPad: 1 }, themeStub).render(120).join("\n");
+		// The model's report is untouched; the terminal view is not that report.
+		expect(message.content).toContain("Background bash job");
+		expect(view).toContain("$ echo rendered-for-humans");
+		expect(view).toContain("rendered-for-humans");
+		expect(view).not.toContain("Background bash job");
+	}, 15000);
 });
 
 describe("bg_tasks tool", () => {
@@ -308,7 +343,7 @@ describe("session lifecycle", () => {
 		expect(list).not.toContain("running");
 	}, 15000);
 
-	test("a follow-up queued for a busy agent is dropped when the session leaves", async () => {
+	test("a busy agent's background job cannot report after its session leaves", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		harness.ctx.isIdle = () => false;
@@ -319,11 +354,44 @@ describe("session lifecycle", () => {
 			undefined,
 			harness.ctx,
 		);
-		await new Promise((resolve) => setTimeout(resolve, 500));
-		expect(harness.messages).toHaveLength(0);
 		await harness.emit("session_before_switch");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("a completion after agent_end is handed to Pi at agent_settled", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
 		await harness.emit("agent_end");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await bash(harness).execute("queued", { command: "echo completed", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(async () => textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx)).includes("exited"));
+		expect(harness.messages).toHaveLength(0);
+		harness.ctx.isIdle = () => true;
+		await harness.emit("agent_settled");
+		await waitFor(() => harness.messages.length === 1, 500);
+		expect(harness.messages[0].message.content).toContain("completed");
+		expect(harness.messages[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+	}, 15000);
+
+	test("a queued completion is discarded when its session leaves before agent_settled", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await bash(harness).execute("queued", { command: "echo completed", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(async () => textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx)).includes("exited"));
+		await harness.emit("session_before_switch");
+		harness.ctx.isIdle = () => true;
+		await harness.emit("agent_settled");
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("a failed follow-up delivery is reported without escaping the completion callback", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup(() => { throw new Error("delivery failed"); });
+		await bash(harness).execute("undelivered", { command: "echo done", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.notices.length === 1);
+		expect(harness.notices[0]).toContain("delivery failed");
 		expect(harness.messages).toHaveLength(0);
 	}, 15000);
 
@@ -343,7 +411,7 @@ describe("session lifecycle", () => {
 		expect(harness.messages).toHaveLength(0);
 	}, 15000);
 
-	test("a completion is dropped, not thrown, when isIdle is also torn down", async () => {
+	test("a completion does not depend on the origin's idle probe", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		const escaped: unknown[] = [];
@@ -357,11 +425,10 @@ describe("session lifecycle", () => {
 				undefined,
 				harness.ctx,
 			);
-			// Session identity still matches, so the isCurrent gate opens; only the
-			// idle probe is gone. The completion must be dropped, not thrown.
+			// Session identity still matches; Pi's follow-up scheduler owns the
+			// idle boundary, so this stale probe must not suppress delivery.
 			harness.ctx.isIdle = () => { throw new Error("context torn down"); };
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			expect(harness.messages).toHaveLength(0);
+			await waitFor(() => harness.messages.length === 1);
 			expect(escaped).toHaveLength(0);
 		} finally {
 			process.off("unhandledRejection", onUnhandled);

@@ -21,6 +21,8 @@ import { compareCriteria, firstUnchecked, parsePlannerPlan, planPathFor, planPat
 interface Flight {
   token: RunToken;
   goalId: string;
+  candidateGeneration: number;
+  runEpoch: number;
   abort: AbortController;
 }
 interface WorkRun {
@@ -39,6 +41,10 @@ interface WorkRun {
   continuationDriven: boolean;
   /** The starting plan hint is shown once, before the run can edit the file. */
   contextSeen: boolean;
+  /** Turns attempted after a completion claim, including plugin continuations. */
+  postCandidateTurns: number;
+  /** Goal blocked a tool call after the candidate and requested batch termination. */
+  candidateToolBlocked: boolean;
   stopReason?: string;
 }
 
@@ -123,6 +129,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   }
   function finish(ctx: ExtensionContext, status: Exclude<GoalStatus, "active" | "verifying">, reason: string): void {
     if (!goal) return;
+    if (goal.candidateState?.phase === "verifying") goal.candidateState.phase = "interrupted";
     goal.elapsedMs = timer.capture();
     timer.stop();
     goal.status = status;
@@ -199,7 +206,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     }, 0);
   }
   function current(call: Flight): boolean {
-    return flight === call && guard.isCurrent(call.token) && goal?.id === call.goalId;
+    return flight === call && guard.isCurrent(call.token) && goal?.id === call.goalId &&
+      goal.workRuns === call.runEpoch && goal.candidateState?.generation === call.candidateGeneration &&
+      goal.candidateState.phase === "verifying";
   }
   /**
    * Writes the plan once, at goal creation. Best-effort by design: a goal with
@@ -293,13 +302,17 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     };
   }
   async function verify(ctx: ExtensionContext): Promise<void> {
-    if (!goal || flight || goal.status !== "active" || budgetReached(ctx)) return;
+    if (!goal || flight || goal.status !== "active" || goal.candidateState?.phase !== "ready" || budgetReached(ctx)) return;
     // Captured before the first await: `/goal replace` can land in the plan read
     // and leave a different goal in the closure, and the round must be abandoned
     // rather than judged against it.
     const goalId = goal.id;
+    const candidateGeneration = goal.candidateState.generation;
+    const runEpoch = goal.workRuns;
     const planInput = await refreshPlan(goalId);
-    if (!goal || goal.id !== goalId || flight || goal.status !== "active" || budgetReached(ctx)) return;
+    if (!goal || goal.id !== goalId || flight || goal.status !== "active" ||
+      goal.candidateState?.generation !== candidateGeneration || goal.candidateState.phase !== "ready" ||
+      goal.workRuns !== runEpoch || !ctx.isIdle() || ctx.hasPendingMessages() || budgetReached(ctx)) return;
     // Recorded on the snapshot so a verdict stays explainable after the fact:
     // the same transcript can be judged differently by a different model.
     const resolved = resolveVerifierModel(ctx);
@@ -315,7 +328,8 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     }
     checkpoint();
     goal.status = "verifying";
-    const call: Flight = { token: guard.issue(), goalId: goal.id, abort: new AbortController() };
+    goal.candidateState.phase = "verifying";
+    const call: Flight = { token: guard.issue(), goalId: goal.id, candidateGeneration, runEpoch, abort: new AbortController() };
     flight = call;
     checkpoint();
     display(ctx);
@@ -325,16 +339,25 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       goal.used += readTokenUsage(result);
       checkpoint();
       if (budgetReached(ctx)) return;
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+        // The queue can change while the isolated verifier awaits its model.
+        // Keep the same claim for the later settled transcript; its generation
+        // remains unchanged and this verdict is intentionally discarded.
+        goal.status = "active";
+        goal.candidateState!.phase = "ready";
+        checkpoint();
+        display(ctx);
+        return;
+      }
       if (result.stopReason !== "stop" || result.content.some((part) => part.type === "toolCall")) {
         throw new Error(`Verifier ended with ${result.stopReason}, not a clean verdict`);
       }
       const raw = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
       const verdict = parseVerdict(raw);
       goal.verdict = { reason: verdict.reason, evidence: verdict.evidence };
-      // A parsed verdict is a judgment on whatever candidate was outstanding,
-      // so the pending flag clears even when the verdict rejects.
-      goal.candidatePending = false;
-      goal.candidateRun = undefined;
+      // Only the captured generation can be judged. `current` rejects a late
+      // verdict after another plugin starts work or a new claim is reported.
+      goal.candidateState = undefined;
       if (verdict.passed) {
         finish(ctx, "complete", verdict.reason);
         return;
@@ -472,6 +495,16 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     endedRun = undefined;
     deferredRun = undefined;
     work = undefined;
+    if (goal?.status === "verifying") {
+      // Another extension can start a follow-up while the isolated verifier is
+      // reading an older transcript. Keep the candidate, discard that verdict,
+      // and judge again after this new turn has settled.
+      invalidate();
+      goal.status = "active";
+      if (goal.candidateState?.phase === "verifying") goal.candidateState.phase = "ready";
+      checkpoint();
+      display(ctx);
+    }
     if (goal?.status !== "active") {
       // The goal was paused or cleared after the continuation was queued. Pi
       // cannot unsend it, so the turn it starts is stopped instead: it would
@@ -493,22 +526,61 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       }
       return;
     }
+    const { maxRuns } = goalLimits();
+    if ((goal.attemptRuns ?? 0) >= maxRuns) {
+      finish(ctx, "paused", `Work run cap of ${maxRuns} reached; /goal resume authorizes more.`);
+      // An extension may start a user-owned turn at this boundary. Stop only
+      // the continuation issued by this goal; never abort the user's turn.
+      if (continuationDriven) {
+        try { ctx.abort(); } catch { /* The goal is already paused. */ }
+      }
+      return;
+    }
     timer.start();
     goal.workRuns++;
     goal.attemptRuns = (goal.attemptRuns ?? 0) + 1;
-    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven, contextSeen: false };
+    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven, contextSeen: false, postCandidateTurns: 0, candidateToolBlocked: false };
     // Refresh before the checkpoint so the run starts from the checklist's
     // current first unchecked item and that step is persisted with it.
     await refreshPlan(goal.id);
     checkpoint();
   });
   pi.on("message_end", (event, ctx) => account(event.message, work, ctx));
+  function candidateAwaitsSettlement(): boolean {
+    if (!goal || goal.status !== "active" || !work || work.goalId !== goal.id) return false;
+    const state = goal.candidateState;
+    return state?.phase === "ready" || (state?.phase === "reported" && state.reportedRun === work.index);
+  }
+  pi.on("turn_start", (_event, ctx) => {
+    if (!candidateAwaitsSettlement() || !work) return;
+    // A blocked tool only terminates the run when every call in the batch is
+    // terminating. Other extensions can keep a batch alive, so bound the
+    // post-candidate loop independently of Pi's tool scheduling.
+    if (++work.postCandidateTurns < 3) return;
+    const continuationDriven = work.continuationDriven;
+    finish(ctx, "paused", "Completion candidate could not settle after two further turns; resume to re-report it.");
+    if (continuationDriven) {
+      try { ctx.abort(); } catch { /* The goal is already paused. */ }
+    }
+  });
+  pi.on("tool_call", (event) => {
+    if (!candidateAwaitsSettlement() || !work) return;
+    work.candidateToolBlocked = true;
+    return { block: true, terminate: true, reason: "A completion candidate is already pending. Further tool calls are blocked; the verifier will judge it after this run settles." };
+  });
   pi.on("agent_end", (event, ctx) => {
     const owner = work;
     if (!owner || !goal || owner.goalId !== goal.id || owner.session !== guard.sessionId) return;
     for (const message of event.messages) account(message, owner, ctx);
     const final = [...event.messages].reverse().find((message) => message.role === "assistant");
     owner.stopReason = final?.stopReason;
+    if (goal.candidateState?.phase === "reported" && goal.candidateState.reportedRun === owner.index) {
+      // A goal-blocked tool batch terminates with stopReason "toolUse": Pi
+      // does not make another model call for a final text response. Treat that
+      // enforced stop as ready, but do not accept unrelated toolUse endings.
+      const goalTerminatedBatch = final?.stopReason === "toolUse" && owner.candidateToolBlocked;
+      goal.candidateState.phase = final?.stopReason === "stop" || goalTerminatedBatch ? "ready" : "interrupted";
+    }
     endedRun = owner;
     work = undefined;
     if (goal.lastBlockerRun !== owner.index) {
@@ -516,7 +588,8 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       goal.blocker = undefined;
     }
     if (goal.status === "active" && final?.stopReason === "aborted") {
-      finish(ctx, "paused", goal.candidatePending
+      if (goal.candidateState) goal.candidateState.phase = "interrupted";
+      finish(ctx, "paused", goal.candidateState
         ? "Agent cancelled; a reported candidate was never verified."
         : "Agent cancelled.");
       return;
@@ -541,8 +614,9 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     if (owner.stopReason === "error" || owner.stopReason === "aborted") {
       // A candidate reported in a run that ends here was never judged — the
       // verifier only sees clean stops. The pause reason says so, and the
-      // candidatePending flag carries the same fact into the next prompt.
-      finish(ctx, "paused", goal.candidatePending
+      // The interrupted phase carries the same fact into the next prompt.
+      if (goal.candidateState) goal.candidateState.phase = "interrupted";
+      finish(ctx, "paused", goal.candidateState
         ? `Agent ${owner.stopReason}; a reported candidate was never verified.`
         : `Agent ${owner.stopReason}.`);
       return;
@@ -554,20 +628,24 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       finish(ctx, "paused", `Work run cap of ${maxRuns} reached; /goal resume authorizes more.`);
       return;
     }
-    // A clean stop is not a completion claim. Keep working without paying for a
-    // verifier round until this run explicitly reports candidate_complete.
-    // A candidate left pending by an older, interrupted run is not this run's
-    // claim and must be re-reported before it can be judged.
-    if (!goal.candidatePending || goal.candidateRun !== owner.index) {
+    // A clean stop is not a completion claim. A candidate from an earlier
+    // clean run can still be judged here when a queued follow-up delayed its
+    // first settlement. Interrupted candidates need a fresh report.
+    if (goal.candidateState?.phase !== "ready") {
       schedule(ctx);
       return;
     }
     await verify(ctx);
   }
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", (_event, ctx) => {
     const owner = endedRun;
     endedRun = undefined;
-    await settleGoalRun(owner, ctx);
+    // Pi awaits extension handlers in registration order. Yield so later
+    // synchronous handlers can deliver follow-ups before we verify.
+    if (owner) setTimeout(() => { void settleGoalRun(owner, ctx).catch((error) => {
+      try { ctx.ui.notify(`Goal settlement failed: ${String(error)}`, "error"); }
+      catch { /* The originating UI may already be gone. */ }
+    }); }, 0);
   });
 
   pi.registerCommand("goal", {
@@ -642,7 +720,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       invalidate();
       work = undefined;
       endedRun = undefined;
-      goal = { schema: 1, id: crypto.randomUUID(), ...parsed, status: "active", used: 0, elapsedMs: 0, workRuns: 0, attemptRuns: 0, blockerRuns: 0, stalledRuns: 0 };
+      goal = { schema: 1, id: crypto.randomUUID(), ...parsed, status: "active", used: 0, elapsedMs: 0, workRuns: 0, attemptRuns: 0, blockerRuns: 0, stalledRuns: 0, candidateGeneration: 0 };
       timer.restart();
       timer.start();
       checkpoint();
@@ -672,21 +750,20 @@ export default function goalPlugin(pi: ExtensionAPI): void {
       if (!goal || goal.status !== "active" || !work || work.goalId !== goal.id) {
         return { content: [{ type: "text", text: "No active goal work run." }], details: { state: "none" } };
       }
-      if (params.kind === "candidate_complete" && goal.candidatePending && goal.candidateRun === work.index) {
+      if (params.kind === "candidate_complete" && goal.candidateState &&
+        (goal.candidateState.phase === "ready" || goal.candidateState.phase === "verifying" ||
+          (goal.candidateState.phase === "reported" && goal.candidateState.reportedRun === work.index))) {
         return {
-          content: [{ type: "text", text: "A candidate is already recorded in this run. Finish this run with a final response so verification can start; do not call update_goal again." }],
+          content: [{ type: "text", text: "A candidate is already awaiting verification. Finish this run with a final response so verification can start; do not call update_goal again." }],
           details: structuredClone(goal),
         };
       }
       goal.progress = params.message;
       if (params.kind === "candidate_complete") {
         goal.candidate = params.message;
-        // Until a verdict is parsed this candidate is unjudged; a run that
-        // ends before verification must not read as a rejection.
-        goal.candidatePending = true;
-        // Which run reported it decides what the next prompt may ask for: this
-        // one lets the run settle, an earlier or later one re-reports.
-        goal.candidateRun = work.index;
+        goal.candidateGeneration = (goal.candidateGeneration ?? 0) + 1;
+        goal.candidateState = { generation: goal.candidateGeneration, phase: "reported", reportedRun: work.index };
+        work.postCandidateTurns = 0;
       }
       if (params.kind === "blocked") {
         const key = params.blockerKey?.trim() || params.message.trim();

@@ -14,7 +14,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
+import { connectGoalSpend, readTokenUsage, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { BackgroundRegistry, formatBackground } from "./background.ts";
 import { discoverAgents, findAgent, formatAgentNames } from "./agents.ts";
 import {
@@ -44,7 +44,8 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     if (options.enabled === false || subagentsDisabled()) return;
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
-    const pending = new Map<string, { lease?: GoalSpendLease; isCurrent: () => boolean }>();
+    const delivery = new SettledDeliveryQueue(pi);
+    const pending = new Map<string, { lease?: GoalSpendLease; isCurrent: () => boolean; isIdle: () => boolean }>();
     const registry = new BackgroundRegistry((record) => {
       const launch = pending.get(record.id);
       pending.delete(record.id);
@@ -52,27 +53,27 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       if (!launch?.isCurrent()) return;
       const answer = record.result?.content.find((item) => item.type === "text");
       const summary = answer?.type === "text" ? answer.text : record.errorMessage ?? "No answer was returned.";
-      if (record.status === "completed") {
-        pi.sendMessage({
-          customType: "subagent-result",
-          content: `${formatBackground(record)}\n\n${summary}`,
-          display: true,
-          details: record,
-        }, { triggerTurn: true, deliverAs: "followUp" });
-      } else {
-        pi.sendMessage({
-          customType: "subagent-result",
-          content: `${formatBackground(record)}\n\n${summary}`,
-          display: true,
-          details: record,
-        });
-      }
+      delivery.deliver(launch.isIdle, () => {
+        if (!launch.isCurrent()) return;
+        try {
+          pi.sendMessage({
+            customType: "subagent-result",
+            content: `${formatBackground(record)}\n\n${summary}`,
+            display: true,
+            details: record,
+          }, record.status === "completed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+        } catch { /* The settled task remains available through subagent_tasks. */ }
+      });
     });
 
     const endSession = () => {
       generation += 1;
+      delivery.clear();
       registry.stopAll();
     };
+    pi.on("session_before_tree", endSession);
+    pi.on("session_before_fork", endSession);
+    pi.on("session_before_switch", endSession);
     pi.on("session_shutdown", endSession);
 
     pi.registerTool({
@@ -120,6 +121,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             pending.set(record.id, {
               ...(lease ? { lease } : {}),
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
+              isIdle: () => ctx.isIdle(),
             });
             return {
               content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check or cancel it.` }],

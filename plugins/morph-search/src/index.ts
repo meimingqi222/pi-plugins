@@ -111,9 +111,12 @@ export default function morphSearch(pi: ExtensionAPI): void {
   if (config.compact.enabled) {
     pi.on("session_before_compact", async (event) => {
       if (!config.apiKey) return;
-      const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = event.preparation;
+      const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore, previousSummary } = event.preparation;
       const text = serializeConversation(convertToLlm([...messagesToSummarize, ...turnPrefixMessages]));
       const messages = compactMessagesFromText(text);
+      // Pi supplies earlier compacted history separately from the new messages.
+      // Keep it intact instead of parsing its role-like lines as fresh turns.
+      if (previousSummary?.trim()) messages.unshift({ role: "user", content: previousSummary });
       if (messages.length === 0) return;
       try {
         const result = await new CompactClient({ morphApiKey: config.apiKey, morphApiUrl: config.baseUrl, timeout: config.compact.timeoutMs }).compact({

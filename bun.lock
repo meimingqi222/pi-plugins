@@ -18,6 +18,9 @@
       "bin": {
         "pi-ace-search": "./src/cli.ts",
       },
+      "dependencies": {
+        "ignore": "^7.0.5",
+      },
       "devDependencies": {
         "@earendil-works/pi-tui": "^0.86.1",
         "@types/node": "^22.0.0",
@@ -42,9 +45,11 @@
       "name": "pi-bg-bash",
       "version": "0.1.0",
       "dependencies": {
+        "pi-run-core": "workspace:*",
         "typebox": "^1.3.7",
       },
       "devDependencies": {
+        "@earendil-works/pi-tui": "^0.86.1",
         "@types/node": "^22.0.0",
         "bun-types": "^1.4.2",
         "typescript": "^5.6.0",

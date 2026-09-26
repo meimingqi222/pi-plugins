@@ -125,6 +125,11 @@ result so a slow first search is attributable from the transcript.
 
 ## Privacy
 
+Root and nested `.gitignore` files filter both uploads and retrieval hashes,
+including negation and directory rules. Configured `EXCLUDE_PATTERNS` remain
+an additional exclusion layer. This also works without a Git repository;
+global Git ignore files and `.git/info/exclude` are not read.
+
 This uploads source to a third-party ACE endpoint. `acemcp` already does the
 same, and it reuses that index, so nothing new leaves the machine — but it is
 worth stating plainly, and it is why `PI_ACE_ENABLED=false` exists.

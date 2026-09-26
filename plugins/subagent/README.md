@@ -58,7 +58,8 @@ list tasks, show a task's status and answer, or cancel a running task:
 
 At most four background subagents run at once. Their handles and results remain
 in memory for the current session; the most recent 20 settled tasks are kept.
-Switching sessions or shutting down cancels active tasks. Completed tasks wake
+Switching sessions, navigating the history tree, forking, or shutting down
+cancels active tasks and suppresses their late results. Completed tasks wake
 the parent agent; failures and cancellations appear in the transcript without
 starting another turn.
 

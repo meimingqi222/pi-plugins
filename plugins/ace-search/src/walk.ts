@@ -19,8 +19,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { open, readdir, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
+import ignore, { type Ignore } from "ignore";
 import type { AceSearchConfig } from "./config.ts";
 
 export interface BlobChunk {
@@ -174,6 +175,33 @@ interface CandidateFile {
   readonly size: number;
 }
 
+interface GitIgnoreScope {
+  directory: string;
+  matcher: Ignore;
+}
+
+async function readGitIgnore(directory: string): Promise<GitIgnoreScope | undefined> {
+  try {
+    const content = await readFile(join(directory, ".gitignore"), "utf8");
+    return { directory, matcher: ignore({ ignorecase: false }).add(content) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    // An unreadable exclusion file must not silently authorize uploads.
+    throw error;
+  }
+}
+
+function gitIgnored(scopes: readonly GitIgnoreScope[], path: string, isDirectory: boolean): boolean {
+  let ignored = false;
+  for (const scope of scopes) {
+    const localPath = toPosix(relative(scope.directory, path)) + (isDirectory ? "/" : "");
+    const match = scope.matcher.test(localPath);
+    if (match.ignored) ignored = true;
+    else if (match.unignored) ignored = false;
+  }
+  return ignored;
+}
+
 async function collectCandidateFiles(
   projectRoot: string,
   context: {
@@ -183,11 +211,13 @@ async function collectCandidateFiles(
   },
 ): Promise<CandidateFile[]> {
   const results: CandidateFile[] = [];
-  const queue: string[] = [projectRoot];
+  const queue: { directory: string; scopes: GitIgnoreScope[] }[] = [{ directory: projectRoot, scopes: [] }];
 
   while (queue.length > 0) {
     context.signal.throwIfAborted();
-    const directory = queue.pop()!;
+    const { directory, scopes: inherited } = queue.pop()!;
+    const local = await readGitIgnore(directory);
+    const scopes = local ? [...inherited, local] : inherited;
     let dirents;
     try {
       dirents = await readdir(directory, { withFileTypes: true });
@@ -197,8 +227,9 @@ async function collectCandidateFiles(
     for (const dirent of dirents) {
       const absolutePath = join(directory, dirent.name);
       const relativePath = toPosix(relative(projectRoot, absolutePath));
+      if (gitIgnored(scopes, absolutePath, dirent.isDirectory())) continue;
       if (dirent.isDirectory()) {
-        if (!context.walker.isIgnored(relativePath, true)) queue.push(absolutePath);
+        if (!context.walker.isIgnored(relativePath, true)) queue.push({ directory: absolutePath, scopes });
         continue;
       }
       if (!dirent.isFile()) continue;

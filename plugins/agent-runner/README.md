@@ -37,8 +37,14 @@ which is a cross-plugin contract and so lives in one constant.
 **`stdin` is `"ignore"`, never piped.** A piped stdin left open is a handle the
 child can wait on forever, and the parent then waits on the child.
 
-**A wall-clock timer kills the process.** An agent that ignores its abort signal
-must still die. The call's `timeoutMs` wins over the executor's default.
+**A wall-clock timer terminates the process tree.** The call's `timeoutMs` wins
+over the executor's default. POSIX children get their own process group; Windows
+uses `taskkill /F /T`. After exit or cancellation, pipe draining is capped at
+200ms so inherited handles cannot keep the result pending. POSIX cancellation
+first sends SIGTERM to Pi, allowing it to clean up detached shell tools and
+extensions; after a maximum 1000ms grace it escalates to SIGKILL. Cleanup is best
+effort: descendants that escape the process group, or Windows descendants whose
+parent has already exited, may need separate cleanup.
 
 **stdout is drained continuously and stderr is bounded.** A reader that stops
 consuming can stall pi once the pipe buffer fills, and a chatty child must not

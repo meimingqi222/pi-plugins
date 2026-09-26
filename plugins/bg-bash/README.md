@@ -4,6 +4,13 @@ Cross-platform background bash for pi. A command that outlives a threshold is
 detached instead of blocking the turn, and its result comes back as a follow-up
 message.
 
+An idle job result is handed to Pi as a `followUp` immediately. If an agent run
+is active, the result waits until Pi emits `agent_settled`, then starts a new
+turn. The plugin checks the
+launching session before delivery; a job that finishes after leaving that
+session cannot post into the new one. A synchronous delivery failure is
+reported through the UI instead of escaping the background callback.
+
 ## Why this exists
 
 pi's built-in `bash` tool has an optional `timeout` and **no default**. If the
@@ -41,6 +48,13 @@ execution to *during* it.
   (builds, dev servers, watchers).
 - **`bg_tasks`.** `list`, `status <id>`, `log <id>`, `kill <id>`. This is the
   part that makes a hung job recoverable: read what it has printed, then stop it.
+- **The follow-up is readable in the terminal.** Its model-facing content is
+  unchanged, but a registered message renderer draws it for a person: a status
+  line (`finished · bg001 · 1.2s · exit 0`), the command, a 20-line output
+  preview, and the log pointer as a warning. Expanding the message shows the
+  whole retained tail. Without the renderer the same report would go through the
+  markdown renderer, where a `#` comment in build output becomes a heading and
+  every retained line is printed.
 - **No wait-polling.** A bare `sleep` while a job is running is blocked and the
   turn ends, so the model is woken by the job's completion instead of spinning.
   A command with a purpose (`sleep 5 && npm test`) is untouched.
@@ -122,8 +136,8 @@ at most the newest 200 files are kept.
   tail buffer, and the outcome→status rule. No process, no filesystem, no `pi`.
 - `runner/` — shell resolution, spawn, process-tree termination, and the
   exit/stdout draining logic.
-- `pi/` — tool registration, config file access, formatting, and the follow-up
-  queue.
+- `pi/` — tool registration, config file access, formatting, follow-up
+  delivery through Pi, and the terminal rendering of a completion.
 
 ## Development
 
