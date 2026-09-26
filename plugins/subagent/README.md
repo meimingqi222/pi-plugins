@@ -111,10 +111,12 @@ Background children also get a human-facing surface, because a card in
 scrollback cannot describe work that is still in flight:
 
 - **A widget under the editor** appears while at least one child runs — one
-  stable row per child (icon, agent, task, elapsed, output tokens), folded past
+  stable row per child (icon, alias, task, elapsed, output tokens), folded past
   six rows — and disappears when the last child settles. Rows are deliberately
   stable: live tool calls and streamed text would churn every row on every
-  child event.
+  child event. Foreground calls register as lanes too — a blocking call no
+  longer looks like an idle session; they never occupy a background slot and
+  cannot be cancelled by id.
 - **`/subagents`** prints the same listing the model's `subagent_tasks`
   produces. **`/subagents live`** opens an overlay panel: `↑`/`↓` select
   (selection follows the record id, so a settling child does not move the

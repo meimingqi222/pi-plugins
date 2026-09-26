@@ -2,7 +2,7 @@
  * `fleet.ts` — pure rendering for the subagent liveness surfaces.
  *
  * The widget row and summary are the shared background-work surface
- * (`pi-run-core`'s `work-surface.ts`): a `BackgroundRecord` maps onto a
+ * (`pi-run-core`'s `work-surface.ts`): a `Lane` maps onto a
  * `WorkItem`, and the shared renderer draws it, so `pi-subagent` and
  * `pi-bg-bash` can never drift on what "still running" looks like. What stays
  * here is the mapping — `deriveChildState` is the state oracle every surface
@@ -26,7 +26,8 @@ import {
 	type WorkTheme,
 } from "pi-run-core";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { deriveChildState, formatBackground, formatDuration, type BackgroundRecord, type ChildState } from "./background.ts";
+import { deriveChildState, formatBackground, formatDuration, type ChildState } from "./background.ts";
+import type { Lane } from "./lane.ts";
 import { formatActivity } from "./tool.ts";
 
 /** The two members every formatter needs; a test supplies a plain object. */
@@ -61,12 +62,12 @@ export function stateIcon(state: ChildState, theme: FleetTheme): string {
 export const formatTokens = formatWorkTokens;
 export const fit = fitWorkText;
 
-function outputTokens(record: BackgroundRecord): number {
+function outputTokens(record: Lane): number {
 	return record.result?.details?.usage?.output ?? 0;
 }
 
 /** A child as shared work: kind = alias (the human name), label = task, metric = output tokens. */
-export function toWorkItem(record: BackgroundRecord, now: number): WorkItem {
+export function toWorkItem(record: Lane, now: number): WorkItem {
 	const tokens = outputTokens(record);
 	return {
 		id: record.id,
@@ -80,7 +81,7 @@ export function toWorkItem(record: BackgroundRecord, now: number): WorkItem {
 }
 
 /** One bounded summary line: `◉ subagents · 1 running · 1 stalled · 3m`. */
-export function formatFleetSummary(records: BackgroundRecord[], now: number): string {
+export function formatFleetSummary(records: Lane[], now: number): string {
 	return formatWorkSummary(records.map((record) => toWorkItem(record, now)), now, "subagents");
 }
 
@@ -88,7 +89,7 @@ export function formatFleetSummary(records: BackgroundRecord[], now: number): st
  * One stable row for the widget: `● explore    Fit the note format   3m01s · ↓1.2k`.
  * Live activity is deliberately absent — it belongs to the opened panel row.
  */
-export function formatWidgetRow(record: BackgroundRecord, theme: FleetTheme, now: number, width: number): string {
+export function formatWidgetRow(record: Lane, theme: FleetTheme, now: number, width: number): string {
 	return formatWorkRow(toWorkItem(record, now), theme, now, width);
 }
 
@@ -96,7 +97,7 @@ export function formatWidgetRow(record: BackgroundRecord, theme: FleetTheme, now
  * Widget body: `… N more` when there are more live children than rows, then the
  * entry hint. Callers mount this only while records is non-empty.
  */
-export function renderFleetWidget(records: BackgroundRecord[], theme: FleetTheme, now: number, width: number): string[] {
+export function renderFleetWidget(records: Lane[], theme: FleetTheme, now: number, width: number): string[] {
 	const lines = renderWorkSurface(records.map((record) => toWorkItem(record, now)), theme, now, width, {
 		title: "subagents",
 		hint: "/subagents · ctrl+shift+a",
@@ -111,7 +112,7 @@ export function renderFleetWidget(records: BackgroundRecord[], theme: FleetTheme
  * opened deliberately, so it carries live detail — current tool or latest
  * event — that the stable row deliberately omits.
  */
-export function formatPanelRow(record: BackgroundRecord, selected: boolean, theme: FleetTheme, now: number, width: number): string {
+export function formatPanelRow(record: Lane, selected: boolean, theme: FleetTheme, now: number, width: number): string {
 	const state = deriveChildState(record, now);
 	const rail = selected ? theme.bold(theme.fg("accent", "›")) : " ";
 	const progress = record.progress;
@@ -127,7 +128,7 @@ export function formatPanelRow(record: BackgroundRecord, selected: boolean, them
 }
 
 /** `/subagents` (no args): the model's own `formatBackground` lines, so the human and the tool read the same truth. */
-export function formatFleetListing(records: BackgroundRecord[]): string {
+export function formatFleetListing(records: Lane[]): string {
 	if (records.length === 0) return "No background subagent tasks in this session.";
 	return records.map((record) => `- ${formatBackground(record)}`).join("\n");
 }
@@ -136,7 +137,7 @@ export function formatFleetListing(records: BackgroundRecord[]): string {
  * The detail view for one child. Metadata only — prompt, tool arguments and
  * output stay in the raw log, which the panel opens explicitly via `l`.
  */
-export function formatChildDetail(record: BackgroundRecord, theme: FleetTheme, now: number): string[] {
+export function formatChildDetail(record: Lane, theme: FleetTheme, now: number): string[] {
 	const state = deriveChildState(record, now);
 	const lines: string[] = [
 		`${stateIcon(state, theme)} ${theme.bold(record.alias || record.agent)}  ${theme.fg("muted", `${record.agent} · ${record.id}`)}`,

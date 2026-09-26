@@ -15,7 +15,8 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { connectGoalSpend, readTokenUsage, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
-import { BackgroundRegistry, formatBackground } from "./background.ts";
+import { formatBackground } from "./background.ts";
+import { LaneRegistry } from "./lane.ts";
 import { formatFleetListing } from "./fleet.ts";
 import { createSubagentsPanel } from "./panel.ts";
 import { createFleetReporter } from "./widget.ts";
@@ -132,7 +133,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       }
     }
 
-    const registry = new BackgroundRegistry((record) => {
+    const registry = new LaneRegistry((record) => {
       reporter.sync();
       const launch = pending.get(record.id);
       pending.delete(record.id);
@@ -326,7 +327,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           };
           try {
             const resolved = resolveAgent(agents, params.agent);
-            const record = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
+            const { record } = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
               const logPath = subagentLogPath(id, sessionId);
               registry.setLogPath(id, logPath);
               return executeSubagent(params, {
@@ -336,7 +337,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
                 onProgress: (progress) => registry.setProgress(id, progress),
               }, options);
-            }, params.alias);
+            }, { alias: params.alias, generation: launchedIn });
             pending.set(record.id, {
               ...(lease ? { lease } : {}),
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
@@ -356,20 +357,56 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             throw error;
           }
         }
+        // A foreground call is a lane too: registered so the fleet shows it,
+        // not addressable (no id reaches the model) and never occupying a
+        // background concurrency slot. A lane is session-scoped by definition,
+        // so a session-less context (embedded hosts, tests) takes the direct
+        // path instead — there is nothing to own the lane.
         const lease = goalSpend()?.begin(ctx, toolCallId);
-        try {
-          const result = await executeSubagent(params, {
+        const sessionId = ctx.sessionManager?.getSessionId?.();
+        if (!sessionId) {
+          try {
+            const result = await executeSubagent(params, {
+              cwd: ctx.cwd,
+              ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+              ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
+              ...(signal ? { signal } : {}),
+              ...(onUpdate ? { onUpdate } : {}),
+            }, options);
+            lease?.finish(readTokenUsage(result));
+            return result;
+          } catch (error) {
+            lease?.finish(0);
+            throw error;
+          }
+        }
+        const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
+        const fgResolved = resolveAgent(fgAgents, params.agent);
+        const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) =>
+          executeSubagent(params, {
             cwd: ctx.cwd,
             ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
-            ...(signal ? { signal } : {}),
+            signal: runSignal,
             ...(onUpdate ? { onUpdate } : {}),
-          }, options);
-          lease?.finish(readTokenUsage(result));
-          return result;
+            onProgress: (progress) => registry.setProgress(id, progress),
+          }, options),
+        { kind: "foreground", alias: params.alias, generation });
+        const onAbort = () => registry.abort(launched.record.id);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
+        reporter.sync();
+        try {
+          await launched.done;
+          const settled = registry.get(sessionId, launched.record.id);
+          if (!settled?.result) throw new Error(settled?.errorMessage ?? "Subagent call failed.");
+          lease?.finish(readTokenUsage(settled.result));
+          return settled.result;
         } catch (error) {
           lease?.finish(0);
           throw error;
+        } finally {
+          signal?.removeEventListener("abort", onAbort);
         }
       },
       renderCall(args, theme) {
