@@ -41,3 +41,10 @@ export {
   type AgentUsage,
   type StreamState,
 } from "./executor.ts";
+export {
+  rpcRunArgs,
+  spawnRpcChild,
+  type RpcChild,
+  type RpcChildInput,
+  type SpawnRpcChildOptions,
+} from "./rpc-child.ts";
