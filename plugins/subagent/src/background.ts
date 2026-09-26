@@ -5,6 +5,24 @@ import type { SubagentDetails, SubagentProgress } from "./tool.ts";
 export type BackgroundStatus = "running" | "completed" | "failed" | "aborted";
 export const QUIET_ACTIVITY_WARNING_MS = 90_000;
 
+/** Observability states: `stalled` is `running` plus quiet past the warning threshold. */
+export type ChildState = BackgroundStatus | "stalled";
+
+/**
+ * The single place a running record becomes `stalled`.
+ *
+ * The widget, the fleet panel and `formatBackground` all answer "is this child
+ * stuck" from here, so the surfaces cannot disagree. A child that has emitted
+ * no progress event yet is quiet since its start time: `progress` is absent,
+ * which is a spawn, not silence inside the run — it is still `stalled` when the
+ * age alone exceeds the threshold.
+ */
+export function deriveChildState(record: Pick<BackgroundRecord, "status" | "startedAt" | "progress">, now: number): ChildState {
+	if (record.status !== "running") return record.status;
+	const lastActivityAt = record.progress?.lastActivityAt ?? record.startedAt;
+	return now - lastActivityAt >= QUIET_ACTIVITY_WARNING_MS ? "stalled" : "running";
+}
+
 export interface BackgroundRecord {
   id: string;
   agent: string;
@@ -110,6 +128,11 @@ export class BackgroundRegistry {
     return this.active.size >= this.maxActive;
   }
 
+  /** Counts running children across every session; the fleet ticker starts on this. */
+  activeCount(): number {
+    return this.active.size;
+  }
+
   get activeLimit(): number {
     return this.maxActive;
   }
@@ -137,7 +160,14 @@ export function formatBackground(record: BackgroundRecord): string {
   const elapsed = Math.round(((record.finishedAt ?? now) - record.startedAt) / 1000);
   const tools = record.progress?.completedTools ? ` · ${record.progress.completedTools} tools` : "";
   const progress = record.progress;
-  if (!progress) return `${record.id} · ${record.agent} · ${record.status} · ${elapsed}s${tools}`;
+  // A child that has never emitted an event still derives `stalled` from its
+  // start time; the flag belongs on the plain line rather than being hidden.
+  if (!progress) {
+    const stall = deriveChildState(record, now) === "stalled"
+      ? ` · no child event for ${formatDuration(Math.floor((now - record.startedAt) / 1_000))} (possible stall)`
+      : "";
+    return `${record.id} · ${record.agent} · ${record.status} · ${elapsed}s${tools}${stall}`;
+  }
 
   const quietMs = Math.max(0, now - progress.lastActivityAt);
   const quiet = formatDuration(Math.floor(quietMs / 1_000));
@@ -146,7 +176,7 @@ export function formatBackground(record: BackgroundRecord): string {
   const phase = progress.phase === "tool"
     ? `tool ${activeTool || "execution"}`
     : progress.phase;
-  const activity = record.status === "running" && quietMs >= QUIET_ACTIVITY_WARNING_MS
+  const activity = deriveChildState(record, now) === "stalled"
     ? ` · no child event for ${quiet} (possible stall)`
     : ` · last ${progress.lastEvent} ${quiet} ago`;
   return `${record.id} · ${record.agent} · ${record.status} · ${elapsed}s${tools} · ${phase}${activity}`;

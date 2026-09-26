@@ -16,23 +16,50 @@ interface CapturedTool {
   renderResult?: (...args: any[]) => { render(width: number): string[] };
 }
 
-function fakePi(): { pi: ExtensionAPI; tools: CapturedTool[]; messages: Array<{ message: any; options: any }>; emit: (name: string, value?: any) => void } {
+interface CapturedCommand {
+  name: string;
+  description?: string;
+  handler: (args: string, ctx: any) => Promise<void> | void;
+}
+
+interface CapturedShortcut {
+  key: string;
+  description?: string;
+  handler: (ctx: any) => Promise<void> | void;
+}
+
+function fakePi(): {
+  pi: ExtensionAPI;
+  tools: CapturedTool[];
+  commands: CapturedCommand[];
+  shortcuts: CapturedShortcut[];
+  messages: Array<{ message: any; options: any }>;
+  emit: (name: string, value?: any, ctx?: any) => void;
+} {
   const tools: CapturedTool[] = [];
-  const listeners = new Map<string, Array<(value: any) => void>>();
+  const commands: CapturedCommand[] = [];
+  const shortcuts: CapturedShortcut[] = [];
+  const listeners = new Map<string, Array<(value: any, ctx?: any) => void>>();
   const messages: Array<{ message: any; options: any }> = [];
-  const emit = (name: string, value?: any) => { for (const handler of listeners.get(name) ?? []) handler(value); };
+  const emit = (name: string, value?: any, ctx?: any) => { for (const handler of listeners.get(name) ?? []) handler(value, ctx); };
   const pi = {
     registerTool(tool: CapturedTool) {
       tools.push(tool);
     },
-    on(name: string, handler: (value: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
+    registerCommand(name: string, options: Omit<CapturedCommand, "name">) {
+      commands.push({ name, ...options });
+    },
+    registerShortcut(shortcut: string, options: Omit<CapturedShortcut, "key">) {
+      shortcuts.push({ key: shortcut, ...options });
+    },
+    on(name: string, handler: (value: any, ctx?: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
     sendMessage(message: any, options: any) { messages.push({ message, options }); },
     events: {
       on(name: string, handler: (value: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
       emit,
     },
   } as unknown as ExtensionAPI;
-  return { pi, tools, messages, emit };
+  return { pi, tools, commands, shortcuts, messages, emit };
 }
 
 describe("subagentsDisabled", () => {
@@ -326,6 +353,141 @@ describe("the extension registers delegation and task tools", () => {
     expect(messages).toHaveLength(1);
     const hidden = await tools[1]!.execute!("status-3", { action: "show", id: nextId }, undefined, undefined, ctx);
     expect(hidden.content[0].text).toContain("No subagent task");
+  });
+});
+
+describe("the fleet surfaces", () => {
+  const doneUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
+
+  test("registers /subagents and a ctrl+shift+a shortcut alongside the tools", () => {
+    const { pi, tools, commands, shortcuts } = fakePi();
+    subagentExtension()(pi);
+    expect(tools.map((tool) => tool.name)).toEqual(["subagent", "subagent_tasks"]);
+    expect(commands.map((command) => command.name)).toContain("subagents");
+    expect(shortcuts[0]?.key).toBe("ctrl+shift+a");
+  });
+
+  test("a TUI launch mounts the fleet widget and settlement hands the slot back", async () => {
+    const { pi, tools, emit } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ui = {
+      widgetCalls: [] as Array<{ key: string; content: unknown; options?: unknown }>,
+      setWidget(key: string, content: unknown, options?: unknown) { ui.widgetCalls.push({ key, content, options }); },
+      notify(_message: string, _type?: string) {},
+    };
+    const ctx = {
+      cwd: "/repo",
+      mode: "tui",
+      hasUI: true,
+      ui,
+      sessionManager: { getSessionId: () => "session-a" },
+      isIdle: () => true,
+    };
+    emit("session_start", {}, ctx);
+    await tools[0]!.execute!("bg-w", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    expect(ui.widgetCalls[0]?.key).toBe("pi-subagent-fleet");
+    expect(ui.widgetCalls[0]?.options).toEqual({ placement: "belowEditor" });
+    const component = (ui.widgetCalls[0]!.content as (tui: any, theme: any) => { render(width: number): string[] })({ requestRender() {} }, { fg: (_c: string, t: string) => t, bold: (t: string) => t });
+    expect(component.render(80).join("\n")).toContain("subagents");
+    finish!({ status: "completed", text: "done", usage: doneUsage });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ui.widgetCalls.at(-1)?.content).toBeUndefined();
+  });
+
+  test("a non-TUI launch mounts nothing", async () => {
+    const { pi, tools } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ctx = {
+      cwd: "/repo",
+      mode: "json",
+      hasUI: false,
+      sessionManager: { getSessionId: () => "session-a" },
+      isIdle: () => true,
+    };
+    const launched = await tools[0]!.execute!("bg-json", { agent: "explore", task: "x", background: true }, undefined, undefined, ctx);
+    expect(launched.details.taskId).toStartWith("sa-");
+    finish!({ status: "completed", text: "x", usage: doneUsage });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("/subagents prints a listing and /subagents stop cancels running children", async () => {
+    const { pi, tools, commands, emit } = fakePi();
+    const signals: Array<AbortSignal | undefined> = [];
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: (input) => { signals.push(input.signal); return new Promise((resolve) => { finish = resolve; }); } })(pi);
+    const notices: string[] = [];
+    const ctx = {
+      cwd: "/repo",
+      mode: "rpc",
+      hasUI: true,
+      ui: { notify: (message: string) => notices.push(message) },
+      sessionManager: { getSessionId: () => "session-a" },
+      isIdle: () => true,
+    };
+    emit("session_start", {}, ctx);
+    const launched = await tools[0]!.execute!("bg-1", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    const id = launched.details.taskId as string;
+    const command = commands.find((candidate) => candidate.name === "subagents")!;
+    await command.handler("", ctx);
+    expect(notices[0]).toContain(id);
+    await command.handler("stop", ctx);
+    expect(signals[0]?.aborted).toBe(true);
+    finish!({ status: "completed", text: "late", usage: doneUsage });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("PI_SUBAGENT_DOWN_INSPECT opens the panel when down lands on an empty editor", async () => {
+    const { pi, tools, emit } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    let inputHandler: ((data: string) => unknown) | undefined;
+    let customFactory: unknown;
+    subagentExtension({ downInspect: true, executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ctx = {
+      cwd: "/repo",
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        onTerminalInput: (handler: (data: string) => unknown) => { inputHandler = handler; return () => {}; },
+        getEditorText: () => "",
+        custom: async (factory: any) => { customFactory = factory; },
+        setWidget: () => {},
+        notify: () => {},
+      },
+      sessionManager: { getSessionId: () => "session-a" },
+      isIdle: () => true,
+    };
+    emit("session_start", {}, ctx);
+    await tools[0]!.execute!("bg-down", { agent: "explore", task: "x", background: true }, undefined, undefined, ctx);
+    const result = inputHandler!("\x1b[B");
+    expect(result).toEqual({ consume: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(customFactory).toBeDefined();
+    finish!({ status: "completed", text: "x", usage: doneUsage });
+  });
+
+  test("a busy editor keeps down for its own use", async () => {
+    const { pi, tools, emit } = fakePi();
+    let inputHandler: ((data: string) => unknown) | undefined;
+    subagentExtension({ downInspect: true, executor: () => new Promise(() => {}) })(pi);
+    const ctx = {
+      cwd: "/repo",
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        onTerminalInput: (handler: (data: string) => unknown) => { inputHandler = handler; return () => {}; },
+        getEditorText: () => "half-typed prompt",
+        custom: async () => undefined,
+        setWidget: () => {},
+        notify: () => {},
+      },
+      sessionManager: { getSessionId: () => "session-a" },
+      isIdle: () => true,
+    };
+    emit("session_start", {}, ctx);
+    await tools[0]!.execute!("bg-down-2", { agent: "explore", task: "x", background: true }, undefined, undefined, ctx);
+    expect(inputHandler!("\x1b[B")).toBeUndefined();
   });
 });
 
