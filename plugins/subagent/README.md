@@ -57,11 +57,21 @@ list tasks, show a task's status and answer, or cancel a running task:
 { "action": "log", "id": "sa-...", "query": "tool_execution", "lines": 20 }
 { "action": "cancel", "id": "sa-..." }
 { "action": "wait", "id": "sa-...", "timeout": 30 }
+{ "action": "reply", "id": "sa-...", "prompt": "also check the retry path" }
+{ "action": "reply", "id": "sa-...", "prompt": "stop what you're doing", "interrupt": true }
 ```
 
 `wait` blocks up to `timeout` seconds (default 30) for the task to settle and
 returns its record either way — the supported alternative to polling `show`
 in a loop.
+
+`reply` sends a follow-up message to a live background child (they run on
+pi's RPC transport, so the process survives its own turn). On an **idle**
+lane — turn ended, child alive — it starts a new turn. Mid-turn,
+`interrupt: true` steers (injected after the current tool calls), while the
+default queues a `follow_up` for after the turn. An idle lane settles on its
+own after a keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`),
+delivering its last answer — a fire-and-forget caller is never held open.
 
 Three built-in agents ship in `src/catalog.ts` — `explore` and `review` are
 read-only (`review` can also run commands), and `general` is the only

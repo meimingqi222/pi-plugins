@@ -30,7 +30,7 @@ import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 
 /** States the shared renderer understands; plugins map their own vocabulary onto it. */
-export type WorkState = "queued" | "running" | "stalled" | "succeeded" | "failed" | "stopped";
+export type WorkState = "queued" | "running" | "idle" | "stalled" | "succeeded" | "failed" | "stopped";
 
 /** One row of background work, whatever produced it. */
 export interface WorkItem {
@@ -60,6 +60,7 @@ const KIND_WIDTH = 12;
 export const WORK_ICONS: Record<WorkState, string> = {
 	queued: "·",
 	running: "●",
+	idle: "◌",
 	stalled: "◉",
 	succeeded: "✓",
 	failed: "×",
@@ -69,6 +70,7 @@ export const WORK_ICONS: Record<WorkState, string> = {
 const ICON_COLOR: Record<WorkState, ThemeColor> = {
 	queued: "muted",
 	running: "accent",
+	idle: "muted",
 	stalled: "warning",
 	succeeded: "success",
 	failed: "error",
@@ -135,6 +137,7 @@ export function formatWorkSummary(items: WorkItem[], now: number, title = "work"
 	const count = (state: WorkState) => items.filter((item) => item.state === state).length;
 	const parts = [
 		count("running") > 0 ? `${count("running")} running` : "",
+		count("idle") > 0 ? `${count("idle")} idle` : "",
 		count("stalled") > 0 ? `${count("stalled")} stalled` : "",
 		count("queued") > 0 ? `${count("queued")} queued` : "",
 	].filter(Boolean);
@@ -142,6 +145,7 @@ export function formatWorkSummary(items: WorkItem[], now: number, title = "work"
 		count("stalled") > 0 ? "stalled"
 		: count("running") > 0 ? "running"
 		: items.some((item) => item.state === "failed") ? "failed"
+		: count("idle") > 0 ? "idle"
 		: items.every((item) => item.state === "queued") ? "queued"
 		: "succeeded";
 	const eldest = items.reduce((min, item) => Math.min(min, item.startedAt), now);

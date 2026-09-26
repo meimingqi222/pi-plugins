@@ -20,6 +20,7 @@ import { LaneRegistry } from "./lane.ts";
 import { formatFleetListing } from "./fleet.ts";
 import { createSubagentsPanel } from "./panel.ts";
 import { createFleetReporter } from "./widget.ts";
+import type { RpcChild } from "pi-agent-runner";
 import { discoverAgents, formatAgentNames } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import { WAIT_TIMEOUT_DEFAULT_SECONDS, WAIT_TIMEOUT_MAX_SECONDS } from "./contract.ts";
@@ -133,8 +134,25 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       }
     }
 
+    /** Live RPC children, keyed by lane id — the control channel `reply` writes to. */
+    const liveChildren = new Map<string, RpcChild>();
+    /** KeepAlive timers, keyed by lane id — idle lanes settle after `keepAliveMs`. */
+    const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /** How long an idle RPC lane stays alive awaiting a reply; `PI_SUBAGENT_KEEPALIVE_MS`, default 5 minutes. */
+    const keepAliveMs = (() => {
+      const raw = Number(process.env.PI_SUBAGENT_KEEPALIVE_MS);
+      return Number.isFinite(raw) && raw > 0 ? raw : 300_000;
+    })();
+
+    const clearIdleTimer = (id: string): void => {
+      const timer = idleTimers.get(id);
+      if (timer) { clearTimeout(timer); idleTimers.delete(id); }
+    };
+
     const registry = new LaneRegistry((record) => {
       reporter.sync();
+      liveChildren.delete(record.id);
+      clearIdleTimer(record.id);
       const launch = pending.get(record.id);
       pending.delete(record.id);
       launch?.lease?.finish(record.result ? readTokenUsage(record.result) : 0);
@@ -336,6 +354,23 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 evidencePath: logPath,
                 evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
                 onProgress: (progress) => registry.setProgress(id, progress),
+                // Background lanes ride the live-RPC transport: the child
+                // survives its turn so `reply` can queue or interrupt.
+                rpc: {
+                  onChild: (child) => { liveChildren.set(id, child); },
+                  onIdleChange: (idle) => {
+                    registry.setIdle(id, idle);
+                    clearIdleTimer(id);
+                    if (idle) {
+                      const timer = setTimeout(() => {
+                        idleTimers.delete(id);
+                        liveChildren.get(id)?.end();
+                      }, keepAliveMs);
+                      timer.unref?.();
+                      idleTimers.set(id, timer);
+                    }
+                  },
+                },
               }, options);
             }, { alias: params.alias, generation: launchedIn });
             pending.set(record.id, {
@@ -349,7 +384,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
             reporter.sync();
             return {
-              content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check or cancel it.` }],
+              content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check, wait, reply to, or cancel it.` }],
               details: { agent: record.agent, status: "running" as const, taskId: record.id, usage: emptySubagentUsage(), output: "" },
             };
           } catch (error) {
@@ -441,9 +476,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       description: "List background subagent tasks, inspect status, recent activity, or explicitly read/search the raw event log, or cancel a task from this session. Raw logs include prompts and tool data; request them only for debugging. A finished task's answer is also delivered automatically.",
       promptSnippet: "Inspect a background subagent's status, recent events, or diagnostic log; cancel by task ID",
       parameters: Type.Object({
-        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel"), Type.Literal("wait")]),
-        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, cancel, or wait." })),
+        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel"), Type.Literal("wait"), Type.Literal("reply")]),
+        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, cancel, wait, or reply." })),
         timeout: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_TIMEOUT_MAX_SECONDS, description: `Seconds to wait for the task to settle (0–${WAIT_TIMEOUT_MAX_SECONDS}, default ${WAIT_TIMEOUT_DEFAULT_SECONDS}).` })),
+        prompt: Type.Optional(Type.String({ description: "Follow-up message for a live lane; required for reply." })),
+        interrupt: Type.Optional(Type.Boolean({ description: "Reply semantics for a lane mid-turn: true steers (injects after the current tool calls), false queues a follow_up after the turn. Ignored for an idle lane, which always starts a new turn." })),
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum recent activity events to return (1–10)." })),
         query: Type.Optional(Type.String({ maxLength: 200, description: "Optional case-insensitive substring to search in raw JSONL log lines." })),
         lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Maximum matching log lines to return (1–50, default 20)." })),
@@ -464,6 +501,38 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
         const record = registry.get(sessionId, params.id);
         if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
+        if (params.action === "reply") {
+          const prompt = params.prompt?.trim();
+          if (!prompt) return { content: [{ type: "text", text: "A non-empty prompt is required for reply." }], details: record };
+          if (record.status !== "running") {
+            return { content: [{ type: "text", text: `Subagent ${params.id} already ${record.status} — it cannot take a reply.` }], details: record };
+          }
+          const child = liveChildren.get(params.id);
+          if (!child) {
+            return { content: [{ type: "text", text: `Subagent ${params.id} has no live control channel (foreground calls and settled lanes cannot take replies).` }], details: record };
+          }
+          // An idle lane is between turns: a new prompt starts the next one.
+          // Mid-turn, interrupt chooses steer (after the current tool calls)
+          // over follow_up (queued until the turn ends).
+          const idle = record.idleSince !== undefined;
+          const command = idle
+            ? ({ type: "prompt", message: prompt } as const)
+            : params.interrupt
+              ? ({ type: "steer", message: prompt } as const)
+              : ({ type: "follow_up", message: prompt } as const);
+          if (!child.send(command)) {
+            return { content: [{ type: "text", text: `Subagent ${params.id}'s control channel is already closed — its result will arrive on settle.` }], details: record };
+          }
+          if (idle) {
+            // The new prompt makes the lane busy on the next agent_start, but
+            // mark it now so a second reply in the same tick is not misfired
+            // as another fresh turn.
+            registry.setIdle(params.id, false);
+            clearIdleTimer(params.id);
+          }
+          const how = idle ? "a new turn" : params.interrupt ? "steer (after current tool calls)" : "follow-up (after this turn)";
+          return { content: [{ type: "text", text: `Reply sent to ${params.id} as ${how}: ${prompt.slice(0, 120)}${prompt.length > 120 ? "…" : ""}` }], details: record };
+        }
         if (params.action === "cancel") {
           const stopped = registry.stop(sessionId, params.id);
           return { content: [{ type: "text", text: stopped ? `Stopping ${params.id}.` : `${params.id} already settled.` }], details: record };

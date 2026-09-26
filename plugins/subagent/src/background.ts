@@ -27,8 +27,12 @@ export type BackgroundStatus = Lane["status"];
 
 export const QUIET_ACTIVITY_WARNING_MS = 90_000;
 
-/** Observability states: `stalled` is `running` plus quiet past the warning threshold. */
-export type ChildState = Lane["status"] | "stalled";
+/**
+ * Observability states: `stalled` is `running` plus quiet past the warning
+ * threshold; `idle` is an RPC lane between turns — alive, awaiting a reply.
+ * `idle` wins over `stalled`: a child waiting for its owner is not stuck.
+ */
+export type ChildState = Lane["status"] | "stalled" | "idle";
 
 /**
  * The single place a running lane becomes `stalled`.
@@ -39,8 +43,9 @@ export type ChildState = Lane["status"] | "stalled";
  * which is a spawn, not silence inside the run — it is still `stalled` when the
  * age alone exceeds the threshold.
  */
-export function deriveChildState(lane: Pick<Lane, "status" | "startedAt" | "progress">, now: number): ChildState {
+export function deriveChildState(lane: Pick<Lane, "status" | "startedAt" | "progress" | "idleSince">, now: number): ChildState {
 	if (lane.status !== "running") return lane.status;
+	if (lane.idleSince !== undefined) return "idle";
 	const lastActivityAt = lane.progress?.lastActivityAt ?? lane.startedAt;
 	return now - lastActivityAt >= QUIET_ACTIVITY_WARNING_MS ? "stalled" : "running";
 }
@@ -66,9 +71,12 @@ export function formatBackground(lane: Lane): string {
 	const phase = progress.phase === "tool"
 		? `tool ${activeTool || "execution"}`
 		: progress.phase;
-	const activity = deriveChildState(lane, now) === "stalled"
+	const childState = deriveChildState(lane, now);
+	const activity = childState === "stalled"
 		? ` · no child event for ${quiet} (possible stall)`
-		: ` · last ${progress.lastEvent} ${quiet} ago`;
+		: childState === "idle"
+			? ` · idle for ${formatDuration(Math.floor((now - (lane.idleSince ?? now)) / 1_000))} — awaiting a reply`
+			: ` · last ${progress.lastEvent} ${quiet} ago`;
 	return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools} · ${phase}${activity}`;
 }
 

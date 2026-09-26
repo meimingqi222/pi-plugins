@@ -15,7 +15,15 @@
 
 import { Type, type Static } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { createAgentExecutor, type AgentActivity, type AgentExecutor, type AgentUsage } from "pi-agent-runner";
+import {
+  createAgentExecutor,
+  spawnRpcChild,
+  type AgentActivity,
+  type AgentExecutor,
+  type AgentUsage,
+  type RpcChild,
+  type SpawnRpcChildOptions,
+} from "pi-agent-runner";
 import { discoverAgents, formatAgentNames, type SubagentDefinition } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import {
@@ -120,6 +128,10 @@ function cleanActivityField(value: string, limit: number): string {
 export interface SubagentToolOptions {
   /** Test seam: replaces the executor so no subprocess is spawned. */
   executor?: AgentExecutor;
+  /** Test seam: replaces spawnRpcChild for the live-child transport. */
+  spawnRpcChild?: typeof spawnRpcChild;
+  /** Forwarded to spawnRpcChild (invocation/extraArgs overrides). */
+  rpcSpawn?: SpawnRpcChildOptions;
   /** Test seam: overrides agent discovery. */
   discover?: (cwd: string) => SubagentDefinition[];
   /** Test seam: overrides the working directory. */
@@ -136,6 +148,17 @@ export interface SubagentCallContext {
   signal?: AbortSignal;
   onUpdate?: (update: AgentToolResult<SubagentDetails>) => void;
   onProgress?: (progress: SubagentProgress) => void;
+  /**
+   * Run the child on the live-RPC transport instead of the one-shot JSON pipe.
+   * `onChild` receives the handle once spawned — the caller keeps it to send
+   * `steer`/`follow_up`/`prompt` follow-ups and to `end` the lane at keepAlive
+   * expiry. `onIdleChange` marks turn boundaries: true on `agent_end`, false
+   * on `agent_start`.
+   */
+  rpc?: {
+    onChild: (child: RpcChild) => void;
+    onIdleChange?: (idle: boolean) => void;
+  };
 }
 
 /**
@@ -151,6 +174,31 @@ export async function executeSubagent(
   options: SubagentToolOptions = {},
 ): Promise<AgentToolResult<SubagentDetails>> {
   const executor = options.executor ?? createAgentExecutor();
+  // An injected `executor` seam always wins (tests); otherwise `ctx.rpc`
+  // selects the live-child transport. Both return the same `AgentRunResult`
+  // contract, so everything below — progress recording, details mapping — is
+  // shared.
+  const runChild: AgentExecutor = ctx.rpc && !options.executor
+    ? async (input) => {
+        const child = await (options.spawnRpcChild ?? spawnRpcChild)({
+          prompt: input.prompt,
+          cwd: input.cwd,
+          ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
+          ...(input.tools ? { tools: input.tools } : {}),
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(input.evidencePath ? { evidencePath: input.evidencePath } : {}),
+          ...(input.evidenceMaxBytes !== undefined ? { evidenceMaxBytes: input.evidenceMaxBytes } : {}),
+          ...(input.onActivity ? { onActivity: input.onActivity } : {}),
+          ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+          ...(ctx.rpc?.onIdleChange ? { onIdleChange: ctx.rpc.onIdleChange } : {}),
+        }, options.rpcSpawn);
+        ctx.rpc?.onChild(child);
+        return child.done;
+      }
+    : executor;
   const cwd = options.cwd ?? ctx.cwd;
   const agents = (options.discover ?? (() => discoverAgents()))(cwd);
   const agent = resolveAgent(agents, params.agent);
@@ -212,7 +260,7 @@ export async function executeSubagent(
     emitProgress(false);
   };
   emitProgress();
-  const result = await executor({
+  const result = await runChild({
     // The `Task:` prefix is what pi's own subagent example sends, so a child sees
     // the same framing whichever tool spawned it.
     prompt: `Task: ${params.task}`,

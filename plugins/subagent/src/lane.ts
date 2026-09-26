@@ -39,6 +39,11 @@ export interface Lane {
 	queuedPrompts?: string[];
 	/** The session generation the lane launched under; stale callbacks check it. */
 	generation?: number;
+	/**
+	 * RPC lanes only: when a turn ended and the child is alive awaiting a
+	 * follow-up prompt. Absent while a turn is in flight and on JSON children.
+	 */
+	idleSince?: number;
 }
 
 interface ActiveLane {
@@ -147,6 +152,19 @@ export class LaneRegistry {
 	setLogPath(id: string, logPath: string): void {
 		const lane = this.active.get(id)?.lane;
 		if (lane) lane.logPath = logPath;
+	}
+
+	/** Mark a running lane idle-between-turns (RPC transport) or busy again. */
+	setIdle(id: string, idle: boolean, now = Date.now()): void {
+		const lane = this.active.get(id)?.lane;
+		if (!lane) return;
+		if (idle) lane.idleSince = now;
+		else delete lane.idleSince;
+	}
+
+	idleSince(sessionId: string, id: string): number | undefined {
+		const lane = this.active.get(id)?.lane;
+		return lane?.sessionId === sessionId ? lane.idleSince : undefined;
 	}
 
 	/** Cancel a background lane. Foreground lanes are not addressable — only their own tool call may end them. */

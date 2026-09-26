@@ -41,6 +41,7 @@ const DETAIL_ACTIVITY_LINES = 10;
 
 const STATE_TO_WORK: Record<ChildState, WorkState> = {
 	running: "running",
+	idle: "idle",
 	stalled: "stalled",
 	completed: "succeeded",
 	failed: "failed",
@@ -49,6 +50,7 @@ const STATE_TO_WORK: Record<ChildState, WorkState> = {
 
 export const ICONS: Record<ChildState, string> = {
 	running: WORK_ICONS.running,
+	idle: WORK_ICONS.idle,
 	stalled: WORK_ICONS.stalled,
 	completed: WORK_ICONS.succeeded,
 	failed: WORK_ICONS.failed,
@@ -119,7 +121,9 @@ export function formatPanelRow(record: Lane, selected: boolean, theme: FleetThem
 	const live =
 		state === "running" || state === "stalled"
 			? (progress?.activeTool ? `tool ${progress.activeTool}` : progress?.lastEvent) ?? "starting"
-			: undefined;
+			: state === "idle"
+				? "idle — awaiting a reply"
+				: undefined;
 	const detail = [record.agent, live, `${formatDuration(Math.floor(((record.finishedAt ?? now) - record.startedAt) / 1_000))}`]
 		.filter(Boolean)
 		.join(" · ");
