@@ -23,7 +23,8 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
-import { deriveChildState, type BackgroundRecord } from "./background.ts";
+import { deriveChildState } from "./background.ts";
+import type { Lane } from "./lane.ts";
 import { formatChildDetail, formatPanelRow, type FleetTheme } from "./fleet.ts";
 import { foldSubagentLog, renderTranscript } from "./transcript.ts";
 
@@ -39,7 +40,7 @@ export interface PanelDeps {
 	tui: Pick<TUI, "requestRender">;
 	theme: FleetTheme;
 	/** Records for the current session, active first. Read fresh on every render. */
-	list(): BackgroundRecord[];
+	list(): Lane[];
 	/** Abort a running child. Returns false when the id is missing or already settled. */
 	stop(id: string): boolean;
 	/** Bounded raw-log tail for one child; undefined when the child wrote no log. */
@@ -83,12 +84,12 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 		return renderTranscript(foldSubagentLog(source.lines, source.earlierDataOmitted), deps.theme);
 	}
 
-	function records(): BackgroundRecord[] {
+	function records(): Lane[] {
 		return deps.list();
 	}
 
 	/** Selection survives reordering because it is the record's id, not its row. */
-	function selected(): BackgroundRecord | undefined {
+	function selected(): Lane | undefined {
 		const list = records();
 		return list.find((record) => record.id === selectedId) ?? list[0];
 	}

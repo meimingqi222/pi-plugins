@@ -1,6 +1,6 @@
 /**
  * `widget.ts` — the fleet's persistent surface: `createFleetReporter` adapts
- * `BackgroundRecord`s onto `pi-run-core`'s `createWorkReporter`, which owns the
+ * `Lane`s onto `pi-run-core`'s `createWorkReporter`, which owns the
  * mount/tick/teardown lifecycle this file used to own.
  *
  * What stays here is the part that is subagent-specific: the stall
@@ -11,7 +11,8 @@
 
 import type { Component } from "@earendil-works/pi-tui";
 import { createWorkReporter, type WorkReporterDeps, type WorkSurfaceUI } from "pi-run-core";
-import { deriveChildState, type BackgroundRecord } from "./background.ts";
+import { deriveChildState } from "./background.ts";
+import type { Lane } from "./lane.ts";
 import { renderFleetWidget } from "./fleet.ts";
 
 const WIDGET_KEY = "pi-subagent-fleet";
@@ -25,7 +26,7 @@ export interface FleetReporterDeps {
 	/** UI for the session that owns the fleet; `undefined` outside TUI mode or before any session context exists. */
 	ui(): FleetUI | undefined;
 	/** Records for the current session, active first (the registry's order). */
-	list(): BackgroundRecord[];
+	list(): Lane[];
 	/** Running children across sessions: the tick lives only while this is non-zero. */
 	activeCount(): number;
 	tickMs?: number;
@@ -48,7 +49,7 @@ export function createFleetReporter(deps: FleetReporterDeps): FleetReporter {
 	// harmlessly and are pruned when the tick next sees them gone.
 	const notifiedStalls = new Set<string>();
 
-	const reporterDeps: WorkReporterDeps<BackgroundRecord> = {
+	const reporterDeps: WorkReporterDeps<Lane> = {
 		key: WIDGET_KEY,
 		ui: deps.ui,
 		items: deps.list,
