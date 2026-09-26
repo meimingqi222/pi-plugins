@@ -26,6 +26,8 @@ export function deriveChildState(record: Pick<BackgroundRecord, "status" | "star
 export interface BackgroundRecord {
   id: string;
   agent: string;
+  /** Human-facing display name; falls back to a task-derived slug at launch. */
+  alias: string;
   task: string;
   sessionId: string;
   status: BackgroundStatus;
@@ -40,6 +42,21 @@ export interface BackgroundRecord {
 interface ActiveRecord {
   record: BackgroundRecord;
   controller: AbortController;
+}
+
+/**
+ * A human-facing name from a task's first line, for a launch that did not name
+ * one. Keeps word characters, dashes and spaces; collapses the rest.
+ */
+export function deriveAlias(task: string, max = 24): string {
+  const slug = (task.split("\n")[0] ?? "")
+    .replace(/[\x00-\x1f\x7f-\x9f]/gu, " ")
+    .trim()
+    .replace(/[^\p{L}\p{N} _-]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!slug) return "task";
+  return slug.length > max ? `${slug.slice(0, max - 1)}…` : slug;
 }
 
 /** Session-local, bounded handles for single background delegations. */
@@ -58,6 +75,7 @@ export class BackgroundRegistry {
     task: string,
     sessionId: string,
     work: (signal: AbortSignal, id: string) => Promise<AgentToolResult<SubagentDetails>>,
+    alias?: string,
   ): BackgroundRecord {
     if (this.active.size >= this.maxActive) {
       throw new Error(`At most ${this.maxActive} background subagents may run at once. Check or cancel one with subagent_tasks.`);
@@ -65,6 +83,7 @@ export class BackgroundRegistry {
     const record: BackgroundRecord = {
       id: `sa-${randomUUID()}`,
       agent,
+      alias: alias?.trim() || deriveAlias(task),
       task,
       sessionId,
       status: "running",
@@ -137,13 +156,46 @@ export class BackgroundRegistry {
     return this.maxActive;
   }
 
+  /**
+   * Resolve when the record settles or the deadline hits — the same shape
+   * `bg_tasks wait` offers, so a caller never needs a polling loop.
+   */
+  waitFor(sessionId: string, id: string, timeoutMs: number): Promise<BackgroundRecord | undefined> {
+    const existing = this.get(sessionId, id);
+    if (!existing || existing.status !== "running") return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      const onSettled = (record: BackgroundRecord) => {
+        if (record.id !== id) return;
+        this.waiters.delete(onSettled);
+        clearTimeout(timer);
+        resolve(this.get(sessionId, id));
+      };
+      const timer = setTimeout(() => {
+        this.waiters.delete(onSettled);
+        resolve(this.get(sessionId, id));
+      }, Math.max(0, timeoutMs));
+      (timer as { unref?: () => void }).unref?.();
+      this.waiters.add(onSettled);
+    });
+  }
+
+  private readonly waiters = new Set<(record: BackgroundRecord) => void>();
+
   private settle(record: BackgroundRecord): void {
     if (!this.active.delete(record.id)) return;
     record.finishedAt = Date.now();
     this.settled.push(record);
     while (this.settled.length > this.historyLimit) this.settled.shift();
+    const visible = publicRecord(record);
+    for (const waiter of [...this.waiters]) {
+      try {
+        waiter(visible);
+      } catch {
+        // One waiter failing must not keep the others waiting.
+      }
+    }
     try {
-      this.onSettled(publicRecord(record));
+      this.onSettled(visible);
     } catch {
       // A notification failure cannot resurrect an already settled run.
     }

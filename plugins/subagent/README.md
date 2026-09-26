@@ -56,7 +56,19 @@ list tasks, show a task's status and answer, or cancel a running task:
 { "action": "events", "id": "sa-...", "limit": 5 }
 { "action": "log", "id": "sa-...", "query": "tool_execution", "lines": 20 }
 { "action": "cancel", "id": "sa-..." }
+{ "action": "wait", "id": "sa-...", "timeout": 30 }
 ```
+
+`wait` blocks up to `timeout` seconds (default 30) for the task to settle and
+returns its record either way — the supported alternative to polling `show`
+in a loop.
+
+Three built-in agents ship in `src/catalog.ts` — `explore` and `review` are
+read-only (`review` can also run commands), and `general` is the only
+built-in that can modify files. Descriptive names like `general-purpose`
+resolve to `general`. User `.md` files with a matching name replace a
+built-in. The `agent` argument accepts an optional `alias` for the display
+name shown in the fleet widget and panel.
 
 At most four background subagents run at once. Their handles and results remain
 in memory for the current session; the most recent 20 settled tasks are kept.

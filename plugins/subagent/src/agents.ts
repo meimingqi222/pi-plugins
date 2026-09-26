@@ -20,6 +20,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { BUILTIN_AGENTS } from "./catalog.ts";
 
 export interface SubagentDefinition {
   /** The name the model passes as the tool's `agent` argument. */
@@ -34,20 +35,6 @@ export interface SubagentDefinition {
   systemPrompt: string;
   filePath: string;
 }
-
-/** A useful zero-configuration child, limited to Pi's inspection tools. */
-const BUILTIN_EXPLORE: SubagentDefinition = {
-  name: "explore",
-  description: "Explore a codebase and return concise findings with file references.",
-  tools: ["read", "grep", "find", "ls"],
-  systemPrompt: [
-    "You are a codebase exploration agent. Investigate the assigned question using read, grep, find and ls.",
-    "Do not edit files or claim to have run commands or tests; your tools only inspect files.",
-    "Return the relevant facts with file paths and line numbers where possible.",
-    "Keep the answer concise, distinguish evidence from inference, and state what remains uncertain.",
-  ].join("\n"),
-  filePath: "<builtin:explore>",
-};
 
 /** Raw frontmatter values, unknown because a real YAML parser produced them. */
 type AgentFrontmatter = Record<string, unknown>;
@@ -123,7 +110,7 @@ export function readAgentFile(filePath: string): SubagentDefinition | undefined 
  * still leaves the built-in available.
  */
 export function discoverAgents(dir: string = userAgentsDir()): SubagentDefinition[] {
-  const agents = new Map<string, SubagentDefinition>([[BUILTIN_EXPLORE.name, BUILTIN_EXPLORE]]);
+  const agents = new Map<string, SubagentDefinition>(BUILTIN_AGENTS.map((agent) => [agent.name, agent]));
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
