@@ -40,8 +40,9 @@ function createBus() {
 /** A service that replaces a sentinel string, so redaction is observable. */
 function fakeService(overrides: Record<string, unknown> = {}) {
   return {
-    version: 1,
+    version: 2,
     patternCount: 3,
+    isEnabled: () => true,
     redactJson: (value: unknown) => JSON.parse(JSON.stringify(value).replaceAll('SECRET', '[REDACTED]')),
     redactString: (value: string | null | undefined) =>
       typeof value === 'string' ? value.replaceAll('SECRET', '[REDACTED]') : value,
@@ -167,6 +168,35 @@ describe('redaction bridge', () => {
     expect(JSON.stringify(seen[0]!.state)).toContain('SECRET');
   });
 
+  test('strict mode refuses upload without pi-redact and accepts it after a late announcement', async () => {
+    const bus = createBus();
+    const bridge = installRedactBridge({ events: bus } as never);
+    const { asker, seen } = recordingAsker();
+    const guarded = withRedaction(asker, bridge, true);
+
+    await expect(guarded.ask({ goal: 'SECRET' }, {})).rejects.toThrow(/redaction service.*unavailable/);
+    expect(seen).toHaveLength(0);
+
+    installFakeRedact(bus);
+    await guarded.ask({ goal: 'SECRET' }, {});
+    expect(JSON.stringify(seen)).not.toContain('SECRET');
+  });
+
+  test('strict mode refuses upload when redaction is paused or its state is unknown', async () => {
+    const bus = createBus();
+    installFakeRedact(bus, fakeService({ isEnabled: () => false }));
+    const { asker, seen } = recordingAsker();
+    await expect(withRedaction(asker, installRedactBridge({ events: bus } as never), true)
+      .ask({ goal: 'SECRET' }, {})).rejects.toThrow(/redaction service.*unavailable/);
+    expect(seen).toHaveLength(0);
+
+    const oldBus = createBus();
+    installFakeRedact(oldBus, fakeService({ version: 1, isEnabled: undefined }));
+    await expect(withRedaction(asker, installRedactBridge({ events: oldBus } as never), true)
+      .ask({ goal: 'SECRET' }, {})).rejects.toThrow(/redaction service.*unavailable/);
+    expect(seen).toHaveLength(0);
+  });
+
   test("a broken redactor fails closed instead of uploading the raw payload", async () => {
     // Sending the secret is the exact outcome the bridge exists to prevent, so a
     // redactor that throws must abort the ask. The caller turns that into pi's
@@ -183,9 +213,11 @@ describe('redaction bridge', () => {
     const bridge = installRedactBridge({ events: bus } as never);
     const { asker, seen } = recordingAsker();
 
-    await expect(
-      withRedaction(asker, bridge).ask({ goal: 'SECRET' }, {}),
-    ).rejects.toThrow(/refusing to send/);
+    for (const strict of [false, true]) {
+      await expect(
+        withRedaction(asker, bridge, strict).ask({ goal: 'SECRET' }, {}),
+      ).rejects.toThrow(/refusing to send/);
+    }
     expect(seen).toHaveLength(0);
   });
 
@@ -197,8 +229,9 @@ describe('redaction bridge', () => {
     // `plugins/redact/test/index.test.ts`.
     const bus = createBus();
     installFakeRedact(bus, {
-      version: 1,
+      version: 2,
       patternCount: 1,
+      isEnabled: () => true,
       redactJson: () => {
         throw new Error('engine exploded');
       },

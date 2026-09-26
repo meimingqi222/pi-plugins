@@ -605,7 +605,7 @@ export default function goalPlugin(pi: ExtensionAPI): void {
   });
   async function settleGoalRun(owner: WorkRun | undefined, ctx: ExtensionContext): Promise<void> {
     if (!owner || !goal || owner.goalId !== goal.id || owner.session !== guard.sessionId ||
-      goal.status !== "active" || !ctx.isIdle() || ctx.hasPendingMessages() || flight) return;
+      goal.status !== "active" || work || !ctx.isIdle() || ctx.hasPendingMessages() || flight) return;
     const goalId = goal.id;
     if ([...pendingDelegations].some((pending) => pending.startsWith(`${goalId}:`))) {
       deferredRun = owner;

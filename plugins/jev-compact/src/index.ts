@@ -28,6 +28,7 @@
  *   JEV_COMPACT_MAX_CONCURRENCY   simultaneous Jev requests, default 4
  *   JEV_COMPACT_BASE_URL          override the System One endpoint
  *   JEV_COMPACT_MIN_REDUCTION     below this ratio, fall back to pi, default 0.3
+ *   JEV_COMPACT_REQUIRE_REDACT    require active pi-redact for uploads; default false
  */
 
 import type { ExtensionAPI, SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent';
@@ -123,6 +124,7 @@ function envProbability(name: string, fallback: number): number {
 function config() {
   return {
     enabled: envFlag('JEV_COMPACT', true),
+    requireRedact: envFlag('JEV_COMPACT_REQUIRE_REDACT', false),
     // Below this reduction the pass is not worth taking: it would replace pi's
     // rewritten summary with a near-identical verbatim transcript. Deferring to
     // pi is right there, because pi actually shrinks the text.
@@ -235,7 +237,7 @@ function createAsker(
     new JevClient({ apiKey: resolveApiKey(), model: cfg.model, baseUrl: cfg.baseUrl }),
     { maxAttempts: cfg.maxAttempts, baseDelayMs: cfg.retryBaseMs, onRetry },
   );
-  return withRedaction(retrying, bridge);
+  return withRedaction(retrying, bridge, cfg.requireRedact);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,12 +318,19 @@ export default function jevCompact(pi: ExtensionAPI): void {
     // Redaction of the outbound Jev payload depends on pi-redact being loaded.
     // Say so plainly: a user who installed it expecting that protection should
     // not have to infer its absence from an unchanged startup line.
-    ctx.ui.notify(
-      bridge.active
-        ? 'Jev compact: pi-redact detected — Jev payloads are redacted before upload'
-        : 'Jev compact: pi-redact not detected — Jev payloads are sent unredacted',
-      bridge.active ? 'info' : 'warning',
-    );
+    const service = bridge.service();
+    const activeRedaction = service?.version === 2 && service.isEnabled?.();
+    let notice: string;
+    if (cfg.requireRedact && !activeRedaction) {
+      notice = 'Jev compact: strict upload requires pi-redact to be active — using pi defaults until it is available';
+    } else if (activeRedaction) {
+      notice = 'Jev compact: pi-redact detected — Jev payloads are redacted before upload';
+    } else if (service) {
+      notice = 'Jev compact: pi-redact status unknown or paused — Jev payloads may be sent unredacted';
+    } else {
+      notice = 'Jev compact: pi-redact not detected — Jev payloads are sent unredacted';
+    }
+    ctx.ui.notify(notice, activeRedaction ? 'info' : 'warning');
   });
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx) => {

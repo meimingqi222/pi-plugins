@@ -107,7 +107,7 @@ function ctx(notes?: string[]) {
   return {
     ui: { notify: (message: string) => void notes?.push(message) },
     cwd: process.cwd(),
-    sessionManager: { getBranch: () => [] },
+    sessionManager: { getBranch: (): unknown[] => [] },
     modelRegistry: { async getApiKeyForProvider() { return undefined; } },
   };
 }
@@ -185,16 +185,21 @@ async function runCompact(loaded: Loaded): Promise<void> {
 }
 
 /** Fires the startup notice, which is where the protection state is reported. */
-async function runSessionStart(loaded: Loaded): Promise<void> {
+async function runSessionStart(loaded: Loaded, paused = false): Promise<void> {
   for (const handler of loaded.handlers['session_start'] ?? []) {
-    await handler({ type: 'session_start', reason: 'startup' }, ctx(loaded.notes));
+    const context = ctx(loaded.notes);
+    if (paused) context.sessionManager.getBranch = () => [{ type: 'custom', customType: 'redact-state', data: { enabled: false } }];
+    await handler({ type: 'session_start', reason: 'startup' }, context);
   }
 }
 
 let savedKey: string | undefined;
+let savedStrict: string | undefined;
 
 beforeEach(() => {
   savedKey = process.env.TYPESAFE_API_KEY;
+  savedStrict = process.env.JEV_COMPACT_REQUIRE_REDACT;
+  delete process.env.JEV_COMPACT_REQUIRE_REDACT;
   process.env.TYPESAFE_API_KEY = 'test-key';
   process.env.PI_REDACT_NOTIFY = 'false';
 });
@@ -202,6 +207,8 @@ beforeEach(() => {
 afterEach(() => {
   if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
   else process.env.TYPESAFE_API_KEY = savedKey;
+  if (savedStrict === undefined) delete process.env.JEV_COMPACT_REQUIRE_REDACT;
+  else process.env.JEV_COMPACT_REQUIRE_REDACT = savedStrict;
   delete process.env.PI_REDACT_NOTIFY;
 });
 
@@ -259,6 +266,47 @@ describe('pi-redact + pi-jev-compact integration', () => {
     }
   });
 
+  test('strict mode without pi-redact falls back to pi without sending a request', async () => {
+    process.env.JEV_COMPACT_REQUIRE_REDACT = 'true';
+    const loaded = loadExtensions([jevCompact]);
+    try {
+      await runSessionStart(loaded);
+      await runCompact(loaded);
+      expect(loaded.sent).toHaveLength(0);
+      expect(loaded.notes.some((note) => note.includes('requires pi-redact'))).toBe(true);
+      expect(loaded.notes.some((note) => note.includes('Using pi\'s default summary'))).toBe(true);
+    } finally {
+      loaded.restore();
+    }
+  });
+
+  test('strict mode refuses Jev after pi-redact is paused by session restore', async () => {
+    process.env.JEV_COMPACT_REQUIRE_REDACT = 'true';
+    const loaded = loadExtensions([piRedact, jevCompact]);
+    try {
+      await runSessionStart(loaded, true);
+      await runCompact(loaded);
+      expect(loaded.sent).toHaveLength(0);
+      expect(loaded.notes.some((note) => note.includes('requires pi-redact'))).toBe(true);
+    } finally {
+      loaded.restore();
+    }
+  });
+
+  for (const order of ['redact-first', 'compact-first'] as const) {
+    test(`strict mode uploads redacted payload in ${order} load order`, async () => {
+      process.env.JEV_COMPACT_REQUIRE_REDACT = 'true';
+      const loaded = loadExtensions([piRedact, jevCompact], order === 'compact-first' ? 'reverse' : undefined);
+      try {
+        await runCompact(loaded);
+        expect(loaded.sent.length).toBeGreaterThan(0);
+        expect(loaded.sent.join('\n')).not.toContain(GITHUB_PAT);
+      } finally {
+        loaded.restore();
+      }
+    });
+  }
+
   test('the bus contract constants match across both packages', () => {
     // The consumer duplicates the channel names and version because it cannot
     // import them without recreating the dependency the bus removes. This test
@@ -276,7 +324,7 @@ describe('pi-redact + pi-jev-compact integration', () => {
     } as never);
 
     expect(announcements).toHaveLength(1);
-    expect((announcements[0] as { version: number }).version).toBe(1);
+    expect((announcements[0] as { version: number }).version).toBe(2);
     expect(REDACT_DISCOVERY_CHANNEL).toBe('pi-redact:service-request');
     expect(REDACT_SERVICE_CHANNEL).toBe('pi-redact:service');
   });

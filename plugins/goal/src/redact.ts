@@ -11,7 +11,7 @@ export function installRedactBridge(pi: ExtensionAPI): () => RedactService | und
 	try {
 		pi.events?.on(CHANNEL, (value) => {
 			const candidate = value as Partial<RedactService> | null;
-			if (candidate?.version === 1 && typeof candidate.redactJson === "function" && typeof candidate.redactString === "function") service = candidate as RedactService;
+			if ((candidate?.version === 1 || candidate?.version === 2) && typeof candidate.redactJson === "function" && typeof candidate.redactString === "function") service = candidate as RedactService;
 		});
 		pi.events?.emit(REQUEST, undefined);
 	} catch { /* Older pi: verification still works, without this optional bridge. */ }

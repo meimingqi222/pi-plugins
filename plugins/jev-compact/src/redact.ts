@@ -26,11 +26,12 @@ import type { AskOptions, JevAsker, JevQuestions, JevResponse, JevState } from '
 
 const SERVICE_CHANNEL = 'pi-redact:service';
 const DISCOVERY_CHANNEL = 'pi-redact:service-request';
-const SERVICE_VERSION = 1;
+const SERVICE_VERSION = 2;
 
 /** The shape pi-redact announces. Validated at runtime, never trusted. */
 interface RedactService {
   version: number;
+  isEnabled?: () => boolean;
   redactJson(value: unknown): unknown;
   redactString(value: string | null | undefined): string | null | undefined;
   patternCount: number;
@@ -40,9 +41,10 @@ function isService(value: unknown): value is RedactService {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (
-    candidate.version === SERVICE_VERSION &&
+    (candidate.version === SERVICE_VERSION || candidate.version === 1) &&
     typeof candidate.redactJson === 'function' &&
-    typeof candidate.redactString === 'function'
+    typeof candidate.redactString === 'function' &&
+    (candidate.version === 1 || typeof candidate.isEnabled === 'function')
   );
 }
 
@@ -105,7 +107,7 @@ export function installRedactBridge(pi: ExtensionAPI): RedactBridge {
  * still works standalone. Redaction preserves object keys, so Jev's answers
  * still map back to their questions by name.
  */
-export function withRedaction(asker: JevAsker, bridge: RedactBridge): JevAsker {
+export function withRedaction(asker: JevAsker, bridge: RedactBridge, requireRedact = false): JevAsker {
   return {
     async ask(
       state: JevState,
@@ -113,6 +115,9 @@ export function withRedaction(asker: JevAsker, bridge: RedactBridge): JevAsker {
       options: AskOptions = {},
     ): Promise<JevResponse> {
       const service = bridge.service();
+      if (requireRedact && (!service || service.version !== SERVICE_VERSION || !service.isEnabled?.())) {
+        throw new Error('Jev redaction service is unavailable or paused; refusing to send the payload');
+      }
       if (!service) return asker.ask(state, questions, options);
 
       // Fail **closed**. If the redactor throws we must not fall through to the

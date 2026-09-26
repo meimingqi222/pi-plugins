@@ -14,14 +14,29 @@ jobs:
         with:
           node-version: "22"
 
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Load packed extensions
+        run: bun run smoke
+
       # The verifier is a shared skill installed outside the repository, so CI
       # installs it from the same source a developer does.
       - name: Install the regression-notes verifier
         run: npx --yes skills add meimingqi222/my-agent-skills@regression-notes -g -y
 
-      # Deliberately not `bun run notes`: scripts/verify-notes.sh fails open when
-      # it cannot find the verifier, which would make CI green whether or not the
-      # skill installed. Calling the verifier by absolute path turns a missing
-      # install into a failed job instead of a silent pass.
+      # scripts/verify-notes.sh fails open when it cannot find the verifier.
+      # Run the existing command, then require the installed verifier directly
+      # so a missing installation cannot pass CI.
       - name: Verify the notes tree
-        run: python3 "$HOME/.agents/skills/regression-notes/scripts/verify-notes.py" --notes-dir .agents/notes
+        run: |
+          bun run notes
+          python3 "$HOME/.agents/skills/regression-notes/scripts/verify-notes.py" --notes-dir .agents/notes

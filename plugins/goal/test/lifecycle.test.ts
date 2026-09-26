@@ -946,7 +946,9 @@ describe("goal candidate verification status", () => {
     await env.emitRaw("agent_settled");
     // A later agent_settled handler in another plugin starts a follow-up.
     await env.emit("agent_start");
-    await tick();
+    // Even if the old settlement timer fires during the new work run, its
+    // candidate must not be judged against a transcript still in progress.
+    await new Promise((resolve) => setTimeout(resolve, 15));
     expect(calls).toBe(0);
     await env.emit("agent_end", { messages: [verdict()] });
     await env.emit("agent_settled");
@@ -1417,7 +1419,7 @@ describe("goal lifecycle", () => {
 		expect(live.messages).toHaveLength(1);
 		expect(live.messages[0].content).toContain("task");
 		await endWork(env);
-		expect((await state(env)).status).toBe("complete");
+		await waitFor(env, (current) => current.status === "complete");
 		// The completed goal is withheld entirely: no "goal complete" line for the
 		// model to narrate on the user's next unrelated request.
 		const after = await env.emit("context", { messages: [{ role: "user", content: "unrelated question" }] });

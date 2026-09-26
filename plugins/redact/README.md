@@ -72,7 +72,13 @@ Command           →  /redact                  →  status / on / off / toggle
 
 The walk is copy-on-write: unchanged branches keep their original reference, so provider payloads containing class instances, buffers or other special objects round-trip intact. Base64 image data is detected structurally and never rewritten.
 
-Any failure inside the redactor is caught and logged to stderr; the request is passed through unmodified rather than blocked.
+The provider hooks provide **best-effort detection and redaction**, not a strict
+no-secret-leaves-the-machine guarantee: patterns cannot recognize every secret.
+Any failure inside the redactor is caught and logged to stderr; the request is
+passed through unmodified rather than blocked, so an error does not break the
+normal pi session. The provider request does **not** have a fail-closed mode.
+An extension's own outbound traffic is not covered by these hooks; consumers
+must use the service below or enforce their own outbound policy.
 
 ### Other extensions' outbound requests
 
