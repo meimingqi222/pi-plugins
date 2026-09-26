@@ -15,7 +15,7 @@
 
 import { Type, type Static } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { createAgentExecutor, type AgentExecutor, type AgentUsage } from "pi-agent-runner";
+import { createAgentExecutor, type AgentActivity, type AgentExecutor, type AgentUsage } from "pi-agent-runner";
 import { discoverAgents, findAgent, formatAgentNames, type SubagentDefinition } from "./agents.ts";
 
 export const SubagentParams = Type.Object({
@@ -100,6 +100,25 @@ export interface SubagentProgress {
   completedTools: number;
   activeTool?: string;
   recentTools: string[];
+  phase: AgentActivity["phase"];
+  lastActivityAt: number;
+  lastEvent: string;
+  recentActivity: Array<Pick<AgentActivity, "event" | "phase" | "at" | "toolName" | "target">>;
+}
+
+/** Render a safe activity record for an explicit, bounded task inspection. */
+export function formatActivity(event: SubagentProgress["recentActivity"][number]): string {
+  const age = Math.max(0, Math.floor((Date.now() - event.at) / 1_000));
+  const minutes = Math.floor(age / 60);
+  const remainder = age % 60;
+  const ago = minutes === 0 ? `${remainder}s` : remainder === 0 ? `${minutes}m` : `${minutes}m${remainder}s`;
+  const detail = [event.toolName, event.target].filter(Boolean).map((value) => cleanActivityField(value!, 160)).join(" ");
+  return `${ago} ago · ${cleanActivityField(event.event, 40)}${detail ? ` · ${detail}` : ""}`;
+}
+
+function cleanActivityField(value: string, limit: number): string {
+  const clean = value.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
 }
 
 export interface SubagentToolOptions {
@@ -113,6 +132,8 @@ export interface SubagentToolOptions {
 
 export interface SubagentCallContext {
   cwd: string;
+  evidencePath?: string;
+  evidenceMaxBytes?: number;
   model?: string;
   effort?: string;
   /** The tool call's abort signal, when the harness provides one. */
@@ -148,16 +169,51 @@ export async function executeSubagent(
   }
 
   const model = params.model ?? agent.model ?? ctx.model;
-  const progress: SubagentProgress = { completedTools: 0, recentTools: [] };
-  const emitProgress = () => {
-    const snapshot = { ...progress, recentTools: [...progress.recentTools] };
+  const progress: SubagentProgress = {
+    completedTools: 0,
+    recentTools: [],
+    phase: "starting",
+    lastActivityAt: Date.now(),
+    lastEvent: "spawned",
+    recentActivity: [],
+  };
+  const emitProgress = (renderUpdate = true) => {
+    const snapshot = {
+      ...progress,
+      recentTools: [...progress.recentTools],
+      recentActivity: progress.recentActivity.map((event) => ({ ...event })),
+    };
     try { ctx.onProgress?.(snapshot); } catch { /* Observers cannot fail a child run. */ }
-    try {
-      ctx.onUpdate?.({
-        content: [{ type: "text", text: `${agent.name} is ${progress.activeTool ? `using ${progress.activeTool}` : "working"}` }],
-        details: { agent: agent.name, status: "running", usage: emptySubagentUsage(), output: "", progress: snapshot },
-      });
-    } catch { /* TUI failures do not change the delegated result. */ }
+    if (renderUpdate) {
+      try {
+        ctx.onUpdate?.({
+          content: [{ type: "text", text: `${agent.name} is ${progress.activeTool ? `using ${progress.activeTool}` : "working"}` }],
+          details: { agent: agent.name, status: "running", usage: emptySubagentUsage(), output: "", progress: snapshot },
+        });
+      } catch { /* TUI failures do not change the delegated result. */ }
+    }
+  };
+  const recordActivity = (activity: AgentActivity) => {
+    progress.phase = activity.phase;
+    progress.lastActivityAt = activity.at;
+    progress.lastEvent = activity.event;
+    const event = {
+      event: activity.event,
+      phase: activity.phase,
+      at: activity.at,
+      ...(activity.toolName ? { toolName: activity.toolName } : {}),
+      ...(activity.target ? { target: activity.target } : {}),
+    };
+    const previous = progress.recentActivity.at(-1);
+    if (previous?.event === event.event && previous.phase === event.phase && event.event === "message_update") {
+      progress.recentActivity[progress.recentActivity.length - 1] = event;
+    } else {
+      progress.recentActivity.push(event);
+      if (progress.recentActivity.length > 10) progress.recentActivity.shift();
+    }
+    // Model deltas refresh the registry's liveness clock without repainting the
+    // TUI for every token. Tool boundaries still update the card below.
+    emitProgress(false);
   };
   emitProgress();
   const result = await executor({
@@ -170,7 +226,13 @@ export async function executeSubagent(
     ...(model ? { model } : {}),
     ...(!params.model && !agent.model && ctx.effort ? { effort: ctx.effort } : {}),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.evidencePath ? { evidencePath: ctx.evidencePath } : {}),
+    ...(ctx.evidenceMaxBytes ? { evidenceMaxBytes: ctx.evidenceMaxBytes } : {}),
+    onActivity: recordActivity,
     ...(ctx.onUpdate || ctx.onProgress ? { onProgress: (event) => {
+      progress.phase = event.type === "tool_start" ? "tool" : "model";
+      progress.lastActivityAt = Date.now();
+      progress.lastEvent = event.type;
       if (event.type === "tool_start") {
         const activity = event.target ? `${event.toolName} ${event.target}` : event.toolName;
         progress.activeTool = activity;

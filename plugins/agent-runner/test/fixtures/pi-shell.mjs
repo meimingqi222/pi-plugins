@@ -13,7 +13,7 @@ if (background) {
   bgBash({
     on(name, handler) { if (name === "session_shutdown") shutdown.push(handler); },
     registerTool(value) { if (value.name === "bash") tool = value; },
-    registerMessageRenderer() {}, sendMessage() {},
+    registerMessageRenderer() {}, registerEntryRenderer() {}, appendEntry() {}, sendMessage() {},
   });
 }
 // Run the real print-mode signal lifecycle and built-in bash, without a model.

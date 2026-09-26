@@ -17,13 +17,15 @@
 import {
 	keyText,
 	truncateToVisualLines,
+	type EntryRenderer,
 	type MessageRenderer,
 	type Theme,
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { JobStatus } from "../core/types.ts";
-import { formatDuration, splitCompletionContent, type BgBashDetails } from "./format.ts";
+import type { JobRecord } from "../core/jobs.ts";
+import { formatDuration, formatElapsed, splitCompletionContent, type BgBashDetails } from "./format.ts";
 
 /** Output lines kept in the collapsed view, matching pi's own bash-execution view. */
 export const COMPLETION_PREVIEW_LINES = 20;
@@ -34,6 +36,21 @@ const STATUS: Record<JobStatus, { label: string; color: ThemeColor }> = {
 	failed: { label: "failed", color: "error" },
 	killed: { label: "stopped", color: "warning" },
 	timedout: { label: "timed out", color: "warning" },
+	interrupted: { label: "tracking interrupted", color: "warning" },
+};
+
+/** A terminal record stays visible without adding a model message. */
+export const renderStatusEntry: EntryRenderer<JobRecord> = (entry, { expanded }, theme) => {
+	const data = entry.data;
+	if (!data || typeof data.id !== "string" || typeof data.status !== "string" ||
+		!Object.hasOwn(STATUS, data.status) || typeof data.startedAt !== "number") return undefined;
+	const status = STATUS[data.status];
+	const parts = [data.id, formatElapsed(data)];
+	if (typeof data.exitCode === "number") parts.push(`exit ${data.exitCode}`);
+	const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
+	box.addChild(new Text(theme.fg(status.color, status.label) + theme.fg("muted", ` · ${parts.join(" · ")}`), 0, 0));
+	if (expanded) box.addChild(new Text(theme.fg("muted", `bg_tasks result ${data.id}${data.logPath ? ` · ${data.logPath}` : ""}`), 0, 0));
+	return box;
 };
 
 export const renderCompletion: MessageRenderer<BgBashDetails> = (message, { expanded, outputPad }, theme) => {

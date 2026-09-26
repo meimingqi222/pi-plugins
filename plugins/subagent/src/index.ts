@@ -17,12 +17,14 @@ import { Text } from "@earendil-works/pi-tui";
 import { connectGoalSpend, readTokenUsage, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { BackgroundRegistry, formatBackground } from "./background.ts";
 import { discoverAgents, findAgent, formatAgentNames } from "./agents.ts";
+import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, sweepSubagentLogs } from "./logs.ts";
 import {
   SUBAGENT_DESCRIPTION,
   SUBAGENT_GUIDELINES,
   SubagentParams,
   executeSubagent,
   emptySubagentUsage,
+  formatActivity,
   type SubagentDetails,
   type SubagentToolOptions,
 } from "./tool.ts";
@@ -42,6 +44,7 @@ export function subagentsDisabled(env: NodeJS.ProcessEnv = process.env): boolean
 export function subagentExtension(options: SubagentExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     if (options.enabled === false || subagentsDisabled()) return;
+    sweepSubagentLogs();
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
     const delivery = new SettledDeliveryQueue(pi);
@@ -111,13 +114,17 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
           };
           try {
-            const record = registry.launch(params.agent, params.task, sessionId, (runSignal, id) =>
-              executeSubagent(params, {
+            const record = registry.launch(params.agent, params.task, sessionId, (runSignal, id) => {
+              const logPath = subagentLogPath(id, sessionId);
+              registry.setLogPath(id, logPath);
+              return executeSubagent(params, {
                 ...childContext,
                 signal: runSignal,
+                evidencePath: logPath,
+                evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
                 onProgress: (progress) => registry.setProgress(id, progress),
-              }, options),
-            );
+              }, options);
+            });
             pending.set(record.id, {
               ...(lease ? { lease } : {}),
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
@@ -177,11 +184,14 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     pi.registerTool({
       name: "subagent_tasks",
       label: "Subagent tasks",
-      description: "List, inspect, or cancel background subagent tasks from this session. A finished task's answer is also delivered automatically.",
-      promptSnippet: "Inspect or cancel a background subagent by task ID",
+      description: "List background subagent tasks, inspect status, recent activity, or explicitly read/search the raw event log, or cancel a task from this session. Raw logs include prompts and tool data; request them only for debugging. A finished task's answer is also delivered automatically.",
+      promptSnippet: "Inspect a background subagent's status, recent events, or diagnostic log; cancel by task ID",
       parameters: Type.Object({
-        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("cancel")]),
-        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show or cancel." })),
+        action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel")]),
+        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, or cancel." })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum recent activity events to return (1–10)." })),
+        query: Type.Optional(Type.String({ maxLength: 200, description: "Optional case-insensitive substring to search in raw JSONL log lines." })),
+        lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Maximum matching log lines to return (1–50, default 20)." })),
       }),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const sessionId = ctx.sessionManager.getSessionId();
@@ -195,6 +205,31 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         if (params.action === "cancel") {
           const stopped = registry.stop(sessionId, params.id);
           return { content: [{ type: "text", text: stopped ? `Stopping ${params.id}.` : `${params.id} already settled.` }], details: record };
+        }
+        if (params.action === "log") {
+          const logPath = registry.getLogPath(sessionId, params.id);
+          if (!logPath) {
+            return { content: [{ type: "text", text: "No raw log is available for this task." }], details: { id: record.id } };
+          }
+          const result = readSubagentLog(logPath, { query: params.query, lines: params.lines });
+          return {
+            content: [{ type: "text", text: result.text }],
+            details: {
+              id: record.id,
+              matchedLines: result.matchedLines,
+              scannedBytes: result.scannedBytes,
+              earlierDataOmitted: result.earlierDataOmitted,
+            },
+          };
+        }
+        if (params.action === "events") {
+          const recent = record.progress?.recentActivity ?? [];
+          const limit = Math.max(1, Math.min(10, params.limit ?? 10));
+          const events = recent.slice(-limit);
+          const text = events.length
+            ? events.map((event) => formatActivity(event)).join("\n")
+            : "No child activity events recorded.";
+          return { content: [{ type: "text", text }], details: { id: record.id, events } };
         }
         const answer = record.result?.content.find((item) => item.type === "text");
         const text = `${formatBackground(record)}${answer?.type === "text" ? `\n\n${answer.text}` : record.errorMessage ? `\n\n${record.errorMessage}` : ""}`;

@@ -20,7 +20,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { jsonRunArgs, resolvePiInvocation, type PiInvocation } from "./spawn.ts";
@@ -65,6 +65,8 @@ export interface AgentRunInput {
    * runs with `--no-session`, so there is no transcript to read.
    */
   evidencePath?: string;
+  /** Optional cap for raw evidence files; after the cap a truncation marker is written when space allows. */
+  evidenceMaxBytes?: number;
   /** Extra `--extension` paths to load in the child. */
   extensionPaths?: string[];
   /**
@@ -74,12 +76,69 @@ export interface AgentRunInput {
   parse?: (text: string) => unknown;
   /** Optional, bounded UI progress. Only a file path may accompany a tool name. */
   onProgress?: (event: AgentProgress) => void;
+  /** Allowlisted child lifecycle events for status displays; never includes content or tool arguments. */
+  onActivity?: (event: AgentActivity) => void;
 }
 
 export interface AgentProgress {
   type: "tool_start" | "tool_end";
   toolName: string;
   target?: string;
+}
+
+export type AgentActivityPhase = "starting" | "model" | "tool" | "finishing";
+
+/** Safe lifecycle metadata for liveness displays; child text and tool inputs are excluded. */
+export interface AgentActivity {
+  event: string;
+  phase: AgentActivityPhase;
+  at: number;
+  toolName?: string;
+  target?: string;
+}
+
+/** Project only safe event metadata from Pi's JSON stream. */
+export function readAgentActivity(event: unknown, at = Date.now()): AgentActivity | undefined {
+  if (!isRecord(event) || typeof event.type !== "string") return undefined;
+  const args = isRecord(event.args) ? event.args : undefined;
+  const toolName = typeof event.toolName === "string"
+    ? event.toolName.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").slice(0, 80)
+    : undefined;
+  const safeTarget =
+    ["read", "grep", "find", "ls"].includes(String(event.toolName)) &&
+    typeof args?.path === "string"
+      ? args.path.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").slice(0, 160)
+      : undefined;
+
+  switch (event.type) {
+    case "agent_start":
+      return { event: event.type, phase: "starting", at };
+    case "message_start":
+    case "message_update":
+    case "message_end":
+      return { event: event.type, phase: "model", at };
+    case "tool_execution_start":
+      return {
+        event: "tool_start",
+        phase: "tool",
+        at,
+        ...(toolName ? { toolName } : {}),
+        ...(safeTarget ? { target: safeTarget } : {}),
+      };
+    case "tool_execution_end":
+      return {
+        event: "tool_end",
+        phase: "model",
+        at,
+        ...(toolName ? { toolName } : {}),
+      };
+    case "agent_end":
+      return { event: event.type, phase: "finishing", at };
+    case "error":
+      return { event: event.type, phase: "model", at };
+    default:
+      return undefined;
+  }
 }
 
 /** Pick only the activity needed by a parent UI from Pi's JSON event stream. */
@@ -387,16 +446,41 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         // Appends are ordered through one queue and best-effort, so a write
         // failure never fails the run.
         const evidencePath = input.evidencePath;
+        let evidenceBytes = 0;
+        const evidenceMaxBytes = input.evidenceMaxBytes && input.evidenceMaxBytes > 0
+          ? Math.floor(input.evidenceMaxBytes)
+          : undefined;
+        const evidenceTruncationMarker = evidenceMaxBytes === undefined
+          ? undefined
+          : `${JSON.stringify({ type: "evidence_truncated", maxBytes: evidenceMaxBytes })}\n`;
+        const evidenceMarkerBytes = evidenceTruncationMarker
+          ? Buffer.byteLength(evidenceTruncationMarker, "utf8")
+          : 0;
+        let evidenceTruncated = false;
         let evidenceQueue: Promise<void> = evidencePath
-          ? mkdir(dirname(evidencePath), { recursive: true })
-              .then(() => undefined)
+          ? mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 })
+              .then(async () => {
+                try { evidenceBytes = (await stat(evidencePath)).size; } catch { /* New file. */ }
+              })
               .catch(() => undefined)
           : Promise.resolve();
         function writeEvidence(line: string): void {
           if (!evidencePath) return;
-          evidenceQueue = evidenceQueue
-            .then(() => appendFile(evidencePath!, `${line}\n`, { encoding: "utf8", mode: 0o600 }))
-            .catch(() => undefined);
+          evidenceQueue = evidenceQueue.then(async () => {
+            if (evidenceTruncated) return;
+            const record = `${line}\n`;
+            const bytes = Buffer.byteLength(record, "utf8");
+            if (evidenceMaxBytes !== undefined && evidenceBytes + bytes > evidenceMaxBytes - evidenceMarkerBytes) {
+              evidenceTruncated = true;
+              if (evidenceTruncationMarker && evidenceBytes + evidenceMarkerBytes <= evidenceMaxBytes) {
+                await appendFile(evidencePath!, evidenceTruncationMarker, { encoding: "utf8", mode: 0o600 });
+                evidenceBytes += evidenceMarkerBytes;
+              }
+              return;
+            }
+            await appendFile(evidencePath!, record, { encoding: "utf8", mode: 0o600 });
+            evidenceBytes += bytes;
+          }).catch(() => undefined);
         }
 
         // The call's cap wins over the executor's default, so a run's
@@ -521,6 +605,14 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
             try {
               const event = JSON.parse(text);
               applyEvent(state, event);
+              const activity = readAgentActivity(event);
+              if (activity) {
+                try {
+                  input.onActivity?.(activity);
+                } catch {
+                  // Status observers cannot fail the child run.
+                }
+              }
               const progress = readAgentProgress(event);
               if (progress) {
                 try {

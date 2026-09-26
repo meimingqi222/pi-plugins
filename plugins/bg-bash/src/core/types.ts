@@ -6,7 +6,10 @@
  */
 
 /** Lifecycle of one shell invocation tracked by the registry. */
-export type JobStatus = "running" | "exited" | "failed" | "killed" | "timedout";
+export type JobStatus = "running" | "exited" | "failed" | "killed" | "timedout" | "interrupted";
+
+/** Whether a background completion should wake the model. */
+export type JobNotification = "auto" | "always" | "quiet";
 
 /** How the command got registered. */
 export type JobMode = "foreground" | "background";

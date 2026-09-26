@@ -8,10 +8,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import bgBashExtension, { BG_BASH_CUSTOM_TYPE } from "../src/index.ts";
+import bgBashExtension, { BG_BASH_COMPLETION_ENTRY, BG_BASH_CUSTOM_TYPE } from "../src/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -19,7 +19,9 @@ interface Harness {
 	tools: Map<string, any>;
 	messages: Array<{ message: any; options: any }>;
 	notices: string[];
+	entries: Array<{ type: string; customType: string; data: any }>;
 	messageRenderers: Map<string, any>;
+	entryRenderers: Map<string, any>;
 	ctx: any;
 	emit(name: string, event?: any): Promise<unknown>;
 }
@@ -49,7 +51,9 @@ function setup(onSend?: (message: any, options: any) => void): Harness {
 	const tools = new Map<string, any>();
 	const messages: Array<{ message: any; options: any }> = [];
 	const notices: string[] = [];
+	const entries: Array<{ type: string; customType: string; data: any }> = [];
 	const messageRenderers = new Map<string, any>();
+	const entryRenderers = new Map<string, any>();
 	const handlers = new Map<string, Handler[]>();
 	const pi: any = {
 		events: { on() {}, emit() {} },
@@ -63,6 +67,12 @@ function setup(onSend?: (message: any, options: any) => void): Harness {
 		},
 		registerMessageRenderer(customType: string, renderer: any) {
 			messageRenderers.set(customType, renderer);
+		},
+		registerEntryRenderer(customType: string, renderer: any) {
+			entryRenderers.set(customType, renderer);
+		},
+		appendEntry(customType: string, data: any) {
+			entries.push({ type: "custom", customType, data });
 		},
 		sendMessage(message: any, options: any) {
 			if (onSend) return onSend(message, options);
@@ -78,6 +88,7 @@ function setup(onSend?: (message: any, options: any) => void): Harness {
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionFile: () => undefined,
+			getBranch: () => sessionId === "test-session" ? entries : [],
 			setSessionId(next: string) { sessionId = next; },
 		},
 		model: undefined,
@@ -88,7 +99,9 @@ function setup(onSend?: (message: any, options: any) => void): Harness {
 		tools,
 		messages,
 		notices,
+		entries,
 		messageRenderers,
+		entryRenderers,
 		ctx,
 		async emit(name: string, event: any = {}) {
 			let result: unknown;
@@ -110,6 +123,10 @@ function tasks(harness: Harness) {
 
 function textOf(result: any): string {
 	return result.content.map((part: any) => part.text ?? "").join("\n");
+}
+
+function completions(harness: Harness) {
+	return harness.entries.filter((entry) => entry.customType === BG_BASH_COMPLETION_ENTRY);
 }
 
 /** The completion renderer only needs `fg`/`bg`/`bold`; a real Theme is not needed here. */
@@ -145,7 +162,7 @@ describe("bash tool", () => {
 		).rejects.toThrow(/exited with code 4/);
 	});
 
-	test("moves a command that outlives the threshold to the background and reports back", async () => {
+	test("moves a long command to the background and records success without waking", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "0.2";
 		const harness = setup();
 		const result = await bash(harness).execute(
@@ -159,12 +176,10 @@ describe("bash tool", () => {
 		expect(notice).toContain("running in the background");
 		expect(notice).toMatch(/bg\d{3}/);
 
-		await waitFor(() => harness.messages.length > 0);
-		const followUp = harness.messages[0];
-		expect(followUp.message.customType).toBe(BG_BASH_CUSTOM_TYPE);
-		expect(followUp.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
-		expect(followUp.message.content).toContain("finished");
-		expect(followUp.message.content).toContain("auto-done");
+		await waitFor(() => completions(harness).length === 1);
+		expect(completions(harness)[0].data.status).toBe("exited");
+		expect(harness.messages).toHaveLength(0);
+		expect(textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx))).toContain("auto-done");
 	}, 15000);
 
 	test("background: true detaches immediately", async () => {
@@ -178,29 +193,96 @@ describe("bash tool", () => {
 			harness.ctx,
 		);
 		expect(textOf(result)).toContain("running in the background");
-		await waitFor(() => harness.messages.length > 0);
-		expect(harness.messages[0].message.content).toContain("explicit-bg");
+		await waitFor(() => completions(harness).length === 1);
+		expect(harness.messages).toHaveLength(0);
+		expect(textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx))).toContain("explicit-bg");
 	});
 
-	test("the follow-up is registered with a renderer that reshapes it for a person", async () => {
+	test("the terminal record renders as one status line without injecting stdout", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("t25", { command: "echo rendered-for-humans", background: true }, undefined, undefined, harness.ctx);
-		await waitFor(() => harness.messages.length > 0);
-
-		const render = harness.messageRenderers.get(BG_BASH_CUSTOM_TYPE);
+		await waitFor(() => completions(harness).length === 1);
+		const render = harness.entryRenderers.get(BG_BASH_COMPLETION_ENTRY);
 		expect(render).toBeDefined();
-		const message = harness.messages[0].message;
-		const view = render(message, { expanded: false, outputPad: 1 }, themeStub).render(120).join("\n");
-		// The model's report is untouched; the terminal view is not that report.
-		expect(message.content).toContain("Background bash job");
-		expect(view).toContain("$ echo rendered-for-humans");
-		expect(view).toContain("rendered-for-humans");
-		expect(view).not.toContain("Background bash job");
+		const view = render(completions(harness)[0], { expanded: false }, themeStub).render(120).join("\n");
+		expect(view).toContain("finished");
+		expect(view).toContain("bg001");
+		expect(view).not.toContain("rendered-for-humans");
+		expect(harness.messages).toHaveLength(0);
 	}, 15000);
 });
 
 describe("bg_tasks tool", () => {
+	test("default failure wakes with metadata while full output stays queryable", async () => {
+		const harness = setup();
+		await bash(harness).execute("failed", { command: "echo diagnostic-detail; exit 7", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.messages.length === 1);
+		expect(harness.messages[0].message.customType).toBe(BG_BASH_CUSTOM_TYPE);
+		expect(harness.messages[0].message.display).toBe(false);
+		expect(harness.messages[0].message.content).toContain("bg001: failed (exit 7)");
+		expect(harness.messages[0].message.content).not.toContain("diagnostic-detail");
+		expect(textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx))).toContain("diagnostic-detail");
+	}, 15000);
+
+	test("quiet suppresses even a failed completion", async () => {
+		const harness = setup();
+		await bash(harness).execute("quiet", { command: "exit 3", background: true, notify: "quiet" }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(harness.messages).toHaveLength(0);
+		expect(completions(harness)[0].data.status).toBe("failed");
+	}, 15000);
+
+	test("explicit always batches simultaneous successes into one short notification", async () => {
+		const harness = setup();
+		await bash(harness).execute("one", { command: "echo one-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await bash(harness).execute("two", { command: "echo two-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 2);
+		await waitFor(() => harness.messages.length === 1);
+		expect(harness.messages[0].message.content).toContain("bg001: exited");
+		expect(harness.messages[0].message.content).toContain("bg002: exited");
+		expect(harness.messages[0].message.content).not.toContain("one-output");
+	}, 15000);
+
+	test("wait returns a bounded result when the required job settles", async () => {
+		const harness = setup();
+		await bash(harness).execute("waited", { command: "sleep 0.1; echo waited-output", background: true }, undefined, undefined, harness.ctx);
+		const result = await tasks(harness).execute("wait", { action: "wait", id: "bg001", timeout: 2 }, undefined, undefined, harness.ctx);
+		expect(textOf(result)).toContain("Requested job state reached.");
+		expect(textOf(result)).toContain("bg001: exited");
+		expect(textOf(result)).toContain("waited-output");
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("wait supports any of several jobs and reports unfinished peers", async () => {
+		const harness = setup();
+		await bash(harness).execute("first", { command: "sleep 0.1; echo first-ready", background: true }, undefined, undefined, harness.ctx);
+		await bash(harness).execute("second", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		const output = textOf(await tasks(harness).execute("wait", { action: "wait", ids: ["bg001", "bg002"], mode: "any", timeout: 2 }, undefined, undefined, harness.ctx));
+		expect(output).toContain("bg001: exited");
+		expect(output).toContain("bg002: running");
+	}, 15000);
+
+	test("wait can be cancelled without stopping the background process", async () => {
+		const harness = setup();
+		await bash(harness).execute("waited", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		const controller = new AbortController();
+		const waiting = tasks(harness).execute("wait", { action: "wait", id: "bg001" }, controller.signal, undefined, harness.ctx);
+		controller.abort();
+		expect(textOf(await waiting)).toContain("Wait cancelled.");
+		expect(textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx))).toContain("running");
+	}, 15000);
+
+	test("wait honours a fractional-second timeout", async () => {
+		const harness = setup();
+		await bash(harness).execute("slow", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		const started = Date.now();
+		const output = textOf(await tasks(harness).execute("wait", { action: "wait", id: "bg001", timeout: 0.05 }, undefined, undefined, harness.ctx));
+		expect(output).toContain("Wait timed out after 0.05s.");
+		expect(Date.now() - started).toBeGreaterThanOrEqual(35);
+	}, 15000);
+
 	test("lists nothing when no jobs exist", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
@@ -212,7 +294,7 @@ describe("bg_tasks tool", () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("t5", { command: "echo bg-log-line", background: true }, undefined, undefined, harness.ctx);
-		await waitFor(() => harness.messages.length > 0);
+		await waitFor(() => completions(harness).length === 1);
 
 		const list = textOf(await tasks(harness).execute("l1", { action: "list" }, undefined, undefined, harness.ctx));
 		const id = list.match(/bg\d{3}/)?.[0];
@@ -235,7 +317,8 @@ describe("bg_tasks tool", () => {
 		const kill = textOf(await tasks(harness).execute("k1", { action: "kill", id }, undefined, undefined, harness.ctx));
 		expect(kill).toContain(`Job ${id} killed`);
 
-		await waitFor(() => harness.messages.some((entry) => entry.message.content.includes("was stopped")));
+		await waitFor(() => completions(harness).length === 1);
+		expect(harness.messages).toHaveLength(0);
 		const list = textOf(await tasks(harness).execute("l2", { action: "list" }, undefined, undefined, harness.ctx));
 		expect(list).toContain(`${id} [killed`);
 	}, 15000);
@@ -244,7 +327,7 @@ describe("bg_tasks tool", () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("t13", { command: "echo fresh-buffer-line", background: true }, undefined, undefined, harness.ctx);
-		await waitFor(() => harness.messages.length > 0);
+		await waitFor(() => completions(harness).length === 1);
 
 		const status = textOf(await tasks(harness).execute("s3", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx));
 		const logPath = status.match(/Log: (.+)$/)?.[1]?.trim();
@@ -261,6 +344,30 @@ describe("bg_tasks tool", () => {
 		const harness = setup();
 		await expect(tasks(harness).execute("s2", { action: "status" }, undefined, undefined, harness.ctx)).rejects.toThrow(/id/);
 	});
+
+	test("restored terminal metadata stays queryable and missing logs are explicit", async () => {
+		const harness = setup();
+		await bash(harness).execute("saved", { command: "echo saved-output", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await harness.emit("session_start");
+		const restored = textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx));
+		expect(restored).toContain("bg001: exited");
+		expect(restored).toContain("saved-output");
+		const path = completions(harness)[0].data.logPath;
+		unlinkSync(path);
+		expect(textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx))).toContain("Output unavailable");
+	}, 15000);
+
+	test("log clamps a single oversized line to 50KB", async () => {
+		const harness = setup();
+		await bash(harness).execute("large", { command: "echo done", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await harness.emit("session_start");
+		writeFileSync(completions(harness)[0].data.logPath, "x".repeat(100000));
+		const output = textOf(await tasks(harness).execute("log", { action: "log", id: "bg001", lines: 1000000 }, undefined, undefined, harness.ctx));
+		expect(Buffer.byteLength(output)).toBeLessThan(52 * 1024);
+		expect(output).toContain("[Truncated;");
+	}, 15000);
 });
 
 /**
@@ -268,20 +375,70 @@ describe("bg_tasks tool", () => {
  * rather than let the model poll a result that will be delivered on its own.
  */
 describe("session lifecycle", () => {
-	test("session_start drops the previous session's jobs and restarts ids", async () => {
+	test("completion waits through idle compaction instead of starting an agent run", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await bash(harness).execute("compacting", { command: "echo completed", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		expect(harness.messages).toHaveLength(0);
+		harness.ctx.isIdle = () => true;
+		await waitFor(() => harness.messages.length === 1, 1000);
+		expect(harness.messages[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(harness.messages).toHaveLength(1);
+	}, 15000);
+
+	test("a completion held during compaction is dropped on session switch", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await bash(harness).execute("compacting", { command: "echo completed", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		await harness.emit("session_before_switch");
+		harness.ctx.isIdle = () => true;
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("a successful background job does not wake the agent after it has settled", async () => {
+		process.env.PI_BG_BASH_THRESHOLD = "30";
+		const harness = setup();
+		await bash(harness).execute("quiet-success", { command: "echo finished", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await harness.emit("agent_settled");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(harness.messages).toHaveLength(0);
+	}, 15000);
+
+	test("session_start restores completed jobs and continues the id sequence", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("t9", { command: "echo first-session", background: true }, undefined, undefined, harness.ctx);
-		await waitFor(() => harness.messages.length > 0);
+		await waitFor(() => completions(harness).length === 1);
 
 		await harness.emit("session_start");
 
 		const list = textOf(await tasks(harness).execute("l3", { action: "list" }, undefined, undefined, harness.ctx));
-		expect(list).toContain("No bash jobs");
+		expect(list).toContain("bg001 [exited");
 
 		const result = await bash(harness).execute("t10", { command: "echo second-session", background: true }, undefined, undefined, harness.ctx);
-		expect(textOf(result)).toContain("bg001");
+		expect(textOf(result)).toContain("bg002");
 	});
+
+	test("a formerly running job is restored as interrupted, not live", async () => {
+		const harness = setup();
+		await bash(harness).execute("old", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
+		await harness.emit("session_start");
+		const status = textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx));
+		expect(status).toContain("bg001: interrupted");
+		expect(status).toContain("Elapsed: unknown");
+		expect(status).not.toContain("still running");
+		const result = textOf(await tasks(harness).execute("result", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx));
+		expect(result).toContain("Ended: unknown");
+		expect(result).toContain("Duration: unknown");
+		expect(textOf(await bash(harness).execute("next", { command: "echo next", background: true }, undefined, undefined, harness.ctx))).toContain("bg002");
+	}, 15000);
 
 	test("a background job cannot deliver into a later session", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
@@ -303,8 +460,8 @@ describe("session lifecycle", () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("old", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
-		await harness.emit("session_start");
 		harness.ctx.sessionManager.setSessionId("new-session");
+		await harness.emit("session_start");
 		await bash(harness).execute("new", { command: "sleep 5", background: true }, undefined, undefined, harness.ctx);
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		const list = textOf(await tasks(harness).execute("list", { action: "list" }, undefined, undefined, harness.ctx));
@@ -364,22 +521,37 @@ describe("session lifecycle", () => {
 		const harness = setup();
 		harness.ctx.isIdle = () => false;
 		await harness.emit("agent_end");
-		await bash(harness).execute("queued", { command: "echo completed", background: true }, undefined, undefined, harness.ctx);
+		await bash(harness).execute("queued", { command: "echo completed", background: true, notify: "always" }, undefined, undefined, harness.ctx);
 		await waitFor(async () => textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx)).includes("exited"));
 		expect(harness.messages).toHaveLength(0);
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		harness.ctx.isIdle = () => true;
 		await harness.emit("agent_settled");
 		await waitFor(() => harness.messages.length === 1, 500);
-		expect(harness.messages[0].message.content).toContain("completed");
+		expect(harness.messages[0].message.content).toContain("bg001: exited");
+		expect(harness.messages[0].message.content).not.toContain("completed");
+		expect(harness.messages[0].message.display).toBe(false);
 		expect(harness.messages[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+	}, 15000);
+
+	test("an active agent receives an opted-in completion as a short steer", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		await bash(harness).execute("steered", { command: "echo steer-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await waitFor(() => harness.messages.length === 1);
+		expect(harness.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+		expect(harness.messages[0].message.content).not.toContain("steer-output");
 	}, 15000);
 
 	test("a queued completion is discarded when its session leaves before agent_settled", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		harness.ctx.isIdle = () => false;
-		await bash(harness).execute("queued", { command: "echo completed", background: true }, undefined, undefined, harness.ctx);
+		await harness.emit("agent_end");
+		await bash(harness).execute("queued", { command: "echo completed", background: true, notify: "always" }, undefined, undefined, harness.ctx);
 		await waitFor(async () => textOf(await tasks(harness).execute("status", { action: "status", id: "bg001" }, undefined, undefined, harness.ctx)).includes("exited"));
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		await harness.emit("session_before_switch");
 		harness.ctx.isIdle = () => true;
 		await harness.emit("agent_settled");
@@ -389,7 +561,7 @@ describe("session lifecycle", () => {
 	test("a failed follow-up delivery is reported without escaping the completion callback", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup(() => { throw new Error("delivery failed"); });
-		await bash(harness).execute("undelivered", { command: "echo done", background: true }, undefined, undefined, harness.ctx);
+		await bash(harness).execute("undelivered", { command: "echo done", background: true, notify: "always" }, undefined, undefined, harness.ctx);
 		await waitFor(() => harness.notices.length === 1);
 		expect(harness.notices[0]).toContain("delivery failed");
 		expect(harness.messages).toHaveLength(0);
@@ -420,7 +592,7 @@ describe("session lifecycle", () => {
 		try {
 			await bash(harness).execute(
 				"t24",
-				{ command: "sleep 0.2; echo after-idle-teardown", background: true },
+				{ command: "sleep 0.2; echo after-idle-teardown", background: true, notify: "always" },
 				undefined,
 				undefined,
 				harness.ctx,
@@ -437,14 +609,14 @@ describe("session lifecycle", () => {
 });
 
 describe("poll guard", () => {
-	test("a bare sleep while a job runs is blocked and ends the turn", async () => {
+	test("a bare sleep while a job runs is blocked without ending the turn", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
 		await bash(harness).execute("t7", { command: "sleep 30", background: true }, undefined, undefined, harness.ctx);
 
 		const result = await harness.emit("tool_call", { toolName: "bash", input: { command: "sleep 30" } });
 		expect((result as any).block).toBe(true);
-		expect((result as any).terminate).toBe(true);
+		expect((result as any).terminate).toBeUndefined();
 		expect((result as any).reason).toContain("bg_tasks");
 	}, 15000);
 

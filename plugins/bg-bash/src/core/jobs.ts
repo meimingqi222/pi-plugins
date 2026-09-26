@@ -7,7 +7,18 @@
  */
 
 import { TailBuffer } from "./output.ts";
-import { statusFromOutcome, type JobMode, type JobStatus, type RunOutcome } from "./types.ts";
+import { statusFromOutcome, type JobMode, type JobNotification, type JobStatus, type RunOutcome } from "./types.ts";
+
+export interface JobRecord {
+	schema: 1;
+	id: string;
+	mode: JobMode;
+	status: JobStatus;
+	startedAt: number;
+	endedAt?: number;
+	exitCode: number | null;
+	logPath?: string;
+}
 
 export interface Job {
 	id: string;
@@ -16,6 +27,7 @@ export interface Job {
 	pid?: number;
 	mode: JobMode;
 	status: JobStatus;
+	notify: JobNotification;
 	startedAt: number;
 	endedAt?: number;
 	exitCode: number | null;
@@ -23,6 +35,8 @@ export interface Job {
 	output: TailBuffer;
 	/** Kills the process tree; set by the runner once the child exists. */
 	kill?: (signal?: NodeJS.Signals) => void;
+	/** Restored metadata has no live process or in-memory output. */
+	restored?: boolean;
 }
 
 export interface CreateJobInput {
@@ -30,6 +44,7 @@ export interface CreateJobInput {
 	cwd: string;
 	mode?: JobMode;
 	logPath?: string;
+	notify?: JobNotification;
 	/** Injectable clock for tests. */
 	now?: number;
 }
@@ -43,6 +58,7 @@ export interface JobRegistryOptions {
 
 export class JobRegistry {
 	private readonly jobs = new Map<string, Job>();
+	private readonly listeners = new Set<() => void>();
 	private next = 1;
 
 	constructor(private readonly options: JobRegistryOptions = {}) {}
@@ -78,6 +94,7 @@ export class JobRegistry {
 			cwd: input.cwd,
 			mode: input.mode ?? "foreground",
 			status: "running",
+			notify: input.notify ?? "auto",
 			startedAt: input.now ?? Date.now(),
 			exitCode: null,
 			logPath: input.logPath,
@@ -85,7 +102,42 @@ export class JobRegistry {
 		};
 		this.jobs.set(id, job);
 		this.reapFinished();
+		this.changed();
 		return job;
+	}
+
+	/** Restore a session record without treating its old process as live. */
+	restore(record: JobRecord): void {
+		const sequence = /^bg(\d+)$/.exec(record.id);
+		if (sequence) this.next = Math.max(this.next, Number(sequence[1]) + 1);
+		this.jobs.set(record.id, {
+			id: record.id,
+			command: "(restored job)",
+			cwd: "",
+			mode: record.mode,
+			status: record.status === "running" ? "interrupted" : record.status,
+			notify: "quiet",
+			startedAt: record.startedAt,
+			// A running record has no end time; inventing one would report the
+			// idle gap since the crash as if the process had still been working.
+			endedAt: record.endedAt,
+			exitCode: record.exitCode,
+			logPath: record.logPath,
+			output: new TailBuffer(),
+			restored: true,
+		});
+		this.reapFinished();
+		this.changed();
+	}
+
+	/** One-shot waiters subscribe to terminal state changes without polling. */
+	onChange(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+
+	private changed(): void {
+		for (const listener of this.listeners) listener();
 	}
 
 	get(id: string): Job | undefined {
@@ -110,6 +162,7 @@ export class JobRegistry {
 		job.exitCode = outcome.exitCode;
 		job.endedAt = Date.now();
 		job.kill = undefined;
+		this.changed();
 		this.reapFinished();
 	}
 
@@ -128,16 +181,19 @@ export class JobRegistry {
 
 	remove(id: string): void {
 		this.jobs.delete(id);
+		this.changed();
 	}
 
 	clear(): void {
 		this.jobs.clear();
+		this.changed();
 	}
 
 	/** Drop all bookkeeping; a new session starts ids from bg001 again. */
 	reset(): void {
 		this.jobs.clear();
 		this.next = 1;
+		this.changed();
 	}
 
 	private reapFinished(): void {

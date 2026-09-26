@@ -1,6 +1,7 @@
 # Agent Note: Draw background completions for a person without changing what the model reads
 
 Status: implemented
+Partly-superseded-by: 2026-09-26-bg-bash-late-completion-routing.md
 
 ## Problem
 
@@ -86,12 +87,19 @@ pi's own bash view keeps the tail, and the expand hint covers the rest.
 - A renderer that throws is caught by pi and falls back to the default view, so
   a display bug cannot hide a result.
 
+## Superseded
+
+This message renderer still handles `bg_bash_result` messages saved by older
+sessions. New completions use a TUI-only status entry and at most a short,
+hidden model notification; they no longer include stdout in a visible custom
+message. The original renderer unit tests remain relevant for old sessions.
+
 ## Verification
 
 - `plugins/bg-bash/test/render.test.ts` — the model string is byte-identical,
   the collapsed view is bounded and reshaped, the log pointer appears once,
   every terminal status reads as a word, unusable details fall back
-- `plugins/bg-bash/test/plugin.test.ts::the follow-up is registered with a renderer that reshapes it for a person`
+- `plugins/bg-bash/test/plugin.test.ts::the terminal record renders as one status line without injecting stdout`
 
 Proved: with the `pi.registerMessageRenderer` call removed from the plugin
 entry, that plugin test failed with `expect(received).toBeDefined()` /

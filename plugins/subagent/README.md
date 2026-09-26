@@ -53,6 +53,8 @@ list tasks, show a task's status and answer, or cancel a running task:
 ```jsonc
 { "action": "list" }
 { "action": "show", "id": "sa-..." }
+{ "action": "events", "id": "sa-...", "limit": 5 }
+{ "action": "log", "id": "sa-...", "query": "tool_execution", "lines": 20 }
 { "action": "cancel", "id": "sa-..." }
 ```
 
@@ -63,10 +65,31 @@ cancels active tasks and suppresses their late results. Completed tasks wake
 the parent agent; failures and cancellations appear in the transcript without
 starting another turn.
 
+`show` reports the current phase and time since the last child event; after 90
+seconds without an event it marks the task as a possible stall. This is a
+liveness hint, not proof that the child is stuck: a provider may take a long time
+to answer without emitting an event. `events` returns up to ten recent
+lifecycle events.
+
+The activity trail is metadata-only. It can show event types, tool names, and
+paths for `read`, `grep`, `find`, and `ls`; it does not retain prompts, search
+patterns, tool arguments, or command output. The trail is bounded to ten events
+per task.
+
+For deeper debugging, explicitly request `action: "log"`. Background tasks
+write the child's raw JSONL event stream to `~/.pi/agent/subagent-logs/` (or
+`PI_SUBAGENT_LOG_DIR`). These logs can contain prompts, tool arguments and
+outputs, so they are returned only by this explicit action. Without `query`,
+the action reads the latest 2 MiB; with `query`, it searches the whole task log
+(capped at 20 MiB). At most 50 matching lines and 32 KiB are returned per
+call. Old logs are pruned after seven days or when the directory exceeds 200
+files. Use `query` for a case-insensitive substring search and `lines` to bound
+the number of returned matches.
+
 In the TUI, the call shows the selected agent and task. While the child runs,
 the result card shows its current tool, file path when available, and completed
-tool count; expanding it shows the five most recent activities. Search patterns,
-command contents and output are not copied into progress updates. When the child
+tool count; expanding it shows the five most recent tool activities. Search
+patterns, command contents and output are not copied into progress updates. When the child
 finishes, the card shows its status and reply preview. The complete reply
 remains in the tool result details.
 

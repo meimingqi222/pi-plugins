@@ -29,6 +29,6 @@ describe("pollBlockReason", () => {
 		const reason = pollBlockReason(["bg001"]);
 		expect(reason).toContain("bg001");
 		expect(reason).toContain("bg_tasks");
-		expect(reason).toContain("end your turn");
+		expect(reason).toContain("bg_tasks wait");
 	});
 });

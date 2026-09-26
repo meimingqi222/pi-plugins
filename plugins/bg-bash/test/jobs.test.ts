@@ -76,6 +76,37 @@ describe("JobRegistry", () => {
 		expect(ids).toEqual(["bg004", "bg005"]);
 	});
 
+	test("restore marks a formerly running record interrupted without inventing an end time", () => {
+		const registry = new JobRegistry();
+		registry.restore({
+			schema: 1,
+			id: "bg003",
+			mode: "background",
+			status: "running",
+			startedAt: 1_000,
+			exitCode: null,
+		});
+		const job = registry.get("bg003");
+		expect(job?.status).toBe("interrupted");
+		expect(job?.endedAt).toBeUndefined();
+		expect(job?.restored).toBe(true);
+		expect(registry.create({ command: "next", cwd: "/" }).id).toBe("bg004");
+	});
+
+	test("restore keeps a real terminal end time", () => {
+		const registry = new JobRegistry();
+		registry.restore({
+			schema: 1,
+			id: "bg001",
+			mode: "background",
+			status: "exited",
+			startedAt: 1_000,
+			endedAt: 2_500,
+			exitCode: 0,
+		});
+		expect(registry.get("bg001")?.endedAt).toBe(2_500);
+	});
+
 	test("reset drops every job and restarts the id counter", () => {
 		const registry = new JobRegistry();
 		registry.create({ command: "a", cwd: "/" });

@@ -20,6 +20,8 @@ export interface Runtime {
 	 * after a session or branch switch can be dropped instead of injected.
 	 */
 	captureOrigin(ctx: ExtensionContext): () => boolean;
-	/** Hand a finished background job to the session as a follow-up message. */
+	/** Persist the detached job before returning its id to the model. */
+	started(job: Job, ctx: ExtensionContext, isCurrent: () => boolean): void;
+	/** Persist and route a finished background job. */
 	deliver(job: Job, outcome: RunOutcome, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void;
 }
