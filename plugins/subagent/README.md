@@ -93,6 +93,43 @@ patterns, command contents and output are not copied into progress updates. When
 finishes, the card shows its status and reply preview. The complete reply
 remains in the tool result details.
 
+## Watching the fleet
+
+Background children also get a human-facing surface, because a card in
+scrollback cannot describe work that is still in flight:
+
+- **A widget under the editor** appears while at least one child runs — one
+  stable row per child (icon, agent, task, elapsed, output tokens), folded past
+  six rows — and disappears when the last child settles. Rows are deliberately
+  stable: live tool calls and streamed text would churn every row on every
+  child event.
+- **`/subagents`** prints the same listing the model's `subagent_tasks`
+  produces. **`/subagents live`** opens an overlay panel: `↑`/`↓` select
+  (selection follows the record id, so a settling child does not move the
+  cursor onto a different one), `enter` opens a detail view with the recent
+  activity trail and result, `t` folds the child's event log into a readable
+  transcript (assistant text, tool calls, bounded results — no persisted
+  child session needed), `l` drops to a bounded raw-log tail, `k` cancels a
+  running child, and `Esc` backs out one level at a time.
+- **`n` / `/subagents notify`** toggles a user-facing completion notification:
+  by default only the model is told a child finished; with it on, a toast
+  announces each settle (`PI_SUBAGENT_NOTIFY_DONE=1` makes on the default).
+- **`ctrl+shift+a`** opens the panel without typing. Extension shortcuts take
+  precedence over user keybindings and conflict loudly in `/hotkeys` output;
+  the widget's hint line always shows a working way in.
+- **`PI_SUBAGENT_DOWN_INSPECT=1`** additionally opens the panel on `down` at an
+  empty editor. It is opt-in: that key browses prompt history, and a TUI-level
+  input listener runs before dialog focus, so it can swallow `down` aimed at an
+  open selector.
+The transcript is a fold of the child's own JSON-mode event stream, not a
+resumed session: children still run `--no-session`, so the fold never appears
+in `/resume` and cannot be resumed into a session that bypasses the one-level
+fan-out guard.
+
+- A child with no event for 90s is marked `stalled` (◉) in the widget and
+  announces itself once per child via a warning notification — the same
+  threshold `subagent_tasks` reports as "possible stall".
+
 ## Built-in agent
 
 `explore` is available immediately after installation. It uses Pi's `read`,

@@ -12,12 +12,15 @@
  */
 
 import { Type } from "typebox";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { connectGoalSpend, readTokenUsage, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { BackgroundRegistry, formatBackground } from "./background.ts";
+import { formatFleetListing } from "./fleet.ts";
+import { createSubagentsPanel } from "./panel.ts";
+import { createFleetReporter } from "./widget.ts";
 import { discoverAgents, findAgent, formatAgentNames } from "./agents.ts";
-import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, sweepSubagentLogs } from "./logs.ts";
+import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, SUBAGENT_LOG_MAX_LINES, sweepSubagentLogs } from "./logs.ts";
 import {
   SUBAGENT_DESCRIPTION,
   SUBAGENT_GUIDELINES,
@@ -32,6 +35,27 @@ import {
 export interface SubagentExtensionOptions extends SubagentToolOptions {
   /** Disable registration entirely (test seam). */
   enabled?: boolean;
+  /** Open the fleet panel on `down` at an empty editor; defaults to PI_SUBAGENT_DOWN_INSPECT. */
+  downInspect?: boolean;
+  /** Notify the user when a child settles; defaults to PI_SUBAGENT_NOTIFY_DONE, toggled by `n` or `/subagents notify`. */
+  notifyDone?: boolean;
+}
+
+/** Raw-log tail rows shown by the panel's `l` key; same bound as the tool's log action. */
+const LOG_TAIL_LINES = 40;
+/** A transcript fold needs more of the tail than the raw viewer shows. */
+const TRANSCRIPT_TAIL_LINES = SUBAGENT_LOG_MAX_LINES;
+
+/** Opt-in: `down` at an empty editor opens the fleet panel (costs history browsing on that key). */
+export function downInspectEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.PI_SUBAGENT_DOWN_INSPECT?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "on";
+}
+
+/** Opt-in: notify the user (not only the model) when a child settles. */
+export function notifyDoneDefault(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.PI_SUBAGENT_NOTIFY_DONE?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "on";
 }
 
 /** Whether registration is switched off by the environment. */
@@ -49,10 +73,77 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     let generation = 0;
     const delivery = new SettledDeliveryQueue(pi);
     const pending = new Map<string, { lease?: GoalSpendLease; isCurrent: () => boolean; isIdle: () => boolean }>();
+
+    // The fleet surfaces need the session's UI context: widgets are scoped to
+    // the `ctx` they were mounted on, and the registry is keyed to the session
+    // id. `session_start` refreshes the reference; a lazy refresh at launch
+    // covers a plugin /reload mid-session.
+    let uiCtx: ExtensionContext | undefined;
+    let panelOpen = false;
+    let activePanel: { dispose?(): void } | undefined;
+    let downUnsubscribe: (() => void) | undefined;
+    let notifyDone = options.notifyDone ?? notifyDoneDefault();
+    const downInspect = options.downInspect ?? downInspectEnabled();
+
+    const reporter = createFleetReporter({
+      ui: () => (uiCtx?.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
+      list: () => (uiCtx ? registry.list(uiCtx.sessionManager.getSessionId()) : []),
+      activeCount: () => registry.activeCount(),
+    });
+
+    async function openFleetPanel(source: ExtensionContext): Promise<void> {
+      if (panelOpen || source.mode !== "tui" || !source.hasUI || typeof source.ui?.custom !== "function") return;
+      if (uiCtx === undefined) uiCtx = source;
+      const sessionId = uiCtx.sessionManager.getSessionId();
+      const records = registry.list(sessionId);
+      if (records.length === 0) return;
+      panelOpen = true;
+      try {
+        await source.ui.custom(
+          (tui, theme, _keybindings, done) =>
+            (activePanel = createSubagentsPanel(
+              {
+                tui,
+                theme,
+                list: () => registry.list(sessionId),
+                stop: (id) => registry.stop(sessionId, id),
+                readLog: (id) => {
+                  const path = registry.getLogPath(sessionId, id);
+                  return path ? readSubagentLog(path, { lines: LOG_TAIL_LINES }).text : undefined;
+                },
+                readTranscriptLines: (id) => {
+                  const path = registry.getLogPath(sessionId, id);
+                  if (!path) return undefined;
+                  const read = readSubagentLog(path, { lines: TRANSCRIPT_TAIL_LINES });
+                  return { lines: read.text.split("\n").filter((line) => line.length > 0), earlierDataOmitted: read.earlierDataOmitted };
+                },
+                notifyDone: () => notifyDone,
+                setNotifyDone: (value) => { notifyDone = value; },
+              },
+              () => done(undefined),
+            )),
+          { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } },
+        );
+      } finally {
+        panelOpen = false;
+        activePanel = undefined;
+      }
+    }
+
     const registry = new BackgroundRegistry((record) => {
+      reporter.sync();
       const launch = pending.get(record.id);
       pending.delete(record.id);
       launch?.lease?.finish(record.result ? readTokenUsage(record.result) : 0);
+      if (notifyDone && record.status !== "aborted") {
+        const ui = uiCtx?.ui;
+        if (ui) {
+          try {
+            const icon = record.status === "completed" ? "✓" : "×";
+            ui.notify(`${icon} subagent ${record.id} (${record.agent}) ${record.status} — /subagents live`, record.status === "completed" ? "info" : "warning");
+          } catch { /* The settled result still reaches the model. */ }
+        }
+      }
       if (!launch?.isCurrent()) return;
       const answer = record.result?.content.find((item) => item.type === "text");
       const summary = answer?.type === "text" ? answer.text : record.errorMessage ?? "No answer was returned.";
@@ -73,11 +164,129 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       generation += 1;
       delivery.clear();
       registry.stopAll();
+      uiCtx = undefined;
+      downUnsubscribe?.();
+      downUnsubscribe = undefined;
+      // The host removes overlays without disposing them, so the panel would
+      // keep its interval alive across a session switch if left to the host.
+      activePanel?.dispose?.();
+      activePanel = undefined;
+      panelOpen = false;
+      reporter.dispose();
     };
+    pi.on("session_start", (_event, ctx) => {
+      if (ctx.mode === "tui") uiCtx = ctx;
+      attachDownInspect(ctx);
+    });
     pi.on("session_before_tree", endSession);
     pi.on("session_before_fork", endSession);
     pi.on("session_before_switch", endSession);
     pi.on("session_shutdown", endSession);
+
+    // Registered defensively: a host that embeds the extension without command
+    // or shortcut surfaces (tests, RPC drivers) still gets both tools.
+    pi.registerCommand?.("subagents", {
+      description: "List background subagents, or watch them live: /subagents [live|stop [id]|notify [on|off]|<id>]",
+      async handler(args: string, ctx) {
+        if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
+        const sessionId = ctx.sessionManager.getSessionId();
+        const input = args.trim();
+        const [verb, target] = input.split(/\s+/u).filter(Boolean);
+
+        if (verb === "live" || verb === "watch") {
+          if (ctx.mode !== "tui") {
+            ctx.ui.notify(formatFleetListing(registry.list(sessionId)), "info");
+            return;
+          }
+          if (registry.list(sessionId).length === 0) {
+            ctx.ui.notify("No background subagent tasks in this session.", "info");
+            return;
+          }
+          await openFleetPanel(ctx);
+          return;
+        }
+
+        if (verb === "stop" || verb === "cancel") {
+          const records = registry.list(sessionId);
+          const running = records.filter((record) => record.status === "running");
+          if (!target) {
+            if (running.length === 0) {
+              ctx.ui.notify("No running subagents.", "info");
+              return;
+            }
+            for (const record of running) registry.stop(sessionId, record.id);
+            ctx.ui.notify(`Stopping ${running.length} subagent${running.length === 1 ? "" : "s"}.`, "info");
+            return;
+          }
+          const record = records.find((item) => item.id === target);
+          if (!record || record.status !== "running") {
+            ctx.ui.notify(`No running subagent ${target}.`, "warning");
+            return;
+          }
+          registry.stop(sessionId, record.id);
+          ctx.ui.notify(`Stopping ${record.id}.`, "info");
+          return;
+        }
+
+        if (verb === "notify") {
+          if (target === "on") notifyDone = true;
+          else if (target === "off") notifyDone = false;
+          else notifyDone = !notifyDone;
+          ctx.ui.notify(`subagent completion notifications ${notifyDone ? "on" : "off"}.`, "info");
+          return;
+        }
+
+        if (verb?.startsWith("sa-")) {
+          const record = registry.get(sessionId, verb);
+          if (!record) {
+            ctx.ui.notify(`No subagent task ${verb} in this session.`, "warning");
+            return;
+          }
+          ctx.ui.notify(formatBackground(record), "info");
+          return;
+        }
+
+        ctx.ui.notify(formatFleetListing(registry.list(sessionId)), "info");
+      },
+    });
+
+    pi.registerShortcut?.(Key.ctrlShift("a"), {
+      description: "Open the background subagent panel",
+      handler: (ctx) => {
+        uiCtx ??= ctx;
+        return openFleetPanel(ctx);
+      },
+    });
+
+    /**
+     * Down at an empty editor opens the fleet — flag-gated, because it swallows
+     * history browsing at an empty editor and can eat `down` aimed at an open
+     * dialog (the input listener runs before the focused component).
+     */
+    function attachDownInspect(ctx: ExtensionContext): void {
+      downUnsubscribe?.();
+      downUnsubscribe = undefined;
+      if (!downInspect || ctx.mode !== "tui" || typeof ctx.ui?.onTerminalInput !== "function") return;
+      downUnsubscribe = ctx.ui.onTerminalInput((data) => {
+        if (isKeyRelease(data) || !matchesKey(data, "down")) return undefined;
+        if (panelOpen) return undefined;
+        const current = uiCtx;
+        if (!current) return undefined;
+        const sessionId = current.sessionManager.getSessionId();
+        if (registry.list(sessionId).length === 0) return undefined;
+        let editorText = "";
+        try {
+          editorText = current.ui.getEditorText();
+        } catch {
+          return undefined;
+        }
+        if (editorText.length > 0) return undefined;
+        // Async open: the listener is synchronous, and a consumed key is already
+        // swallowed by the time the panel mounts.
+        void openFleetPanel(current);
+        return { consume: true };
+      });
+    }
 
     pi.registerTool({
       name: "subagent",
@@ -130,6 +339,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
               isIdle: () => ctx.isIdle(),
             });
+            // The fleet widget mounts on the first live child: session_start is
+            // the usual source of `uiCtx`, and this lazy refresh covers a /reload
+            // that swapped the extension in mid-session.
+            if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
+            reporter.sync();
             return {
               content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check or cancel it.` }],
               details: { agent: record.agent, status: "running" as const, taskId: record.id, usage: emptySubagentUsage(), output: "" },
