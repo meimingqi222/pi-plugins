@@ -178,9 +178,15 @@ The verifier reviews a bounded transcript (including tool results and session
 summaries), not the filesystem or external services directly. The transcript keeps
 whole entries from the start and end of a long goal, eliding the middle when
 necessary, and is capped between 2,000 and 64,000
-characters by the model's context window. A valid verdict is a model judgment,
-not a guarantee of correctness. Each verification incurs an additional model
-request and has a 45-second deadline. Cancellation releases the plugin
+characters by the model's context window. Its evidence is asked to separate
+executed tests visible in tool results (command and outcome) from conclusions
+inferred by the model; this classification is itself a model judgment, not a
+machine-verified test ledger or a guarantee of correctness. A read-only child
+could inspect the workspace directly in a future opt-in mode, but would incur
+another agent run and still need explicit tool limits, accounting, cancellation
+and evidence provenance. No such mode is enabled without real-task evidence of
+what the transcript-only verifier misses. Each verification incurs an additional
+model request and has a 45-second deadline. Cancellation releases the plugin
 immediately, but an uncooperative provider may still bill its request; late
 results are discarded. No background daemon or live extension installation is
 performed by the development tests.

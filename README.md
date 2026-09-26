@@ -104,6 +104,7 @@ Then, from the root, the scripts fan out across every plugin:
 ```bash
 bun run test        # bun test in each plugin
 bun run typecheck   # tsc --noEmit in each plugin
+bun run smoke       # pack, install and load every extension from tarballs
 bun run bench       # pi-redact micro-benchmarks
 bun run compare     # pi-jev-compact quality comparison vs Morph
 bun run accuracy    # pi-ace-search recall benchmark vs judged ground truth

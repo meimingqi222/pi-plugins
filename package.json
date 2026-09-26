@@ -8,8 +8,9 @@
     "plugins/*"
   ],
   "scripts": {
-    "test": "bun run --filter '*' test",
+    "test": "bun run --sequential --filter '*' test",
     "typecheck": "bun run --filter '*' typecheck",
+    "smoke": "node scripts/smoke-packages.mjs",
     "bench": "bun run --filter 'pi-redact' bench",
     "compare": "bun run --filter 'pi-jev-compact' compare",
     "accuracy": "bun run --filter 'pi-ace-search' bench",

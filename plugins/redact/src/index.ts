@@ -211,6 +211,7 @@ export default function piRedact(pi: ExtensionAPI) {
   const service: RedactService = {
     version: REDACT_SERVICE_VERSION,
     patternCount: redactor.patternCount,
+    isEnabled: () => state.enabled,
     redactJson: (value) => (state.enabled ? redactValue(value, redactor).value : value),
     redactString: (value) => (state.enabled ? redactor.string(value) : value),
   };

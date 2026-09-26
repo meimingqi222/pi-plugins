@@ -109,7 +109,7 @@ decision is made in code: the call is kept when
 `keptCallChars <= droppedCallChars`. In a real session this preserved 14 of 50
 outputs under 120 characters that would otherwise have grown the summary.
 
-## Secrets are redacted before they reach TypeSafe
+## Privacy of uploads to TypeSafe
 
 This extension uploads a conversation to a third party, so it has to answer a
 question pi's own hooks do not: what leaves the machine here?
@@ -137,9 +137,9 @@ Details worth knowing:
 - **Wrapping outside the retry loop** means every attempt reuses the one redacted
   payload. Re-redacting per retry is wasted work, and re-reading the raw input on
   a retry would make that the single request that leaks.
-- **Redaction fails closed.** If the redactor throws, the ask is aborted and the
-  compaction falls back to pi's summary. Sending the secret is the one outcome
-  this bridge exists to prevent.
+- **With an active redaction service, errors fail closed.** If the redactor throws,
+  the ask is aborted and compaction falls back to pi's summary. This detects
+  known secret shapes; it cannot guarantee that arbitrary sensitive text is removed.
 - **Redaction preserves object keys**, so Jev's answers still map back to their
   questions by name.
 - **Discovery works in either load order.** pi has no "wait for extension X"
@@ -149,13 +149,23 @@ Details worth knowing:
   **arguments**. A tool result's contents are replaced by `ok, N chars (omitted)`
   in the Jev state, so they never reach TypeSafe in the first place.
 
-Neither plugin depends on the other. This extension works standalone (the asker
-is returned untouched when no redaction service is present), and the startup
-notice says which state is active:
+By default, this plugin also works alone: without a compatible `pi-redact` service,
+it uploads **unredacted** text. An installed but paused `pi-redact` likewise
+returns the original text. Set `JEV_COMPACT_REQUIRE_REDACT=true` to require an
+active version-2 redaction service before **each** Jev request. If it is absent,
+paused, or throws, Jev sends nothing and pi uses its default summarizer instead.
+An older version-1 service remains usable in the default mode, but cannot prove
+its active state and therefore does not satisfy strict mode. Neither mode can
+guarantee removal of secrets the redaction patterns do not recognize.
+
+The startup notice describes the observed state; the strict check also happens
+at upload time, so loading `pi-redact` later can enable Jev without a restart:
 
 ```
 Jev compact: pi-redact detected — Jev payloads are redacted before upload
 Jev compact: pi-redact not detected — Jev payloads are sent unredacted
+Jev compact: pi-redact status unknown or paused — Jev payloads may be sent unredacted
+Jev compact: strict upload requires pi-redact to be active — using pi defaults until it is available
 ```
 
 See [`2026-09-20-redact-provider-gap.md`](../../.agents/notes/implemented/bug-fix/2026-09-20-redact-provider-gap.md)
@@ -256,6 +266,7 @@ headroom, enough for the worst observed error.
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | — | The Jev/System One key. Highest priority, but not the only source; see [Install](#install). |
 | `JEV_COMPACT` | `true` | Set `false` to disable the extension. |
+| `JEV_COMPACT_REQUIRE_REDACT` | `false` | Require active pi-redact v2 before uploading to TypeSafe; otherwise use pi's built-in summary. |
 | `JEV_COMPACT_MODEL` | `jev-latest` | Jev model name. |
 | `JEV_COMPACT_THRESHOLD` | `0.5` | Keep probability cutoff. Lower keeps more; higher discards more. Clamped to 0–1. |
 | `JEV_COMPACT_PRESERVE_RECENT` | `6` | Newest messages never touched. |

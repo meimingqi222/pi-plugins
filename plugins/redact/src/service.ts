@@ -30,7 +30,7 @@ export const REDACT_SERVICE_CHANNEL = "pi-redact:service";
 export const REDACT_DISCOVERY_CHANNEL = "pi-redact:service-request";
 
 /** Bump on any change to `RedactService`'s shape or semantics. */
-export const REDACT_SERVICE_VERSION = 1;
+export const REDACT_SERVICE_VERSION = 2;
 
 /**
  * What pi-redact announces. `redactJson` is the primary entry point: it deep
@@ -42,6 +42,8 @@ export const REDACT_SERVICE_VERSION = 1;
  */
 export interface RedactService {
   readonly version: number;
+  /** Live state; a paused service must not be mistaken for an active guard. */
+  isEnabled(): boolean;
   /** Deep-redact any JSON-reachable value. Returns the input when disabled. */
   redactJson(value: unknown): unknown;
   /** Redact one string. Returns it unchanged when disabled. */
@@ -56,6 +58,7 @@ export function isRedactService(value: unknown): value is RedactService {
   const candidate = value as Record<string, unknown>;
   return (
     candidate.version === REDACT_SERVICE_VERSION &&
+    typeof candidate.isEnabled === "function" &&
     typeof candidate.redactJson === "function" &&
     typeof candidate.redactString === "function" &&
     typeof candidate.patternCount === "number"

@@ -53,8 +53,12 @@ X" primitive. A consumer that hears no announcement emits on
 second, the handshake closes.
 
 Neither plugin declares the other as a dependency. `pi-jev-compact` works
-standalone (the asker is returned untouched when no service is present), and the
-startup notice states plainly whether redaction is active.
+standalone by default (the asker is returned untouched when no service is present).
+The optional `JEV_COMPACT_REQUIRE_REDACT=true` mode refuses a Jev request when
+the service is absent, paused, or has no verifiable active state; pi then uses
+its own summary. The service protocol is v2 with a live `isEnabled()` method.
+The older v1 protocol remains usable in default mode, but cannot satisfy strict
+mode: presence alone cannot prove that `/redact off` has not returned raw text.
 
 ## Alternatives considered
 
@@ -83,12 +87,15 @@ ordering could never have closed the gap. The bus is the only channel that does.
 
 The two plugins stay independently installable and publishable, at the cost of a
 runtime contract that the compiler cannot check. The channel names and version
-live in two files on purpose; a test asserts the copies agree, and an
-announcement from an unknown version is ignored rather than guessed at.
+live in two files on purpose; a test asserts the copies agree. The consumer
+accepts v1 for backward-compatible default behavior and v2 for strict mode;
+unknown versions are ignored rather than guessed at.
 
 `pi-jev-compact` now depends on pi's `pi.events`, which older pi versions may not
-expose. The bridge degrades to unredacted rather than throwing, matching the
-pre-bridge behaviour, and the startup notice reports which state is active.
+expose. By default the bridge degrades to unredacted rather than throwing,
+matching the pre-bridge behaviour; strict mode refuses upload instead. The
+startup notice describes the observable state, not a guarantee that every
+sensitive string matches a redaction rule.
 
 A user-visible notice distinguishes the protected and unprotected cases, so the
 protection cannot be assumed present merely because both plugins are installed.
@@ -106,6 +113,13 @@ uploading the raw payload", and the producer by "the announced service
 propagates engine errors instead of failing open". Late discovery is pinned by
 "re-announces when a consumer loads late and asks". The user-visible protection
 notice is pinned by "the startup notice reports whether the upload is protected".
+
+Proved (2026-09-26): before adding the strict service check, "strict mode
+refuses upload without pi-redact and accepts it after a late announcement"
+resolved instead of rejecting, and the integration test "strict mode without
+pi-redact falls back to pi without sending a request" observed one raw upload.
+After the v2 state check, the missing/late, paused, both load orders, and
+redactor-error tests pass. The original default pass-through test still passes.
 
 Proved: stubbed the bridge's `service` lookup to `undefined` (restoring the
 pre-bridge pass-through) → the two integration cases, the redaction case, and

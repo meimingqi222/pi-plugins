@@ -20,6 +20,8 @@ test("verifier uses redacted transcript with no tools and includes summaries", a
  expect(raw.transcript).toContain("prior tests passed");
  expect(raw.transcript).not.toContain("goal-state");
  expect(captured.tools).toEqual([]);
+ expect(captured.systemPrompt).toContain("Executed tests observed in tool results");
+ expect(captured.systemPrompt).toContain("Model-inferred conclusions");
  expect(captured.messages[0].content[0].text).toBe('{"sanitized":true}');
 });
 

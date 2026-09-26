@@ -339,9 +339,11 @@ describe("redaction service", () => {
     const announcement = pi.events.emitted.find((e) => e.channel === SERVICE_CHANNEL);
     expect(announcement).toBeDefined();
     const service = announcement!.data as Record<string, unknown>;
-    expect(service.version).toBe(1);
+    expect(service.version).toBe(2);
     expect(typeof service.redactJson).toBe("function");
     expect(typeof service.redactString).toBe("function");
+    expect(typeof service.isEnabled).toBe("function");
+    expect((service.isEnabled as () => boolean)()).toBe(true);
   });
 
   test("the announced service redacts deep values", () => {
@@ -398,6 +400,7 @@ describe("redaction service", () => {
     const service = pi.events.emitted.find((e) => e.channel === SERVICE_CHANNEL)!.data as any;
 
     expect(JSON.stringify(service.redactJson({ text: GHP }))).not.toContain(GHP);
+    expect(service.isEnabled()).toBe(true);
 
     // Drive the same state machine `/redact off` uses.
     return pi.commands
@@ -406,6 +409,7 @@ describe("redaction service", () => {
       .then(() => {
         const out = service.redactJson({ text: GHP });
         expect(JSON.stringify(out)).toContain(GHP);
+        expect(service.isEnabled()).toBe(false);
       });
   });
 

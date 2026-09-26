@@ -154,6 +154,7 @@ export async function verifyGoal(
       "Audit earlier gaps without inventing new requirements or raising the acceptance bar. A required external result cannot be replaced by a local proxy.",
       'Return ONLY JSON {"passed":boolean,"reason":string,"evidence":string,"nextAction":string}.',
       "Evidence must cite observations from the transcript. If not passed, nextAction must name the smallest concrete next action or required user decision.",
+      "In evidence, distinguish 'Executed tests observed in tool results' (name the command and observed outcome, or say none visible) from 'Model-inferred conclusions' (claims not directly checked by a tool result). Never describe an assistant claim or a planned test as an executed test.",
     ].join("\n"),
     messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }],
     tools: [],

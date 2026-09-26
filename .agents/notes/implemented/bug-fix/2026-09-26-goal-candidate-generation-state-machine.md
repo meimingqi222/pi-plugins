@@ -29,7 +29,10 @@ restored in-flight claims become interrupted, and judged claims stay judged.
 The `agent_settled` handler schedules settlement on the next event-loop turn
 instead of awaiting the verifier while Pi is still dispatching handlers. This
 lets later synchronous extensions deliver follow-ups before the idle and queue
-checks. Pi does not expose a post-dispatch hook for arbitrarily slow asynchronous
+checks. Settlement also refuses to run while a new goal work run is active:
+`ctx.isIdle()` alone may still return true during the asynchronous `agent_start`
+plan refresh, so an older settlement timer must not judge an unfinished follow-up.
+Pi does not expose a post-dispatch hook for arbitrarily slow asynchronous
 handlers; such handlers must use their own reliable delivery boundary.
 The work-run cap is also checked at `agent_start`, so a sequence of plugin
 continuations cannot bypass it by preventing `agent_settled`.
@@ -93,6 +96,12 @@ The no-settlement run-cap test first remained `active` after the third run
 started, then paused with the entrance check.
 The later-handler test first observed one verifier call before the follow-up,
 then zero after settlement was deferred until all handlers could run. The
-goal-terminated-tool-batch regression first failed with `Expected: 1, Received:
+whole-package run later exposed the same test intermittently observing one call
+after the follow-up began: a timer fired while its asynchronous `agent_start`
+was refreshing the plan. Checking the active work run before settlement made
+the delayed-timer assertion pass.
+Another lifecycle assertion also read the completion state immediately after a
+fixed sleep and intermittently saw `active`; it now waits for the actual transition.
+The goal-terminated-tool-batch regression first failed with `Expected: 1, Received:
 0` verifier calls before the termination-aware phase transition, then passed
 with the goal-blocked `toolUse` ending accepted as ready.
