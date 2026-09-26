@@ -151,7 +151,11 @@ export class JobRegistry {
 	/** Mark a job as detached from its foreground tool call. */
 	promote(id: string): void {
 		const job = this.jobs.get(id);
-		if (job) job.mode = "background";
+		if (!job) return;
+		job.mode = "background";
+		// Not a terminal transition, but the change is exactly what a live
+		// surface listens for: the job has just become visible background work.
+		this.changed();
 	}
 
 	/** Record the terminal state of a job. */

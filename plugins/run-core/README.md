@@ -28,6 +28,8 @@ plugin independently installable.
 | `appendRunSnapshot` / `restoreLatestRun` | Branch-aware snapshot persistence with the "newest valid wins, malformed newest is absent" rule. |
 | `ContinuationChannel` | Delivering a self-continuation back into the session, and knowing whether the turn that starts was yours. |
 | `isolatedComplete` / `withDeadline` / `parseJsonReply` | A tool-free, isolated judgment call with a deadline the caller cannot forget. |
+| `WorkItem` + `renderWorkSurface` | The shared vocabulary and renderer for "work that is still running" — one row format (`icon · kind · label · elapsed · metric`) so plugins cannot drift on what a live surface looks like. |
+| `createWorkReporter` | The mount/tick/teardown lifecycle for a below-editor widget: claims the slot only while `live()`, repaints on a bounded `unref`'d interval, hands the slot back on the last settle. |
 
 ## Why each one is shared rather than local
 
@@ -56,6 +58,12 @@ that claimed otherwise would be lying.
 **`restoreLatestRun` treats a malformed newest entry as absent, not as a reason
 to fall back.** Returning an older snapshot would silently restore a state the
 session had already moved past.
+
+**`WorkItem.label` is the stable task, never the live tool call.** A row that
+republishes on every stream delta churns faster than a reader can parse —
+live activity belongs in a surface the user opens on purpose, not in the
+persistent one. `createWorkReporter` repaints rather than republishes for the
+same reason.
 
 **`ContinuationChannel.consume()` is per attempt, not per run.** A user
 follow-up can arrive inside a run the extension started, and attributing that

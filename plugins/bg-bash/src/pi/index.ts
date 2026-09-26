@@ -8,7 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SettledDeliveryQueue } from "pi-run-core";
+import { SettledDeliveryQueue, createWorkReporter } from "pi-run-core";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
 import type { RunOutcome } from "../core/types.ts";
@@ -19,6 +19,7 @@ import { renderCompletion, renderStatusEntry } from "./render.ts";
 import { loadThresholdSources, sweepLogDir } from "./settings.ts";
 import { BG_BASH_COMPLETION_ENTRY, BG_BASH_STATE_ENTRY, recordFor, recordsFromBranch } from "./records.ts";
 import { isPureWaitCommand, pollBlockReason } from "./poll-guard.ts";
+import { formatJobsListing, runningWorkItems } from "./surface.ts";
 import type { Runtime } from "./runtime.ts";
 
 export { DEFAULT_AUTO_BACKGROUND_SECONDS, parseSeconds, resolveAutoBackgroundSeconds } from "../core/config.ts";
@@ -40,6 +41,19 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	let shuttingDown = false;
 	let sessionGeneration = 0;
 	const delivery = new SettledDeliveryQueue(pi);
+
+	// The UI context the reporter draws on: refreshed by `session_start` and
+	// lazily when a job detaches (a tool call can precede or survive one).
+	let uiCtx: ExtensionContext | undefined;
+	const reporter = createWorkReporter({
+		key: "pi-bg-bash-jobs",
+		ui: () => (uiCtx && uiCtx.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
+		items: () => runningWorkItems(registry.list(), Date.now()),
+		live: () => registry.list().some((job) => job.mode === "background" && job.status === "running"),
+		title: "bg jobs",
+		hint: "bg_tasks · /bg",
+	});
+	registry.onChange(() => reporter.sync());
 	let afterAgentEnd = false;
 	let agentRunActive = false;
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -135,7 +149,15 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		autoBackgroundSeconds: (cwd) => resolveAutoBackgroundSeconds(loadThresholdSources(cwd)),
 		backgroundLimit: () => BACKGROUND_JOB_LIMIT,
 		captureOrigin,
-		started: (job, ctx, isCurrent) => persist(job, BG_BASH_STATE_ENTRY, ctx, isCurrent),
+		started: (job, ctx, isCurrent) => {
+			// A job has just become live background work: bind the UI context here
+			// because this is the earliest call guaranteed to carry one. `promote`
+			// already fired the registry's onChange, possibly before this context
+			// was bound, so sync again after binding.
+			if (ctx.mode === "tui") uiCtx = ctx;
+			reporter.sync();
+			persist(job, BG_BASH_STATE_ENTRY, ctx, isCurrent);
+		},
 		deliver: (job, _outcome: RunOutcome, ctx, isCurrent) => routeCompletion(job, ctx, isCurrent),
 	};
 
@@ -153,6 +175,8 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		afterAgentEnd = false;
 		agentRunActive = false;
 		registry.killAll();
+		uiCtx = undefined;
+		reporter.dispose();
 	};
 
 	pi.on("session_before_switch", leaveSession);
@@ -161,6 +185,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		shuttingDown = false;
+		if (ctx.mode === "tui") uiCtx = ctx;
 		// A new session must not inherit the previous one's job list or id
 		// counter; shutdown already killed anything still running.
 		leaveSession();
@@ -180,6 +205,33 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(createBgBashTool(runtime));
 	pi.registerTool(createBgTasksTool(runtime));
+	pi.registerCommand?.("bg", {
+		description: "List background jobs, or stop one: /bg [kill <id>]",
+		handler: async (args: string, ctx: ExtensionContext): Promise<void> => {
+			if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
+			const input = args.trim();
+			if (!input || input === "list") {
+				ctx.ui.notify(formatJobsListing(registry.list(), Date.now()), "info");
+				return;
+			}
+			const [verb, target] = input.split(/\s+/u).filter(Boolean);
+			if (verb === "kill" || verb === "stop") {
+				const job = target ? registry.get(target) : undefined;
+				if (!job || job.status !== "running") {
+					ctx.ui.notify(`No running job ${target ?? ""}. /bg lists live jobs.`, "warning");
+					return;
+				}
+				registry.kill(job.id);
+				ctx.ui.notify(`Stopping ${job.id}.`, "info");
+				return;
+			}
+			const job = registry.get(input);
+			ctx.ui.notify(
+				job ? `- ${formatJobsListing([job], Date.now())}` : "Usage: /bg [list|kill <id>]",
+				job ? "info" : "warning",
+			);
+		},
+	});
 	pi.registerEntryRenderer(BG_BASH_COMPLETION_ENTRY, renderStatusEntry);
 	pi.on("agent_start", () => { agentRunActive = true; afterAgentEnd = false; });
 	pi.on("agent_end", () => { afterAgentEnd = true; });

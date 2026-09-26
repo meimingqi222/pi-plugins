@@ -38,3 +38,22 @@ export {
   type IsolatedCallResult,
   type RegisteredModel,
 } from "./isolated.ts";
+export {
+  createWorkReporter,
+  fitWorkText,
+  formatWorkElapsed,
+  formatWorkRow,
+  formatWorkSummary,
+  formatWorkTokens,
+  renderWorkSurface,
+  WORK_ICONS,
+  WORK_SURFACE_MAX_ROWS,
+  workIcon,
+  type WorkItem,
+  type WorkReporter,
+  type WorkReporterDeps,
+  type WorkState,
+  type WorkSurfaceComponent,
+  type WorkSurfaceUI,
+  type WorkTheme,
+} from "./work-surface.ts";
