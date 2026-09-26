@@ -15,7 +15,12 @@ export class SettledDeliveryQueue {
     let idle = true;
     try { idle = isIdle(); } catch { /* Let the origin guard handle a torn-down context. */ }
     if (idle) send();
-    else this.pending.push(send);
+    else this.defer(send);
+  }
+
+  /** Queue explicitly for the next agent_settled event, without an idle probe. */
+  defer(send: () => void): void {
+    this.pending.push(send);
   }
 
   clear(): void {

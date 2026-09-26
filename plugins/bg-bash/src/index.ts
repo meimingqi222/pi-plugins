@@ -9,6 +9,7 @@
 export { default } from "./pi/index.ts";
 export {
 	BG_BASH_CUSTOM_TYPE,
+	BG_BASH_COMPLETION_ENTRY,
 	BACKGROUND_JOB_LIMIT,
 	DEFAULT_AUTO_BACKGROUND_SECONDS,
 	JobRegistry,

@@ -1,6 +1,7 @@
 # Agent Note: Deliver background results at Pi's settled boundary
 
 Status: implemented
+Partly-superseded-by: 2026-09-26-bg-bash-late-completion-routing.md
 
 ## Problem
 
@@ -50,6 +51,14 @@ the old Pi runtime is governed
 by its session teardown. A synchronous send failure is reported through the
 originating UI; Pi reports asynchronous send failures through its runtime
 error channel.
+
+## Superseded
+
+The shared settled-boundary primitive and its use by workflow and subagent
+still hold. Bg-bash now persists every completion but wakes the model only for
+failures, timeouts, or explicit `notify: "always"`; successful default jobs
+do not enter this queue. See the successor note for that policy. Its
+post-`agent_end` wake-worthy completions still use `agent_settled`.
 
 ## Verification
 

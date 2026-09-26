@@ -2,10 +2,10 @@
  * The `bash` tool override.
  *
  * It keeps the built-in tool's contract — same name, same output truncation,
- * same "throw on non-zero exit" — and adds two things: a `background` flag and
- * an auto-background threshold. A command still running when the threshold
+ * same "throw on non-zero exit" — and adds a `background` flag, notification
+ * policy, and auto-background threshold. A command still running when the threshold
  * elapses is registered as a background job, the tool call returns immediately,
- * and the result is delivered later as a follow-up. That is what turns an
+ * and its status remains queryable later. That is what turns an
  * unforeseen deadlock into something the model can observe and stop, instead of
  * a tool call that never returns.
  */
@@ -32,6 +32,9 @@ const schema = Type.Object({
 	command: Type.String({ description: "Shell command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 	background: Type.Optional(Type.Boolean({ description: "Run immediately in the background and return a job id" })),
+	notify: Type.Optional(Type.Union([
+		Type.Literal("auto"), Type.Literal("always"), Type.Literal("quiet"),
+	], { description: "Completion policy: auto wakes on failure/timeout, always wakes on any result, quiet never wakes" })),
 });
 
 const BACKGROUND = Symbol("bg-bash:background");
@@ -43,21 +46,20 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 	const description =
 		"Execute a shell command in the current working directory. Returns stdout and stderr, truncated to the last " +
 		"2000 lines or 50KB. Set background: true to detach immediately, or let a command exceed the auto-background " +
-		"threshold to detach automatically; a follow-up with the final result arrives when it finishes. Optionally " +
-		"provide a timeout in seconds.";
+		"threshold to detach automatically. Success is recorded for bg_tasks without waking the agent; failure/timeout sends a short notice. " +
+		"Use notify: always when a long result must wake the agent, or quiet for long-lived services. Optionally provide a timeout in seconds.";
 
 	return {
 		name: "bash",
 		label: "bash",
 		description,
 		promptSnippet:
-			"Execute shell commands. Long commands detach automatically after the auto-background threshold and report back; set background: true to detach immediately.",
+			"Execute shell commands. Long commands detach automatically after the auto-background threshold; set background: true to detach immediately.",
 		promptGuidelines: [
-			"Use bash normally for short commands; commands that outlive the auto-background threshold are moved to the background and produce a follow-up result.",
+			"Use bash normally for short commands; commands that outlive the auto-background threshold are moved to the background and return a job id.",
 			"Set background: true for long-running commands you do not need to finish before the next step, such as builds, full test suites, dev servers, watchers, downloads, or deploys.",
-			"When bash reports a job moved to the background, do not retry it just to wait; continue independent work or inspect it with bg_tasks.",
-			"Use bg_tasks to list running jobs, read a job's full log, check status, or stop a job that looks stuck.",
-			"Treat the follow-up message for a background job as the final result of the original bash call.",
+			"When a background job's result is required for your conclusion, use bg_tasks wait/result before claiming it succeeded. For a long job that should resume you on completion, set notify: always.",
+			"Use bg_tasks to list jobs, inspect bounded results or logs, wait for required jobs, or stop a stuck job. Default successful completions do not wake you.",
 		],
 		parameters: schema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -78,15 +80,16 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				);
 			}
 
-				const job = runtime.registry.create({
+			const job = runtime.registry.create({
 				command: params.command,
 				cwd: ctx.cwd,
-					mode: explicitBackground ? "background" : "foreground",
-				});
-				// Capture before the first await. A session can change while a
-				// foreground command waits for the auto-background threshold.
-				const isCurrent = runtime.captureOrigin(ctx);
-				const sessionId = sessionIdOf(ctx);
+				mode: explicitBackground ? "background" : "foreground",
+				notify: params.notify ?? "auto",
+			});
+			// Capture before the first await. A session can change while a
+			// foreground command waits for the auto-background threshold.
+			const isCurrent = runtime.captureOrigin(ctx);
+			const sessionId = sessionIdOf(ctx);
 			job.logPath = allocateLogPath(job.id, sessionId);
 
 			let streaming = true;
@@ -141,11 +144,11 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 
 			if (winner === BACKGROUND) {
 				runtime.registry.promote(job.id);
-					void running.result.then((outcome) => {
-						// A new session resets ids to bg001. An old completion must
-						// not settle the new job that inherited the same id.
-						if (runtime.registry.get(job.id) !== job) return;
-						runtime.registry.finish(job.id, outcome);
+				runtime.started(job, ctx, isCurrent);
+				void running.result.then((outcome) => {
+					// An old completion must not settle a new job that inherited the id.
+					if (runtime.registry.get(job.id) !== job) return;
+					runtime.registry.finish(job.id, outcome);
 					runtime.deliver(job, outcome, ctx, isCurrent);
 				});
 				return { content: [{ type: "text", text: formatBackgroundNotice(job) }], details: detailsFor(job) };

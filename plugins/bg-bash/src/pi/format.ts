@@ -24,6 +24,23 @@ export function durationMs(job: Job, now = Date.now()): number {
 	return (job.endedAt ?? now) - job.startedAt;
 }
 
+/**
+ * Elapsed time for display. A restored interrupted job has no honest end, so
+ * the duration is reported as unknown instead of drifting with `now`.
+ */
+export function formatElapsed(job: Pick<Job, "startedAt" | "endedAt" | "status">, now = Date.now()): string {
+	if (job.endedAt !== undefined) return formatDuration(Math.max(0, job.endedAt - job.startedAt));
+	if (job.status === "running") return formatDuration(Math.max(0, now - job.startedAt));
+	return "unknown";
+}
+
+/** End timestamp for display; never claim a still-running job has ended. */
+export function formatEndedAt(job: Job): string {
+	if (job.endedAt !== undefined) return new Date(job.endedAt).toISOString();
+	if (job.status === "running") return "still running";
+	return "unknown";
+}
+
 /** Format milliseconds the way the built-in bash renderer does. */
 export function formatDuration(ms: number): string {
 	const seconds = ms / 1000;
@@ -78,11 +95,16 @@ export function appendStatus(text: string, status: string): string {
 
 /** The tool result the model sees when a command has just moved to the background. */
 export function formatBackgroundNotice(job: Job): string {
+	const delivery = job.notify === "always"
+		? "A short completion notification will wake you. Read the result with bg_tasks result or log before summarizing."
+		: job.notify === "quiet"
+			? "No completion notification will be sent. Use bg_tasks result or wait when its outcome matters."
+			: "Success is recorded without waking you; failures and timeouts send a short notification. Use bg_tasks result or wait before claiming this command succeeded.";
 	return [
 		`Bash job ${job.id} is running in the background.`,
 		`Command: ${job.command}`,
 		job.logPath ? `Full output: ${job.logPath}` : undefined,
-		`You will receive a follow-up with the result when it finishes. Continue with independent work, or use bg_tasks to inspect or stop it.`,
+		delivery,
 	]
 		.filter((line): line is string => Boolean(line))
 		.join("\n");
@@ -94,7 +116,17 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 	failed: "failed",
 	killed: "was stopped",
 	timedout: "timed out",
+	interrupted: "was interrupted",
 };
+
+/** Small model notification; stdout remains in the job log. */
+export function formatCompletionNotice(jobs: Job[]): string {
+	return [
+		`Background bash completion${jobs.length === 1 ? "" : "s"}:`,
+		...jobs.map((job) => `- ${job.id}: ${job.status}${job.exitCode === null ? "" : ` (exit ${job.exitCode})`}, ${formatDuration(durationMs(job))}`),
+		"Use bg_tasks result <id> for a bounded preview or bg_tasks log <id> for more output. Do not infer the command's output from this notification.",
+	].join("\n");
+}
 
 /** The status sentence a completion message opens with. */
 export function completionHeader(
@@ -162,7 +194,7 @@ export function formatJobList(jobs: Job[]): string {
 	if (jobs.length === 0) return "No bash jobs are tracked in this session.";
 	const now = Date.now();
 	const lines = jobs.map((job) => {
-		const elapsed = formatDuration(durationMs(job, now));
+		const elapsed = formatElapsed(job, now);
 		const exit = job.status === "exited" ? "" : job.exitCode === null ? "" : ` exit=${job.exitCode}`;
 		const tail = job.logPath ? `  (log: ${job.logPath})` : "";
 		return `- ${job.id} [${job.status}${exit}] (${job.mode}, ${elapsed}) ${job.command}${tail}`;
@@ -172,7 +204,7 @@ export function formatJobList(jobs: Job[]): string {
 
 /** `bg_tasks status <id>` output. */
 export function formatJobStatus(job: Job): string {
-	const elapsed = formatDuration(durationMs(job));
+	const elapsed = formatElapsed(job);
 	return [
 		`Job ${job.id}: ${job.status}`,
 		`Mode: ${job.mode}`,

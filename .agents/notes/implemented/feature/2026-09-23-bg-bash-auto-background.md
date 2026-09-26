@@ -1,6 +1,7 @@
 # Agent Note: Auto-background long bash commands instead of timing out
 
 Status: implemented
+Partly-superseded-by: 2026-09-26-bg-bash-late-completion-routing.md
 
 ## Problem
 
@@ -93,6 +94,15 @@ with that request. The queue-and-flush-on-`agent_end` shape is taken from
 - Only the `bash` tool is wrapped. Windows `powershell` calls keep the built-in
   blocking behaviour.
 
+## Superseded
+
+The threshold race, cross-platform process handling, and background tool
+override still hold. The original unconditional full-output follow-up and
+four-action `bg_tasks` surface are replaced by the successor note's
+notification policy, persisted terminal records, and bounded result/wait
+queries. Log pruning is governed by the later log-lifecycle note. The
+historical verification below records the original implementation.
+
 ## Verification
 
 - `plugins/bg-bash/test/config.test.ts` — threshold precedence, zero-disables, unusable values
@@ -109,7 +119,7 @@ Two red runs, each on the claim it is meant to carry:
 
 - **Auto-backgrounding removed** — `raceCommand` made to await the result and
   ignore the threshold. It failed exactly
-  `bash tool > moves a command that outlives the threshold to the background and reports back`,
+  `bash tool > moves a long command to the background and records success without waking`,
   which received the finished output `auto-done` instead of the background
   notice.
 - **`detach()` neutered** — the abort listener left attached after a job

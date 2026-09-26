@@ -36,6 +36,18 @@ describe("agent executor spawn path", () => {
       { type: "tool_end", toolName: "grep" },
     ]);
   });
+
+  test("reports-allowlisted-lifecycle-metadata-without-copying-tool-inputs", async () => {
+    const activity: unknown[] = [];
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    const result = await executor(input("TOOLS", { onActivity: (event) => activity.push(event) }));
+    expect(result.status).toBe("completed");
+    const started = activity.find((event) => (event as { event?: string }).event === "tool_start") as Record<string, unknown>;
+    expect(started).toMatchObject({ phase: "tool", toolName: "grep", target: "src/workflow.ts" });
+    expect(started).not.toHaveProperty("args");
+    expect(started).not.toHaveProperty("output");
+    expect(JSON.stringify(activity)).not.toContain("secret");
+  });
   test("a normal run returns the reply, its usage, and the model", async () => {
     const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
     const result = await executor(input("hello"));
@@ -179,6 +191,21 @@ describe("agent executor diagnostics", () => {
       // Each line is the child's own event, so the file is a real transcript.
       expect(typeof JSON.parse(lines[0]!)).toBe("object");
       expect(lines.some((entry) => entry.includes("reply:evidence probe"))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("evidenceMaxBytes-bounds-the-raw-stream-and-records-truncation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-agent-evidence-cap-"));
+    try {
+      const evidencePath = join(dir, "agents", "capped.jsonl");
+      const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+      const result = await executor(input("CHATTER:500", { evidencePath, evidenceMaxBytes: 512 }));
+      expect(result.status).toBe("completed");
+      const evidence = await readFile(evidencePath, "utf8");
+      expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(512);
+      expect(evidence).toContain('"type":"evidence_truncated"');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

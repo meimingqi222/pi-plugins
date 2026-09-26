@@ -14,7 +14,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { JobRegistry, type Job } from "../src/core/jobs.ts";
 import type { RunOutcome } from "../src/core/types.ts";
 import { detailsFor, formatCompletionMessage, formatForegroundOutput } from "../src/pi/format.ts";
-import { COMPLETION_PREVIEW_LINES, renderCompletion } from "../src/pi/render.ts";
+import { COMPLETION_PREVIEW_LINES, renderCompletion, renderStatusEntry } from "../src/pi/render.ts";
 
 type RendererMessage = Parameters<typeof renderCompletion>[0];
 
@@ -67,6 +67,15 @@ describe("model-facing text", () => {
 });
 
 describe("completion rendering", () => {
+	test("an interrupted record without an end renders unknown duration", () => {
+		const view = renderStatusEntry({
+			type: "custom", customType: "bg_bash_completion",
+			data: { schema: 1, id: "bg004", mode: "background", status: "interrupted", startedAt: 1_000, exitCode: null },
+		} as any, { expanded: false }, theme)?.render(120).join("\n");
+		expect(view).toContain("tracking interrupted · bg004 · unknown");
+		expect(view).not.toContain("0.0s");
+	});
+
 	test("the terminal view is a status line, a command, and the output — not the report", () => {
 		const job = finishedJob("one\ntwo\nthree\n", SUCCESS, "echo one");
 		const message = messageFor(job);

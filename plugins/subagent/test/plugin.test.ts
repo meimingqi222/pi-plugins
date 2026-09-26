@@ -142,10 +142,12 @@ describe("the extension registers delegation and task tools", () => {
     const reported: number[] = [];
     let finish: ((value: any) => void) | undefined;
     let childModel: string | undefined;
+    let childHasProgress = false;
     subagentExtension({
       discover: () => [{ name: "explore", description: "read", systemPrompt: "Explore", filePath: "explore.md" }],
       executor: (input) => {
         childModel = input.model;
+        childHasProgress = Boolean(input.onProgress);
         input.onProgress?.({ type: "tool_start", toolName: "read", target: "src/index.ts" });
         return new Promise((resolve) => { finish = resolve; });
       },
@@ -157,6 +159,7 @@ describe("the extension registers delegation and task tools", () => {
     expect(id).toStartWith("sa-");
     expect(launched.content[0].text).toContain("started in the background");
     expect(childModel).toBe("parent/model");
+    expect(childHasProgress).toBe(true);
     expect(reported).toEqual([]);
     const running = await tools[1]!.execute!("status-1", { action: "show", id }, undefined, undefined, ctx);
     expect(running.content[0].text).toContain("running");
@@ -189,6 +192,110 @@ describe("the extension registers delegation and task tools", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     expect(messages).toHaveLength(0);
+  });
+
+  test("shows-quiet-time-and-a-bounded-activity-trail-for-a-running-task", async () => {
+    const { pi, tools } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({
+      executor: (input) => {
+        const onActivity = (input as unknown as {
+          onActivity?: (activity: Record<string, unknown>) => void;
+        }).onActivity;
+        for (let index = 0; index < 12; index += 1) {
+          onActivity?.({
+            event: "tool_start",
+            phase: "tool",
+            at: Date.now() - 125_000,
+            toolName: "grep",
+            target: "src/worker.ts",
+            output: "must not be exposed",
+          });
+        }
+        return new Promise((resolve) => { finish = resolve; });
+      },
+    })(pi);
+    const ctx = {
+      cwd: "/repo",
+      sessionManager: { getSessionId: () => "session-a" },
+    };
+    const launched = await tools[0]!.execute!("bg-visibility", {
+      agent: "explore",
+      task: "Inspect the worker",
+      background: true,
+    }, undefined, undefined, ctx);
+    const id = launched.details.taskId as string;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const status = await tools[1]!.execute!("status-visibility", {
+      action: "show",
+      id,
+    }, undefined, undefined, ctx);
+    expect(status.content[0]!.text).toContain("tool grep src/worker.ts");
+    expect(status.content[0]!.text).toContain("possible stall");
+
+    const events = await tools[1]!.execute!("events-visibility", {
+      action: "events",
+      id,
+    }, undefined, undefined, ctx);
+    expect(events.content[0]!.text).toContain("tool_start");
+    expect(events.content[0]!.text).toContain("grep src/worker.ts");
+    expect(events.content[0]!.text).not.toContain("must not be exposed");
+    expect(events.details.events).toHaveLength(10);
+    expect(JSON.stringify(events.details.events)).not.toContain("must not be exposed");
+
+    finish!({ status: "aborted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
+  });
+
+  test("explicit-log-action-reads-only-a-bounded-matching-tail", async () => {
+    const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const logDir = await mkdtemp(join(tmpdir(), "pi-subagent-log-test-"));
+    const previousLogDir = process.env.PI_SUBAGENT_LOG_DIR;
+    process.env.PI_SUBAGENT_LOG_DIR = logDir;
+    let finish: ((value: any) => void) | undefined;
+    try {
+      const { pi, tools } = fakePi();
+      subagentExtension({
+        executor: async (input) => {
+          await writeFile(input.evidencePath!, [
+            JSON.stringify({ type: "assistant_message", text: "needle early" }),
+            JSON.stringify({ type: "tool_execution_start", toolName: "grep", args: { pattern: "secret query" } }),
+            JSON.stringify({ type: "tool_execution_end", toolName: "grep", result: { content: "needle result body" } }),
+          ].join("\n") + "\n");
+          return new Promise((resolve) => { finish = resolve; });
+        },
+      })(pi);
+      const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-log" } };
+      const launched = await tools[0]!.execute!("log-job", {
+        agent: "explore", task: "Inspect", background: true,
+      }, undefined, undefined, ctx);
+      const id = launched.details.taskId as string;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const shown = await tools[1]!.execute!("log-show", {
+        action: "show", id,
+      }, undefined, undefined, ctx);
+      const listed = await tools[1]!.execute!("log-list", {
+        action: "list",
+      }, undefined, undefined, ctx);
+      expect(shown.details.logPath).toBeUndefined();
+      expect(JSON.stringify(listed.details)).not.toContain(logDir);
+
+      const log = await tools[1]!.execute!("log-read", {
+        action: "log", id, query: "needle", lines: 1,
+      }, undefined, undefined, ctx);
+      expect(log.content[0]!.text).toContain("needle result body");
+      expect(log.content[0]!.text).not.toContain("secret query");
+      expect(log.content[0]!.text).not.toContain("needle early");
+
+      finish!({ status: "aborted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
+    } finally {
+      if (previousLogDir === undefined) delete process.env.PI_SUBAGENT_LOG_DIR;
+      else process.env.PI_SUBAGENT_LOG_DIR = previousLogDir;
+      await rm(logDir, { recursive: true, force: true });
+    }
   });
 
   test("a background task can be cancelled and cannot notify a switched session", async () => {

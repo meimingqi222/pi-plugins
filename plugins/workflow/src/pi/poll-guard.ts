@@ -14,10 +14,18 @@
  *
  * Deliberately narrow. `sleep 5 && npm test` has a purpose, so it is not a
  * poll; only a bare sleep is.
+ *
+ * The bare-sleep parser is intentionally mirrored in `pi-bg-bash`; keep its
+ * syntax in sync. Its delivery policy differs: bg-bash no longer terminates a
+ * blocked poll because a successful job does not wake the model by default.
  */
 
-/** A bare `sleep <number>`, optionally with a trailing semicolon. */
-export const PURE_WAIT_PATTERN = /^\s*sleep\s+\d+(?:\.\d+)?\s*;?\s*$/u;
+/**
+ * A bare `sleep <number>` — GNU suffixes (`30s`, `1m`) and a trailing comment
+ * or semicolon still count as a poll; `sleep 5 && npm test` does not. In
+ * PowerShell `sleep` aliases `Start-Sleep`, so one pattern covers both tools.
+ */
+export const PURE_WAIT_PATTERN = /^\s*(?:sleep|start-sleep)\s+\d+(?:\.\d+)?[smhd]?\s*;?\s*(?:#.*)?$/iu;
 
 export function isPureWaitCommand(command: string): boolean {
 	return PURE_WAIT_PATTERN.test(command);

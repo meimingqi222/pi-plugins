@@ -50,7 +50,7 @@ for (const goalFirst of [true, false]) {
         },
         registerTool(tool: any) { tools.set(tool.name, tool); },
         registerCommand(name: string, command: any) { commands.set(name, command); },
-        registerMessageRenderer() {}, registerShortcut() {}, registerFlag() {},
+        registerMessageRenderer() {}, registerEntryRenderer() {}, registerShortcut() {}, registerFlag() {},
         appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
         sendMessage(message: any, options: any) {
           if (message.customType === "goal-continuation") return;
@@ -75,10 +75,11 @@ for (const goalFirst of [true, false]) {
         idle = false;
         await call("workflow", { script: "return await agent('inspect', {});" });
         await call("subagent", { agent: "explore", task: "inspect", background: true });
-        await call("bash", { command: "echo evidence", background: true });
+        await call("bash", { command: "echo evidence", background: true, notify: "always" });
         await call("update_goal", { kind: "candidate_complete", message: "done" });
         await emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop", content: [] }] });
         await until(async () => (await state()).used === 12 && (await call("bg_tasks", { action: "list" })).content[0].text.includes("exited"));
+		await new Promise((resolve) => setTimeout(resolve, 50));
         expect(delivered).toHaveLength(0);
         if (navigate) await emit("session_before_tree");
         idle = true;

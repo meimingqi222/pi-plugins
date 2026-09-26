@@ -1,15 +1,10 @@
 # pi-bg-bash
 
 Cross-platform background bash for pi. A command that outlives a threshold is
-detached instead of blocking the turn, and its result comes back as a follow-up
-message.
-
-An idle job result is handed to Pi as a `followUp` immediately. If an agent run
-is active, the result waits until Pi emits `agent_settled`, then starts a new
-turn. The plugin checks the
-launching session before delivery; a job that finishes after leaving that
-session cannot post into the new one. A synchronous delivery failure is
-reported through the UI instead of escaping the background callback.
+detached instead of blocking the turn. Every completion is recorded in the
+launching session. Success is visible as a compact TUI status; failure, timeout,
+or an explicitly requested notification can wake the agent. Full output stays
+in the log and is read through `bg_tasks` only when needed.
 
 ## Why this exists
 
@@ -38,29 +33,40 @@ execution to *during* it.
 ## Behaviour
 
 - **`bash` is replaced, not shadowed.** Same name, same parameters plus
-  `background`, same output truncation, same "throw on non-zero exit". Short
+  `background` and `notify`, same output truncation, same "throw on non-zero exit". Short
   commands are indistinguishable from the built-in tool.
 - **Auto-background.** When a command is still running after the threshold
-  (default `30s`), it is registered as `bgNNN`, the tool call returns
-  immediately, and a `bg_bash_result` follow-up with the final output and exit
-  code is injected when the process ends.
+  (default `30s`), it is registered as `bgNNN` and the tool call returns.
+  Success does not start another model turn. Failure and timeout send a short
+  notification with the job id, status and exit code, without stdout.
 - **`background: true`.** Detach immediately, for commands known to be long
   (builds, dev servers, watchers).
-- **`bg_tasks`.** `list`, `status <id>`, `log <id>`, `kill <id>`. This is the
-  part that makes a hung job recoverable: read what it has printed, then stop it.
-- **The follow-up is readable in the terminal.** Its model-facing content is
-  unchanged, but a registered message renderer draws it for a person: a status
-  line (`finished · bg001 · 1.2s · exit 0`), the command, a 20-line output
-  preview, and the log pointer as a warning. Expanding the message shows the
-  whole retained tail. Without the renderer the same report would go through the
-  markdown renderer, where a `#` comment in build output becomes a heading and
-  every retained line is printed.
-- **No wait-polling.** A bare `sleep` while a job is running is blocked and the
-  turn ends, so the model is woken by the job's completion instead of spinning.
-  A command with a purpose (`sleep 5 && npm test`) is untouched.
-- **Full output is on disk.** Every chunk is appended to
-  `~/.pi/bg-bash/logs/<id>.log`; the model-facing result keeps the last 2000
-  lines / 50KB and points at the log.
+- **Notification policy.** `notify: "auto"` is the default: failure and
+  timeout wake the agent; success and manual stop do not. `notify: "always"`
+  wakes for any completion. `notify: "quiet"` never wakes, including on a
+  failed long-running service. Notifications are short and hidden in the TUI.
+  When Pi is idle, a notification starts a follow-up turn. During an active
+  agent run it is sent as a steer; after `agent_end` it waits for
+  `agent_settled`. If Pi is busy compacting without an active run, delivery
+  waits until Pi becomes idle or a new run starts.
+- **`bg_tasks`.** `list`, `status`, `result`, `log`, `wait`, `kill`. `result`
+  returns metadata and at most 40 lines / 4 KB of output; `log` returns at
+  most 2000 lines / 50 KB. `wait` observes one or up to eight jobs (`any` or
+  `all`) for at most 30 seconds without a polling loop. Await or inspect a
+  required command before claiming it succeeded. For a much longer job that
+  should resume the agent, use `notify: "always"`.
+- **Durable metadata.** Session entries record start and terminal state,
+  without copying the command or stdout. Completed jobs remain queryable after
+  restoring a session. A formerly running job becomes `interrupted` when
+  tracking resumes; an expired log is reported as unavailable.
+- **Compact TUI.** A completion is drawn as one status line, with a log pointer
+  when expanded. The status entry does not enter model context. Older sessions'
+  completion messages retain their legacy renderer.
+- **No bare sleep polling.** A bare `sleep` while a job runs is blocked. Use
+  `bg_tasks wait` instead. A purposeful command (`sleep 5 && npm test`) is
+  untouched.
+- **Full output is on disk.** Every chunk goes to a session-prefixed log under
+  `~/.pi/bg-bash/logs/`; the model reads it only when requested.
 
 ## Cross-platform
 
@@ -129,6 +135,11 @@ at most the newest 200 files are kept.
 - **Logs hold raw output.** The files under `~/.pi/bg-bash/logs/` are the
   command's bytes verbatim — secret-redaction extensions that rewrite tool
   results do not rewrite these files.
+- **A late failure can still create another turn.** Under the default policy,
+  this is intentional because the failure may invalidate an earlier answer.
+  Pi cannot guarantee that a completion arriving during final-token streaming
+  was consumed in the original response. Even `notify: "always"` can therefore
+  create a later turn; use it only for results the agent must process.
 
 ## Layout
 
@@ -136,8 +147,8 @@ at most the newest 200 files are kept.
   tail buffer, and the outcome→status rule. No process, no filesystem, no `pi`.
 - `runner/` — shell resolution, spawn, process-tree termination, and the
   exit/stdout draining logic.
-- `pi/` — tool registration, config file access, formatting, follow-up
-  delivery through Pi, and the terminal rendering of a completion.
+- `pi/` — tool registration, config file access, bounded result queries,
+  completion routing, session records, and terminal rendering.
 
 ## Development
 

@@ -9,6 +9,7 @@ import {
 	closeSync,
 	existsSync,
 	fstatSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -18,7 +19,7 @@ import {
 	unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseSeconds, type ThresholdSources } from "../core/config.ts";
 
 export const ENV_THRESHOLD = "PI_BG_BASH_THRESHOLD";
@@ -34,7 +35,7 @@ const GLOBAL_FILE = join(".pi", "bg-bash.json");
 
 /** Directory where per-job full output is appended. */
 export function defaultLogDir(): string {
-	return process.env.PI_BG_BASH_LOG_DIR || join(homedir(), ".pi", "bg-bash", "logs");
+	return resolve(process.env.PI_BG_BASH_LOG_DIR || join(homedir(), ".pi", "bg-bash", "logs"));
 }
 
 /** Collect the three threshold sources without deciding anything. */
@@ -129,6 +130,7 @@ export function readLogTail(path: string, maxBytes = 256 * 1024): string {
 	if (!path) return "";
 	let fd: number | undefined;
 	try {
+		if (lstatSync(path).isSymbolicLink()) return "";
 		fd = openSync(path, "r");
 		const size = fstatSync(fd).size;
 		const start = Math.max(0, size - maxBytes);

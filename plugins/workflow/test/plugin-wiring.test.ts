@@ -682,6 +682,16 @@ describe("poll guard", () => {
     expect(result.reason).toContain("workflow_status");
   });
 
+  test("a powershell Start-Sleep poll is blocked the same way", async () => {
+    const cwd = await tempCwd();
+    const { pi, captured } = fakePi();
+    workflowExtension({ executor: () => new Promise(() => {}), cwd })(pi);
+    await captured.tool.execute("call", { script: SCRIPT }, undefined, undefined, fakeCtx(cwd));
+
+    const guard = captured.toolCalls[0]!;
+    expect(guard({ toolName: "powershell", input: { command: "Start-Sleep 30" } })).toMatchObject({ block: true, terminate: true });
+  });
+
   test("a sleep with a purpose is left alone", async () => {
     const cwd = await tempCwd();
     const { pi, captured } = fakePi();

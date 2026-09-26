@@ -280,7 +280,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     // batch early-termination rule means a poll batched with real work does not
     // stop that work.
     pi.on("tool_call", (event) => {
-      if (event.toolName !== "bash") return;
+      if (event.toolName !== "bash" && event.toolName !== "powershell") return;
       if (registry.activeCount() === 0) return;
       const command = (event.input as { command?: unknown }).command;
       if (typeof command !== "string" || !isPureWaitCommand(command)) return;
