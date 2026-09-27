@@ -1,0 +1,44 @@
+#!/bin/sh
+# Pre-push gate: the checks that are too slow for every commit but that must not
+# reach a shared branch.
+#
+# Why this exists rather than running the suite in `pre-commit`:
+#
+# - `.github/workflows/notes.yml` already runs `typecheck`, `test` and `smoke` on
+#   every push, and it *did* catch the bug that motivated this — commit 0a3b09c
+#   went to master with three failing agent-runner tests and CI reported failure.
+#   The gap was not coverage, it was that a second push went out before anyone
+#   read that result. So the useful place to gate is the push itself: the same
+#   coverage, one round trip earlier.
+# - `pre-commit` is deliberately fast (notes tree + credential-shaped literals).
+#   Adding ~60s to every commit — including the markdown-only commits that are
+#   most of this repository's history — buys nothing that this hook does not.
+#
+# `git push --no-verify` still bypasses it, deliberately. A gate that cannot be
+# bypassed gets worked around in ways that skip more than the gate.
+#
+# `smoke` packs and loads every extension in an isolated install, so it needs the
+# network and ~35s. It stays opt-in: set PI_PREPUSH_SMOKE=1 to include it, which
+# is what CI does. Everything else here runs offline.
+set -e
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-push: bun is not on PATH; skipping the test gate." >&2
+  exit 0
+fi
+
+echo "pre-push: typecheck…" >&2
+bun run typecheck
+
+echo "pre-push: test suite (~60s)…" >&2
+bun run test
+
+if [ "${PI_PREPUSH_SMOKE:-}" = "1" ]; then
+  echo "pre-push: smoke — packing and loading every extension…" >&2
+  bun run smoke
+fi
+
+echo "pre-push: OK" >&2

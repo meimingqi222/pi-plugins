@@ -399,6 +399,12 @@ describe("the extension registers delegation and task tools", () => {
     const previousLogDir = process.env.PI_SUBAGENT_LOG_DIR;
     process.env.PI_SUBAGENT_LOG_DIR = logDir;
     let finish: ((value: any) => void) | undefined;
+    // The log is read from disk, so the test must wait for the write rather than
+    // for one macrotask: a loaded CI runner can take longer than a turn to land an
+    // fs write, and `openSync` then reports the file as unavailable. In-memory
+    // assertions elsewhere may yield a turn; a file assertion may not.
+    let evidenceWritten: (() => void) | undefined;
+    const wroteEvidence = new Promise<void>((resolve) => { evidenceWritten = resolve; });
     try {
       const { pi, tools } = fakePi();
       subagentExtension({
@@ -408,6 +414,7 @@ describe("the extension registers delegation and task tools", () => {
             JSON.stringify({ type: "tool_execution_start", toolName: "grep", args: { pattern: "secret query" } }),
             JSON.stringify({ type: "tool_execution_end", toolName: "grep", result: { content: "needle result body" } }),
           ].join("\n") + "\n");
+          evidenceWritten!();
           return new Promise((resolve) => { finish = resolve; });
         },
       })(pi);
@@ -416,7 +423,7 @@ describe("the extension registers delegation and task tools", () => {
         agent: "explore", task: "Inspect", background: true,
       }, undefined, undefined, ctx);
       const id = launched.details.taskId as string;
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await wroteEvidence;
 
       const shown = await tools[1]!.execute!("log-show", {
         action: "show", id,
