@@ -41,5 +41,5 @@ export const AGENT_PARAM_DESCRIPTION =
 export const ALIAS_PARAM_DESCRIPTION =
 	"Optional human-facing name for the task shown in the fleet widget and panel (e.g. \"auth-audit\"). Falls back to a slug derived from the task.";
 
-export const WAIT_TIMEOUT_MAX_SECONDS = 30;
+export const WAIT_TIMEOUT_MAX_SECONDS = 300;
 export const WAIT_TIMEOUT_DEFAULT_SECONDS = 30;

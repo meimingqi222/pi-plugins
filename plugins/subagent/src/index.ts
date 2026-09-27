@@ -111,6 +111,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 theme,
                 list: () => registry.list(sessionId),
                 stop: (id) => registry.stop(sessionId, id),
+                notify: (message, type) => {
+                  try { uiCtx?.ui?.notify(message, type ?? "info"); } catch { /* A toast cannot fail the panel. */ }
+                },
                 readLog: (id) => {
                   const path = registry.getLogPath(sessionId, id);
                   return path ? readSubagentLog(path, { lines: LOG_TAIL_LINES }).text : undefined;
@@ -235,8 +238,26 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
               ctx.ui.notify("No running subagents.", "info");
               return;
             }
-            for (const record of running) registry.stop(sessionId, record.id);
-            ctx.ui.notify(`Stopping ${running.length} subagent${running.length === 1 ? "" : "s"}.`, "info");
+            // Foreground calls are this session's own turn; only a background lane
+            // can be aborted from here, and the count must say which.
+            let stopped = 0;
+            let foreground = 0;
+            for (const record of running) {
+              const outcome = registry.stop(sessionId, record.id);
+              if (outcome === "stopped") stopped += 1;
+              else if (outcome === "foreground") foreground += 1;
+              // `settled` gets no bucket: a lane that ended on its own between the
+              // listing and the cancel is neither stopping nor waiting for Esc.
+            }
+            const parts = [
+              stopped > 0 ? `Stopping ${stopped} subagent${stopped === 1 ? "" : "s"}` : "",
+              foreground > 0 ? `${foreground} foreground call${foreground === 1 ? "" : "s"} left to Esc` : "",
+            ].filter(Boolean);
+            if (parts.length === 0) {
+              ctx.ui.notify("Those subagents settled before the cancel landed.", "info");
+              return;
+            }
+            ctx.ui.notify(`${parts.join("; ")}.`, foreground > 0 ? "warning" : "info");
             return;
           }
           const record = records.find((item) => item.id === target);
@@ -244,7 +265,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             ctx.ui.notify(`No running subagent ${target}.`, "warning");
             return;
           }
-          registry.stop(sessionId, record.id);
+          if (registry.stop(sessionId, record.id) === "foreground") {
+            ctx.ui.notify(`${record.id} is this session's own foreground call — press Esc to interrupt it.`, "warning");
+            return;
+          }
           ctx.ui.notify(`Stopping ${record.id}.`, "info");
           return;
         }
@@ -417,16 +441,23 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
         const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
         const fgResolved = resolveAgent(fgAgents, params.agent);
-        const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) =>
-          executeSubagent(params, {
+        const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
+          // A foreground call is the lane that blocks this session, so it is the one
+          // that most needs an evidence file when it wedges — and it was the only
+          // lane without one, which made a hung blocking call undiagnosable.
+          const logPath = subagentLogPath(id, sessionId);
+          registry.setLogPath(id, logPath);
+          return executeSubagent(params, {
             cwd: ctx.cwd,
             ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
             signal: runSignal,
+            evidencePath: logPath,
+            evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
             ...(onUpdate ? { onUpdate } : {}),
             onProgress: (progress) => registry.setProgress(id, progress),
-          }, options),
-        { kind: "foreground", alias: params.alias, generation });
+          }, options);
+        }, { kind: "foreground", alias: params.alias, generation });
         const onAbort = () => registry.abort(launched.record.id);
         signal?.addEventListener("abort", onAbort, { once: true });
         if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
@@ -485,7 +516,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         query: Type.Optional(Type.String({ maxLength: 200, description: "Optional case-insensitive substring to search in raw JSONL log lines." })),
         lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Maximum matching log lines to return (1–50, default 20)." })),
       }),
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         const sessionId = ctx.sessionManager.getSessionId();
         if (params.action === "list") {
           const records = registry.list(sessionId);
@@ -494,9 +525,16 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         if (!params.id) return { content: [{ type: "text", text: `An id is required for ${params.action}.` }], details: undefined };
         if (params.action === "wait") {
           const seconds = Math.min(WAIT_TIMEOUT_MAX_SECONDS, Math.max(0, params.timeout ?? WAIT_TIMEOUT_DEFAULT_SECONDS));
-          const record = await registry.waitFor(sessionId, params.id, seconds * 1_000);
+          // The tool call's own signal ends the wait: a deadline nobody is watching
+          // any more must not keep the caller parked on it.
+          const { lane: record, outcome } = await registry.waitFor(sessionId, params.id, seconds * 1_000, signal);
           if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
-          const tail = record.status === "running" ? ` Still running after ${seconds}s — its answer will arrive when it finishes.` : "";
+          // Only a deadline that actually elapsed may claim an elapsed time.
+          const tail = record.status !== "running"
+            ? ""
+            : outcome === "interrupted"
+              ? " This wait was interrupted, so it is still running — its answer will arrive when it finishes."
+              : ` Still running after ${seconds}s — its answer will arrive when it finishes.`;
           return { content: [{ type: "text", text: `${formatBackground(record)}.${tail}` }], details: record };
         }
         const record = registry.get(sessionId, params.id);
@@ -534,8 +572,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           return { content: [{ type: "text", text: `Reply sent to ${params.id} as ${how}: ${prompt.slice(0, 120)}${prompt.length > 120 ? "…" : ""}` }], details: record };
         }
         if (params.action === "cancel") {
-          const stopped = registry.stop(sessionId, params.id);
-          return { content: [{ type: "text", text: stopped ? `Stopping ${params.id}.` : `${params.id} already settled.` }], details: record };
+          const outcome = registry.stop(sessionId, params.id);
+          const text = outcome === "stopped"
+            ? `Stopping ${params.id}.`
+            : outcome === "foreground"
+              ? `${params.id} is a foreground call: it is this session's own turn, so only an interrupt of the turn ends it.`
+              : `${params.id} already settled.`;
+          return { content: [{ type: "text", text }], details: record };
         }
         if (params.action === "log") {
           const logPath = registry.getLogPath(sessionId, params.id);

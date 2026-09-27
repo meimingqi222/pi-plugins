@@ -50,6 +50,29 @@ describe("applyEvent", () => {
     expect(state.stopReason).toBe("error");
   });
 
+  test("a later successful reply clears an earlier error", () => {
+    const state = emptyStreamState();
+    applyEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "rate limited" },
+    });
+    applyEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "the answer" }], stopReason: "stop" },
+    });
+    // A lane that recovered is not a failed lane, and the stale text must not
+    // survive to be reported as its error.
+    expect(state.errorMessage).toBeUndefined();
+    expect(state.finalText).toBe("the answer");
+    // The reverse order still fails the run: the last word wins, as it already
+    // does for `stopReason` and `finalText`.
+    applyEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "billing" },
+    });
+    expect(state.errorMessage).toBe("billing");
+  });
+
   test("agent_end replays its messages, so a failed run still yields text", () => {
     const state = emptyStreamState();
     applyEvent(state, {

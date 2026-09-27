@@ -20,6 +20,30 @@ export type LaneStatus = "running" | "completed" | "failed" | "aborted";
 /** `foreground` lanes are observable but not addressable: no id reaches the model and stop() refuses them. */
 export type LaneKind = "background" | "foreground";
 
+/**
+ * Why a cancel request did or did not stop a lane.
+ *
+ * `foreground` is a distinct answer rather than a `false`: a foreground call is
+ * the session's own turn, so there is no child to abort behind the model's back,
+ * and a caller that reports "nothing happened" is describing a broken button.
+ */
+export type StopOutcome = "stopped" | "settled" | "foreground";
+
+/**
+ * Why a wait returned.
+ *
+ * `interrupted` has to be distinguishable from `timeout`: both leave the lane
+ * running, and reporting an interrupted wait as "still running after 300s" states
+ * an elapsed time that never happened.
+ */
+export type WaitOutcome = "settled" | "timeout" | "interrupted";
+
+/** A settled-or-not lane plus the reason the wait stopped waiting. */
+export interface WaitResult {
+	lane: Lane | undefined;
+	outcome: WaitOutcome;
+}
+
 export interface Lane {
 	id: string;
 	agent: string;
@@ -168,11 +192,12 @@ export class LaneRegistry {
 	}
 
 	/** Cancel a background lane. Foreground lanes are not addressable — only their own tool call may end them. */
-	stop(sessionId: string, id: string): boolean {
+	stop(sessionId: string, id: string): StopOutcome {
 		const entry = this.active.get(id);
-		if (!entry || entry.lane.sessionId !== sessionId || entry.lane.kind !== "background") return false;
+		if (!entry || entry.lane.sessionId !== sessionId) return "settled";
+		if (entry.lane.kind !== "background") return "foreground";
 		entry.controller.abort();
-		return true;
+		return "stopped";
 	}
 
 	/** Internal abort for session teardown and tool-call signals; not gated on kind. */
@@ -204,24 +229,42 @@ export class LaneRegistry {
 	}
 
 	/**
-	 * Resolve when the lane settles or the deadline hits — the same shape
-	 * `bg_tasks wait` offers, so a caller never needs a polling loop.
+	 * Resolve when the lane settles, the deadline hits, or `signal` fires — the same
+	 * shape `bg_tasks wait` offers, so a caller never needs a polling loop. The
+	 * reason travels with the record, because "still running after 300s" is wrong
+	 * for a wait that returned in a millisecond.
+	 *
+	 * `signal` ends the wait without ending the lane: a tool call that has been
+	 * interrupted must return, or the caller waits out a deadline nobody is
+	 * watching any more.
 	 */
-	waitFor(sessionId: string, id: string, timeoutMs: number): Promise<Lane | undefined> {
+	waitFor(sessionId: string, id: string, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
 		const existing = this.get(sessionId, id);
-		if (!existing || existing.status !== "running") return Promise.resolve(existing);
+		if (!existing || existing.status !== "running") return Promise.resolve({ lane: existing, outcome: "settled" });
+		if (signal?.aborted) return Promise.resolve({ lane: existing, outcome: "interrupted" });
 		return new Promise((resolve) => {
-			const onSettled = (lane: Lane) => {
-				if (lane.id !== id) return;
+			const done = (outcome: WaitOutcome) => resolve({ lane: this.get(sessionId, id), outcome });
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const cleanup = (): void => {
 				this.waiters.delete(onSettled);
-				clearTimeout(timer);
-				resolve(this.get(sessionId, id));
+				if (timer) clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
 			};
-			const timer = setTimeout(() => {
-				this.waiters.delete(onSettled);
-				resolve(this.get(sessionId, id));
+			const onSettled = (lane: Lane): void => {
+				if (lane.id !== id) return;
+				cleanup();
+				done("settled");
+			};
+			const onAbort = (): void => {
+				cleanup();
+				done("interrupted");
+			};
+			timer = setTimeout(() => {
+				cleanup();
+				done("timeout");
 			}, Math.max(0, timeoutMs));
 			(timer as { unref?: () => void }).unref?.();
+			signal?.addEventListener("abort", onAbort, { once: true });
 			this.waiters.add(onSettled);
 		});
 	}

@@ -61,9 +61,10 @@ list tasks, show a task's status and answer, or cancel a running task:
 { "action": "reply", "id": "sa-...", "prompt": "stop what you're doing", "interrupt": true }
 ```
 
-`wait` blocks up to `timeout` seconds (default 30) for the task to settle and
-returns its record either way — the supported alternative to polling `show`
-in a loop.
+`wait` blocks up to `timeout` seconds (default 30, maximum 300) for the task to
+settle and returns its record either way — the supported alternative to polling
+`show` in a loop. An interrupted call returns at once and says so; only a
+deadline that actually elapsed reports an elapsed time.
 
 `reply` sends a follow-up message to a live background child (they run on
 pi's RPC transport, so the process survives its own turn). On an **idle**
@@ -72,6 +73,13 @@ lane — turn ended, child alive — it starts a new turn. Mid-turn,
 default queues a `follow_up` for after the turn. An idle lane settles on its
 own after a keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`),
 delivering its last answer — a fire-and-forget caller is never held open.
+
+Extension dialogs inside an RPC child are answered rather than left hanging. An
+RPC child is handed a real UI context, so `select`/`confirm`/`input`/`editor`/
+`custom` emit a request and wait for a client response — and the child has no
+client. Each is answered as cancelled, which is exactly what the no-op UI
+context a JSON child already gets would have done; without it, one dialog from
+any loaded extension would pin the child until its wall clock.
 
 Three built-in agents ship in `src/catalog.ts` — `explore` and `review` are
 read-only (`review` can also run commands), and `general` is the only
@@ -92,6 +100,23 @@ seconds without an event it marks the task as a possible stall. This is a
 liveness hint, not proof that the child is stuck: a provider may take a long time
 to answer without emitting an event. `events` returns up to ten recent
 lifecycle events.
+
+The bound that *acts* is a separate silence cap. A child that emits nothing for
+five minutes is failed with the last event named —
+`no output for 300000ms (last event: tool_start find)` — instead of silently
+spending the rest of its fifteen-minute budget. Set `PI_AGENT_STALL_MS` to
+change it in milliseconds, or to `0` to turn it off. The cap applies to both
+transports, and a background lane waiting between turns for a `reply` is exempt,
+because that silence is expected.
+
+A tool call that declared its own `timeout` outranks the cap for as long as it
+runs: pi's shell tools take seconds, and a command that named its own budget has
+already decided how long it may run. That is what keeps this bound from fighting
+`pi-workflow`'s ten-minute shell budget (`PI_WORKFLOW_CHILD_BASH_TIMEOUT_MS`),
+and it matters for the silent case — pi's shell tool only emits progress when the
+command prints, so a quiet ten-minute build produces no events at all. A tool
+that declared nothing (pi's `find`, `grep`) is still caught at five minutes.
+When the declared budget is exhausted, the tool's own timeout reports it.
 
 The activity trail is metadata-only. It can show event types, tool names, and
 paths for `read`, `grep`, `find`, and `ls`; it does not retain prompts, search

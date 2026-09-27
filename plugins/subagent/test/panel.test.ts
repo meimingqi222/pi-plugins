@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { BackgroundRecord } from "../src/background.ts";
 import { createSubagentsPanel, PANEL_BODY_ROWS, type PanelDeps } from "../src/panel.ts";
+import type { StopOutcome } from "../src/lane.ts";
 import type { FleetTheme } from "../src/fleet.ts";
 
 const theme: FleetTheme = { fg: (_color, text) => text, bold: (text) => text };
@@ -28,9 +29,10 @@ function record(partial: Partial<BackgroundRecord> = {}): BackgroundRecord {
 	};
 }
 
-function fakePanel(list: () => BackgroundRecord[]) {
+function fakePanel(list: () => BackgroundRecord[], stopOutcome: StopOutcome = "stopped") {
 	let renders = 0;
 	const stopped: string[] = [];
+	const notifications: string[] = [];
 	const closed = { value: false };
 	const timers = new Set<() => void>();
 	let notifyFlag = false;
@@ -38,7 +40,8 @@ function fakePanel(list: () => BackgroundRecord[]) {
 		tui: { requestRender: () => { renders += 1; } },
 		theme,
 		list,
-		stop: (id) => { stopped.push(id); return true; },
+		stop: (id) => { stopped.push(id); return stopOutcome; },
+		notify: (message) => { notifications.push(message); },
 		readLog: (id) => (id === "sa-1" ? "log line one\nlog line two" : undefined),
 		readTranscriptLines: (id) => (id === "sa-1"
 			? { lines: [JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "folded reply" }] } })], earlierDataOmitted: false }
@@ -54,7 +57,7 @@ function fakePanel(list: () => BackgroundRecord[]) {
 		},
 	};
 	const panel = createSubagentsPanel(deps, () => { closed.value = true; });
-	return { panel, stopped, closed, timers, renders: () => renders, notify: () => notifyFlag };
+	return { panel, stopped, notifications, closed, timers, renders: () => renders, notify: () => notifyFlag };
 }
 
 describe("the fleet panel", () => {
@@ -120,6 +123,24 @@ describe("the fleet panel", () => {
 		panel.render(80);
 		panel.handleInput?.("k");
 		expect(stopped).toEqual([]);
+	});
+
+	test("k on a foreground row reports the refusal instead of looking broken", () => {
+		const { panel, notifications, stopped } = fakePanel(() => [record({ id: "sa-fg", kind: "foreground" })], "foreground");
+		panel.render(80);
+		panel.handleInput?.("k");
+		// The cancel was attempted, and the answer names the key that does work.
+		expect(stopped).toEqual(["sa-fg"]);
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0]).toContain("Esc");
+	});
+
+	test("k on a background row stays silent", () => {
+		const { panel, notifications, stopped } = fakePanel(() => [record({ id: "sa-bg" })]);
+		panel.render(80);
+		panel.handleInput?.("k");
+		expect(stopped).toEqual(["sa-bg"]);
+		expect(notifications).toEqual([]);
 	});
 
 	test("l shows a bounded raw log tail for the selected child", () => {

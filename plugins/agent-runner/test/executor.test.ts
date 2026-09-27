@@ -3,7 +3,19 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentExecutor, type AgentRunInput } from "../src/executor.ts";
+import {
+  createAgentExecutor,
+  DEFAULT_STALL_MS,
+  declaredToolTimeoutMs,
+  describeAgentEvent,
+  resolveStallMs,
+  stallCheckIntervalMs,
+  stallFailureMessage,
+  stallThresholdMs,
+  timeoutFailureMessage,
+  trackDeclaredTimeouts,
+  type AgentRunInput,
+} from "../src/executor.ts";
 
 /**
  * Spawn-path tests for the shared executor, driven by a fixture that speaks pi's
@@ -100,6 +112,16 @@ describe("agent executor spawn path", () => {
     expect(result.errorMessage).toContain("exited with code 3");
   });
 
+  test("a run that recovered after a terminal error is completed, not failed", async () => {
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+    const result = await executor(input("RECOVER"));
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("recovered answer");
+    // The stale 429 must not be handed back as this run's error.
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.usage.totalTokens).toBe(12);
+  });
+
   test("a hanging child is killed by the timeout instead of hanging the caller", async () => {
     const started = Date.now();
     const executor = createAgentExecutor({ invocation: injection, timeoutMs: 1_200 });
@@ -108,6 +130,125 @@ describe("agent executor spawn path", () => {
     expect(result.errorMessage).toContain("timed out");
     // The kill is what makes this bound meaningful.
     expect(Date.now() - started).toBeLessThan(6_000);
+  });
+
+  test("a child that stops emitting is failed by the stall bound, naming the last event", async () => {
+    const started = Date.now();
+    // The wall clock is deliberately generous: only the stall bound can end this
+    // run inside the assertion window, which is what makes the test about stalls.
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS, stallMs: 200 });
+    const result = await executor(input("STALL_TOOL:find"));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("produced no output");
+    // The diagnosis is the point: an operator needs to know *what* went quiet.
+    expect(result.errorMessage).toContain("tool_start find");
+    expect(result.errorMessage).not.toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(4_000);
+  }, 15_000);
+
+  test("a tool that declared its own timeout outranks the silence bound while it runs", async () => {
+    // The composition rule that keeps two budgets in this repository from
+    // fighting: `pi-workflow`'s child guard injects a ten-minute shell budget by
+    // default, and a silent legitimate command must not be killed by a bound that
+    // knows less than the command does. No output at all is exactly the case —
+    // pi's shell tool only emits progress when the command prints.
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: 900, stallMs: 150 });
+    const result = await executor(input("STALL_TOOL:bash DECLARED_TIMEOUT:5"));
+    expect(result.status).toBe("failed");
+    // The wall clock, not the silence bound, is what ended it.
+    expect(result.errorMessage).toContain("timed out");
+    expect(result.errorMessage).not.toContain("produced no output");
+  }, 15_000);
+
+  test("a parallel sibling finishing does not strip a long call's declared budget", async () => {
+    // The end-to-end twin of the keying unit test: pi runs a tool batch in
+    // parallel by default, so a fast `read` can finish while a silent `bash` with
+    // a ten-minute budget is still in flight. Keyed bookkeeping is what keeps that
+    // event from handing the long call back to the five-minute silence bound.
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: 900, stallMs: 150 });
+    const result = await executor(input("STALL_TOOL:bash DECLARED_TIMEOUT:5 SPLIT_BATCH"));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("timed out");
+    expect(result.errorMessage).not.toContain("produced no output");
+  }, 15_000);
+
+  test("a tool that declared nothing is still caught by the silence bound", async () => {
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: 900, stallMs: 150 });
+    const result = await executor(input("STALL_TOOL:find"));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("produced no output");
+  }, 15_000);
+
+  test("the stall bound is off when stallMs is zero", async () => {
+    // A disabled bound must leave the wall clock as the only limit, so this run
+    // is ended by the timeout and not by the silence.
+    const executor = createAgentExecutor({ invocation: injection, timeoutMs: 400, stallMs: 0 });
+    const result = await executor(input("STALL_TOOL:find"));
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("timed out");
+  }, 15_000);
+
+  test("the environment sets the stall bound, and an explicit value wins over it", () => {
+    expect(resolveStallMs(undefined, {})).toBe(DEFAULT_STALL_MS);
+    expect(resolveStallMs(undefined, { PI_AGENT_STALL_MS: "1500" })).toBe(1_500);
+    expect(resolveStallMs(undefined, { PI_AGENT_STALL_MS: "0" })).toBe(0);
+    expect(resolveStallMs(undefined, { PI_AGENT_STALL_MS: "nonsense" })).toBe(DEFAULT_STALL_MS);
+    expect(resolveStallMs(50, { PI_AGENT_STALL_MS: "1500" })).toBe(50);
+  });
+
+  test("the stall label names a tool but never carries its arguments", () => {
+    const label = describeAgentEvent({ type: "tool_execution_start", toolName: "grep", args: { pattern: "secret" } });
+    expect(label).toBe("tool_start grep");
+    expect(label).not.toContain("secret");
+    expect(describeAgentEvent({ type: "message_update" })).toBe("model output");
+    expect(describeAgentEvent(null)).toBe("event");
+  });
+
+  test("both transports share one sampling rule and one failure message", () => {
+    // A second copy of process handling is a second place to fix the same bug;
+    // this package's README records the divergence that cost last time.
+    expect(stallCheckIntervalMs(1_000_000)).toBe(5_000);
+    expect(stallCheckIntervalMs(200)).toBe(50);
+    expect(stallCheckIntervalMs(0)).toBe(25);
+    expect(stallFailureMessage({ stalledForMs: 300_000, lastEvent: "tool_start find" })).toBe(
+      "The agent produced no output for 300000ms (last event: tool_start find); killed by the stall bound",
+    );
+    expect(timeoutFailureMessage({ timeoutMs: 900_000, evidencePath: "/tmp/a.jsonl" })).toBe(
+      "The agent timed out after 900000ms; its event stream is at /tmp/a.jsonl",
+    );
+  });
+
+  test("a declared timeout is tracked per call, and only its own end drops it", () => {
+    // Seconds in, milliseconds out: pi's shell tools take seconds, and the guard
+    // injects one.
+    expect(declaredToolTimeoutMs({ type: "tool_execution_start", toolName: "bash", args: { timeout: 600 } })).toBe(600_000);
+    expect(declaredToolTimeoutMs({ type: "tool_execution_start", toolName: "bash", args: {} })).toBeUndefined();
+    expect(declaredToolTimeoutMs({ type: "tool_execution_start", toolName: "bash", args: { timeout: 0 } })).toBeUndefined();
+    expect(declaredToolTimeoutMs({ type: "message_update" })).toBeUndefined();
+
+    const budgets = new Map<string, number>();
+    trackDeclaredTimeouts(budgets, { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { timeout: 1 } });
+    expect(budgets.get("t1")).toBe(1_000 + 30_000);
+    // pi runs a tool batch in parallel, so a short read finishing must not strip
+    // the exemption from the long silent shell still in flight.
+    trackDeclaredTimeouts(budgets, { type: "tool_execution_end", toolCallId: "t2", toolName: "read" });
+    expect(budgets.get("t1")).toBe(1_000 + 30_000);
+    // The call that declared it ends the exemption, so the next silent call is
+    // measured against the ordinary bound again.
+    trackDeclaredTimeouts(budgets, { type: "tool_execution_end", toolCallId: "t1", toolName: "bash" });
+    expect(budgets.size).toBe(0);
+    // A turn boundary clears whatever never reported an end, rather than letting
+    // it exempt the rest of a lane's life.
+    trackDeclaredTimeouts(budgets, { type: "tool_execution_start", toolCallId: "t3", toolName: "bash", args: { timeout: 1 } });
+    expect(budgets.size).toBe(1);
+    trackDeclaredTimeouts(budgets, { type: "agent_end", messages: [] });
+    expect(budgets.size).toBe(0);
+    // The threshold in force is the longer of the two, per call.
+    expect(stallThresholdMs(150, budgets)).toBe(150);
+    budgets.set("t4", 630_000);
+    budgets.set("t5", 30_000);
+    expect(stallThresholdMs(150, budgets)).toBe(630_000);
+    expect(stallThresholdMs(900_000, budgets)).toBe(900_000);
   });
 
   test("an abort signal kills a hanging child", async () => {
