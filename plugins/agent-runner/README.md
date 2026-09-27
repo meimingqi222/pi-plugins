@@ -43,7 +43,12 @@ over the executor's default. POSIX children get their own process group; Windows
 uses `taskkill /F /T`. After exit or cancellation, pipe draining is capped at
 200ms so inherited handles cannot keep the result pending. POSIX cancellation
 first sends SIGTERM to Pi, allowing it to clean up detached shell tools and
-extensions; after a maximum 1000ms grace it escalates to SIGKILL. Cleanup is best
+extensions; after a maximum 1000ms grace it escalates to SIGKILL. Both windows
+are per-spawn overridable (`SpawnRpcChildOptions.terminationGraceMs` and
+`stdioGraceMs`), because a test that drives a kill path against a child which
+does not exit on SIGTERM waits the window out in full without observing it: the
+RPC transport's unit tests shorten it, and `process-tree.test.ts` is what
+measures the production values against real children. Cleanup is best
 effort: descendants that escape the process group, or Windows descendants whose
 parent has already exited, may need separate cleanup.
 

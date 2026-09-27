@@ -112,8 +112,9 @@ git config core.hooksPath .githooks
 The same hook path also carries a `pre-push` gate, because a commit reaching a
 shared branch is the expensive failure: it cannot be amended away, and fixing it
 needs a second commit. It runs `bun run typecheck` and `bun run test` offline
-(~60s), and `bun run smoke` when `PI_PREPUSH_SMOKE=1` — `smoke` packs and loads
-every extension in an isolated install, so it needs the network.
+(~45s, after the RPC transport's unit tests stopped waiting out production kill
+grace periods), and `bun run smoke` when `PI_PREPUSH_SMOKE=1` — `smoke` packs and
+loads every extension in an isolated install, so it needs the network.
 
 CI runs the same three commands on every push
 (`.github/workflows/notes.yml`). The hook is not extra coverage; it is the same
