@@ -59,6 +59,12 @@ export interface AgentRunInput {
    */
   timeoutMs?: number;
   /**
+   * Per-call silence cap in milliseconds: how long the child may emit nothing
+   * before the run is failed. Unset reads `PI_AGENT_STALL_MS`, then
+   * `DEFAULT_STALL_MS`; `0` disables the bound.
+   */
+  stallMs?: number;
+  /**
    * File the child's raw event stream is appended to.
    *
    * A hung or failed agent is otherwise undiagnosable after the fact: the child
@@ -178,6 +184,8 @@ export type AgentExecutor = (input: AgentRunInput) => Promise<AgentRunResult>;
 export interface AgentExecutorOptions {
   /** Wall-clock cap for one agent when the input does not set one. */
   timeoutMs?: number;
+  /** Silence cap for one agent when the input does not set one. */
+  stallMs?: number;
   /** Override for tests; defaults to the resolved pi invocation. */
   invocation?: PiInvocation;
   /** Extra flags appended before the prompt. */
@@ -188,6 +196,33 @@ export interface AgentExecutorOptions {
 
 /** Fifteen minutes: long enough for a real delegated task, short enough to bound a hung child. */
 export const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60 * 1_000;
+/**
+ * Five minutes in which the child emitted nothing at all.
+ *
+ * The wall clock alone is a poor bound on a wedged child: it fails the run at
+ * the deadline with no diagnosis, having spent the whole budget. A stall is the
+ * same failure one step earlier and with the fact that matters attached — the
+ * last event the child produced. A single tool call that runs silently for
+ * longer than this is already an outlier against a fifteen-minute run budget,
+ * so `PI_AGENT_STALL_MS` is the escape hatch for a deliberately long one, and
+ * `0` turns the bound off.
+ */
+export const DEFAULT_STALL_MS = 5 * 60 * 1_000;
+/**
+ * How often the stall bound is sampled. Sampling rather than re-arming a timer
+ * per event keeps a streaming child from paying for a timer per token, and the
+ * floor keeps a short test threshold firing promptly.
+ */
+const STALL_CHECK_INTERVAL_MS = 5_000;
+/** The floor under `stallCheckIntervalMs`, so a short test threshold still fires. */
+const MIN_STALL_CHECK_MS = 25;
+/**
+ * Grace added to a tool's own declared timeout before the silence bound applies.
+ *
+ * `pi-workflow`'s child guard injects a ten-minute shell budget by default, and
+ * a command may declare its own; the tool's timeout must be the one that reports.
+ */
+const STALL_DECLARED_SLACK_MS = 30_000;
 const MAX_STDERR_CHARS = 8_000;
 /** Bounded so a runaway child cannot grow the parent's heap through its own output. */
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
@@ -198,6 +233,140 @@ const TERMINATION_GRACE_MS = 1000;
 
 export function emptyAgentUsage(): AgentUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
+}
+
+/**
+ * The silence cap to use, with the environment as the middle precedence.
+ *
+ * The environment is read here rather than by each caller so `pi-subagent` and
+ * `pi-workflow` cannot drift on what a stalled child means, and so a user has
+ * one switch. An explicit value wins, because a caller that measured its own
+ * budget knows better than an ambient variable.
+ */
+export function resolveStallMs(explicit?: number, env: NodeJS.ProcessEnv = process.env): number {
+  if (explicit !== undefined) return explicit;
+  const raw = Number(env.PI_AGENT_STALL_MS);
+  return env.PI_AGENT_STALL_MS !== undefined && env.PI_AGENT_STALL_MS !== "" && Number.isFinite(raw) && raw >= 0
+    ? raw
+    : DEFAULT_STALL_MS;
+}
+
+/**
+ * How often the stall bound is sampled for a given threshold. Sampling rather
+ * than re-arming a timer per event keeps a streaming child from paying for a
+ * timer per token; the floor keeps a short test threshold firing promptly.
+ *
+ * Exported because both transports must sample identically. This package's
+ * README records what a second copy of process handling cost the last time.
+ */
+export function stallCheckIntervalMs(stallMs: number): number {
+  return Math.max(MIN_STALL_CHECK_MS, Math.min(STALL_CHECK_INTERVAL_MS, Math.floor(stallMs / 4)));
+}
+
+/** The failure message for a run the wall clock ended. */
+export function timeoutFailureMessage(input: { timeoutMs: number; evidencePath?: string }): string {
+  return `The agent timed out after ${input.timeoutMs}ms${
+    input.evidencePath ? `; its event stream is at ${input.evidencePath}` : ""
+  }`;
+}
+
+/**
+ * The failure message for a run the silence bound ended.
+ *
+ * One constructor rather than two template literals: the two transports must
+ * report the same thing, and a divergence on exactly this kind of message is
+ * already recorded in this package's README.
+ */
+export function stallFailureMessage(input: { stalledForMs: number; lastEvent: string; evidencePath?: string }): string {
+  return `The agent produced no output for ${input.stalledForMs}ms (last event: ${input.lastEvent}); killed by the stall bound${
+    input.evidencePath ? `; its event stream is at ${input.evidencePath}` : ""
+  }`;
+}
+
+/**
+ * The timeout a tool call declared for itself, in milliseconds.
+ *
+ * pi's shell tools take `timeout` in **seconds**, and an extension may inject
+ * one (see `pi-workflow`'s child guard). A call that named its own budget has
+ * already decided how long it may run, so the silence bound must not preempt it.
+ */
+export function declaredToolTimeoutMs(event: unknown): number | undefined {
+  if (!isRecord(event) || event.type !== "tool_execution_start") return undefined;
+  const args = isRecord(event.args) ? event.args : undefined;
+  const seconds = args?.timeout;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return seconds * 1_000;
+}
+
+/**
+ * Fold one event into the declared-timeout budgets in force, keyed by tool call id.
+ *
+ * Keyed rather than one slot, because pi runs a tool batch in parallel by default:
+ * a `read` that finishes while a long silent `bash` is still in flight must not
+ * strip the exemption from the call that declared a budget. The map is mutated in
+ * place so a streaming child pays no allocation per event.
+ *
+ * `STALL_DECLARED_SLACK_MS` lets the tool's own timeout fire and report before this
+ * bound gives up on it — otherwise the two would race and the tool's message, which
+ * is the one the command's author wrote, would lose.
+ *
+ * A turn boundary drops every budget: a call that never reported an end must not
+ * exempt the rest of a lane's life from a bound it was meant to be under.
+ */
+export function trackDeclaredTimeouts(budgets: Map<string, number>, event: unknown): Map<string, number> {
+  if (!isRecord(event)) return budgets;
+  if (event.type === "agent_start" || event.type === "agent_end") budgets.clear();
+  else if (typeof event.toolCallId === "string") {
+    if (event.type === "tool_execution_end") budgets.clear();
+    else {
+      const declared = declaredToolTimeoutMs(event);
+      if (declared !== undefined) budgets.set(event.toolCallId, declared + STALL_DECLARED_SLACK_MS);
+    }
+  }
+  return budgets;
+}
+
+/**
+ * The silence threshold in force: the ordinary bound, or a running call's own
+ * budget where that is longer. Both transports ask this question, so both ask it
+ * here rather than restating the rule.
+ */
+export function stallThresholdMs(stallMs: number, budgets: Map<string, number>): number {
+  let threshold = stallMs;
+  for (const budget of budgets.values()) if (budget > threshold) threshold = budget;
+  return threshold;
+}
+
+/**
+ * One bounded label for the last event a child emitted.
+ *
+ * A stall report is only actionable if it names what went quiet: "no output for
+ * 300s" is a mystery, "no output for 300s (last event: tool_start find)" points
+ * straight at the tool call that is not coming back.
+ */
+export function describeAgentEvent(event: unknown): string {
+  if (!isRecord(event) || typeof event.type !== "string") return "event";
+  const toolName = typeof event.toolName === "string"
+    ? event.toolName.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").slice(0, 40)
+    : undefined;
+  switch (event.type) {
+    case "tool_execution_start":
+      return toolName ? `tool_start ${toolName}` : "tool_start";
+    case "tool_execution_end":
+      return toolName ? `tool_end ${toolName}` : "tool_end";
+    case "message_update":
+      return "model output";
+    case "message_start":
+      return "model start";
+    case "message_end":
+      return "model end";
+    case "agent_start":
+      return "turn start";
+    case "agent_end":
+      return "turn end";
+    default:
+      return event.type.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").slice(0, 40);
+  }
 }
 
 /**
@@ -266,7 +435,14 @@ export function applyEvent(state: StreamState, event: unknown): void {
     state.usage = state.settledUsage;
     if (typeof message.model === "string") state.model = message.model;
     if (typeof message.stopReason === "string") state.stopReason = message.stopReason;
+    // An error belongs to the message that carried it, not to the run: a later
+    // reply that succeeded clears it, exactly as it replaces `finalText` and
+    // `stopReason`. pi's own retries never surface a failed attempt here at all —
+    // `retryAssistantCall` consumes them and returns only the final response — so
+    // this only matters for a lane that recovered after a terminal error, which
+    // must not be reported as failed with a stale message.
     if (typeof message.errorMessage === "string" && message.errorMessage) state.errorMessage = message.errorMessage;
+    else delete state.errorMessage;
     // `message_end` is authoritative; replace rather than append.
     state.finalText = readText(message.content) || state.finalText;
     return;
@@ -435,7 +611,14 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         let buffer = "";
         let stderr = "";
         let settled = false;
-        let killedBy: "timeout" | "abort" | undefined;
+        let killedBy: "timeout" | "abort" | "stalled" | undefined;
+        /** How quiet the child was when the stall bound fired; only meaningful with `killedBy === "stalled"`. */
+        let stalledForMs = 0;
+        /** The liveness clock: any parsed event moves it, so silence is measured in child output, not in wall time. */
+        let lastEventAt = Date.now();
+        let lastEventLabel = "spawn";
+        /** Declared budgets of the tool calls in flight, keyed by call id; see `trackDeclaredTimeouts`. */
+        const declaredBudgets = new Map<string, number>();
         let terminationRequested = false;
         let forceKilled = false;
         let terminationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -486,9 +669,14 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         // The call's cap wins over the executor's default, so a run's
         // `agentTimeoutMs` bounds one child rather than the whole script.
         const timeoutMs = input.timeoutMs ?? options.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+        // The first reason to end the run owns the label. Without the guard the wall
+        // clock relabels a run the silence bound (or a caller's abort) already ended,
+        // because termination has a grace period and the deadline can expire inside
+        // it — which reported a stalled child as "timed out".
         const timer =
           timeoutMs > 0
             ? setTimeout(() => {
+                if (settled || killedBy) return;
                 killedBy = "timeout";
                 terminate();
               }, timeoutMs)
@@ -496,8 +684,28 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         // `unref` so a one-shot run is not held open by a timer nobody can see.
         timer?.unref?.();
 
+        // The silence bound runs alongside the wall clock rather than replacing
+        // it: a child that streams nothing for `stallMs` is already wedged, and
+        // failing it there leaves the caller a diagnosis instead of a deadline.
+        // A tool that declared its own timeout is exempt up to that budget, so a
+        // legitimate long shell command is not killed by a bound that knows less
+        // than the command does.
+        const stallMs = resolveStallMs(input.stallMs ?? options.stallMs);
+        const stallTimer =
+          stallMs > 0
+            ? setInterval(() => {
+                if (settled || killedBy) return;
+                const quiet = Date.now() - lastEventAt;
+                if (quiet < stallThresholdMs(stallMs, declaredBudgets)) return;
+                stalledForMs = quiet;
+                killedBy = "stalled";
+                terminate();
+              }, stallCheckIntervalMs(stallMs))
+            : undefined;
+        stallTimer?.unref?.();
+
         const onAbort = (): void => {
-          killedBy = "abort";
+          if (!killedBy) killedBy = "abort";
           terminate();
         };
         if (input.signal) {
@@ -536,6 +744,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
+          if (stallTimer) clearInterval(stallTimer);
           if (terminationTimer) clearTimeout(terminationTimer);
           if (drainTimer) clearTimeout(drainTimer);
           input.signal?.removeEventListener("abort", onAbort);
@@ -557,9 +766,9 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
                 : {
                     status: "failed",
                     text: state.finalText,
-                    errorMessage: `The agent timed out after ${timeoutMs}ms${
-                      evidencePath ? `; its event stream is at ${evidencePath}` : ""
-                    }`,
+                    errorMessage: killedBy === "stalled"
+                      ? stallFailureMessage({ stalledForMs, lastEvent: lastEventLabel, ...(evidencePath ? { evidencePath } : {}) })
+                      : timeoutFailureMessage({ timeoutMs, ...(evidencePath ? { evidencePath } : {}) }),
                     usage: state.usage,
                   };
           } else if (state.errorMessage) {
@@ -604,6 +813,9 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
             if (!text) continue;
             try {
               const event = JSON.parse(text);
+              lastEventAt = Date.now();
+              lastEventLabel = describeAgentEvent(event);
+              trackDeclaredTimeouts(declaredBudgets, event);
               applyEvent(state, event);
               const activity = readAgentActivity(event);
               if (activity) {

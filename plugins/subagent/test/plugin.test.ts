@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { agentChildEnv, subagentExtension, subagentsDisabled } from "../src/index.ts";
+import { WAIT_TIMEOUT_MAX_SECONDS } from "../src/contract.ts";
 
 interface CapturedTool {
   name: string;
@@ -219,6 +220,88 @@ describe("the extension registers delegation and task tools", () => {
     // Unknown ids report rather than hang.
     const missing = await tools[1]!.execute!("w3", { action: "wait", id: "sa-nope", timeout: 0 }, undefined, undefined, ctx);
     expect(missing.content[0].text).toContain("No subagent task");
+  });
+
+  test("wait clamps to the documented cap and returns when its own tool call is interrupted", async () => {
+    const { pi, tools } = fakePi();
+    subagentExtension({ executor: () => new Promise(() => {}) })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
+    const launched = await tools[0]!.execute!("bg-cap", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    const id = launched.details.taskId as string;
+    // An absurd timeout is clamped to the cap, and an already-interrupted call
+    // returns at once rather than parking on a deadline nobody is watching: with a
+    // five-minute cap that matters, and it is why the cap could be raised at all.
+    const controller = new AbortController();
+    controller.abort();
+    const started = Date.now();
+    const record = await tools[1]!.execute!("w-cap", { action: "wait", id, timeout: 99_999 }, controller.signal, undefined, ctx);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // An interrupted wait must not claim an elapsed time it never spent.
+    expect(record.content[0].text).toContain("This wait was interrupted");
+    expect(record.content[0].text).not.toContain("Still running after");
+  });
+
+  test("wait reports the cap only when the deadline actually elapsed", async () => {
+    const { pi, tools } = fakePi();
+    subagentExtension({ executor: () => new Promise(() => {}) })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
+    const launched = await tools[0]!.execute!("bg-cap2", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    const id = launched.details.taskId as string;
+    // No signal: the clamp is what the caller is told about, and it did wait.
+    const record = await tools[1]!.execute!("w-cap2", { action: "wait", id, timeout: 0 }, undefined, undefined, ctx);
+    expect(record.content[0].text).toContain("Still running after 0s");
+  });
+
+  test("a foreground call writes the same evidence file a background lane does", async () => {
+    const { mkdtemp, rm, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const logDir = await mkdtemp(join(tmpdir(), "pi-subagent-fg-log-"));
+    const previousLogDir = process.env.PI_SUBAGENT_LOG_DIR;
+    process.env.PI_SUBAGENT_LOG_DIR = logDir;
+    try {
+      const { pi, tools } = fakePi();
+      let evidencePath: string | undefined;
+      subagentExtension({
+        discover: () => [{ name: "explore", description: "read", systemPrompt: "E", filePath: "e.md" }],
+        executor: async (input) => {
+          evidencePath = input.evidencePath;
+          await writeFile(input.evidencePath!, `${JSON.stringify({ type: "agent_start" })}\n`);
+          return { status: "completed" as const, text: "ok", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } };
+        },
+      })(pi);
+      const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-fg" } };
+      await tools[0]!.execute!("fg-log", { agent: "explore", task: "Inspect" }, undefined, undefined, ctx);
+      // The blocking call is the lane that most needs a stream to read afterwards,
+      // and it used to be the only one with no file at all.
+      expect(evidencePath).toBeDefined();
+      expect(evidencePath!).toContain("session-fg");
+      expect(evidencePath!.endsWith(".jsonl")).toBe(true);
+      expect(await readFile(evidencePath!, "utf-8")).toContain("agent_start");
+    } finally {
+      if (previousLogDir === undefined) delete process.env.PI_SUBAGENT_LOG_DIR;
+      else process.env.PI_SUBAGENT_LOG_DIR = previousLogDir;
+      await rm(logDir, { recursive: true, force: true });
+    }
+  });
+
+  test("cancel explains a foreground call instead of reporting a settled lane", async () => {
+    const { pi, tools } = fakePi();
+    let finish: ((value: any) => void) | undefined;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
+    const call = tools[0]!.execute!("fg-1", { agent: "explore", task: "Inspect" }, undefined, undefined, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A foreground lane is listed (it is the point of registering one), so the
+    // model can name it — and must be told why it cannot be cancelled.
+    const listed = await tools[1]!.execute!("list-fg", { action: "list" }, undefined, undefined, ctx);
+    const id = listed.details[0]!.id as string;
+    const cancelled = await tools[1]!.execute!("cancel-fg", { action: "cancel", id }, undefined, undefined, ctx);
+    expect(cancelled.content[0].text).toContain("foreground call");
+    // Refusing is not cancelling: the call is still the session's own turn.
+    expect(listed.details[0]!.status).toBe("running");
+    finish!({ status: "completed", text: "ok", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
+    await call;
   });
 
   test("launch records the alias, defaulting to a task slug", async () => {

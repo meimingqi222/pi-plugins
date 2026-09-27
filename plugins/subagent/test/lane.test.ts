@@ -54,7 +54,8 @@ describe("the lane registry", () => {
 		const registry = new LaneRegistry(() => {});
 		const fg = pendingWork();
 		const launched = registry.launch("explore", "fg", SESSION, fg.work, { kind: "foreground" });
-		expect(registry.stop(SESSION, launched.record.id)).toBe(false);
+		// A distinct answer, not `false`: the caller has to be able to say why.
+		expect(registry.stop(SESSION, launched.record.id)).toBe("foreground");
 		registry.abort(launched.record.id);
 		await launched.done;
 		expect(registry.get(SESSION, launched.record.id)!.status).toBe("aborted");
@@ -64,9 +65,18 @@ describe("the lane registry", () => {
 		const registry = new LaneRegistry(() => {});
 		const bg = pendingWork();
 		const launched = registry.launch("explore", "bg", SESSION, bg.work);
-		expect(registry.stop(SESSION, launched.record.id)).toBe(true);
+		expect(registry.stop(SESSION, launched.record.id)).toBe("stopped");
 		await launched.done;
 		expect(registry.get(SESSION, launched.record.id)!.status).toBe("aborted");
+	});
+
+	test("stop reports a settled lane rather than pretending it cancelled one", async () => {
+		const registry = new LaneRegistry(() => {});
+		const bg = pendingWork();
+		const launched = registry.launch("explore", "bg", SESSION, bg.work);
+		bg.finish();
+		await launched.done;
+		expect(registry.stop(SESSION, launched.record.id)).toBe("settled");
 	});
 
 	test("the fifth launch slot, alias fallback and generation are carried", () => {

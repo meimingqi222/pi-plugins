@@ -16,6 +16,7 @@ so each remains independently installable.
 | `buildAgentArgs` | argv assembly, so flags and the `--` separator are asserted without spawning |
 | `applyEvent` / `emptyStreamState` | the JSON-event folder, testable against recorded events |
 | `agentChildEnv` / `SCHEDULER_DISABLE_FLAGS` | the one-level fan-out environment for a spawned agent |
+| `DEFAULT_STALL_MS` / `resolveStallMs` / `describeAgentEvent` | the silence bound: its default, its precedence (`stallMs`, then `PI_AGENT_STALL_MS`, then the default), and the last-event label a stall report names. The sampling rule and both failure messages sit beside them in `src/executor.ts`, which `src/rpc-child.ts` imports rather than copies |
 
 ## Why it is shared
 
@@ -59,6 +60,24 @@ success.
 neither resumes the user's goal, nor starts a workflow, nor delegates again.
 Adding a fourth scheduler means editing `SCHEDULER_DISABLE_FLAGS`, not every
 spawner.
+
+**A silent child is bounded twice.** The wall clock (`timeoutMs`, default 15
+minutes) bounds the run; a silence bound (`stallMs`, `PI_AGENT_STALL_MS`, default
+5 minutes) fails it earlier and names the last event, because the deadline alone
+diagnoses nothing. A tool call that declared its own `timeout` — pi's shell tools
+take seconds, and `pi-workflow`'s child guard injects one — outranks the silence
+bound for as long as it runs, so the command's own budget is the one that
+reports. That budget is tracked per tool call, because pi runs a batch in
+parallel and a short `read` finishing must not strip the exemption from the long
+silent `bash` still in flight; a turn boundary drops whatever is left, so a call
+that never reported an end cannot exempt the rest of a lane's life. Both
+transports get the same sampling rule, the same messages and the same
+composition, from `stallCheckIntervalMs`, `stallThresholdMs`,
+`timeoutFailureMessage`, `stallFailureMessage` and `trackDeclaredTimeouts`.
+
+**The first reason to end a run owns its label.** The deadline can expire inside
+termination's grace period, so the wall clock must not overwrite what a stall or
+a caller's abort already decided.
 
 Nothing here is a security boundary: a child is a full pi process with the
 parent's permissions. The environment switches keep a delegation from silently

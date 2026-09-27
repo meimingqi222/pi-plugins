@@ -24,7 +24,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { deriveChildState } from "./background.ts";
-import type { Lane } from "./lane.ts";
+import type { Lane, StopOutcome } from "./lane.ts";
 import { formatChildDetail, formatPanelRow, type FleetTheme } from "./fleet.ts";
 import { foldSubagentLog, renderTranscript } from "./transcript.ts";
 
@@ -41,8 +41,10 @@ export interface PanelDeps {
 	theme: FleetTheme;
 	/** Records for the current session, active first. Read fresh on every render. */
 	list(): Lane[];
-	/** Abort a running child. Returns false when the id is missing or already settled. */
-	stop(id: string): boolean;
+	/** Abort a running child. Reports why it refused when it refuses. */
+	stop(id: string): StopOutcome;
+	/** Tell the user something the panel cannot show, such as why `k` did nothing. */
+	notify?(message: string, type?: "info" | "warning"): void;
 	/** Bounded raw-log tail for one child; undefined when the child wrote no log. */
 	readLog(id: string): string | undefined;
 	/** Bounded raw event lines for the transcript fold; same reader, a wider tail. */
@@ -116,6 +118,16 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 		}
 		scroll = 0;
 		logCache = undefined;
+	}
+
+	/**
+	 * `k` on a foreground row must not look like a broken key. A foreground call is
+	 * this session's own turn, so the refusal is reported and names the key that
+	 * does end it; a background lane is cancelled as before.
+	 */
+	function refuseOrCancel(record: Lane): void {
+		if (deps.stop(record.id) !== "foreground") return;
+		deps.notify?.(`${record.id} is this session's own foreground call — press Esc to interrupt it.`, "warning");
 	}
 
 	function detailBody(width: number): string[] {
@@ -219,7 +231,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 				}
 					if (data === "k" || data === "K" || data === "x" || data === "X") {
 					const record = list[index]!;
-					if (record.status === "running") deps.stop(record.id);
+					if (record.status === "running") refuseOrCancel(record);
 					repainted();
 					return;
 				}
@@ -268,7 +280,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 			} else if ((data === "k" || data === "K") && view.kind === "detail") {
 				const detail = view;
 				const record = records().find((item) => item.id === detail.id);
-				if (record?.status === "running") deps.stop(record.id);
+				if (record?.status === "running") refuseOrCancel(record);
 			} else {
 				return;
 			}

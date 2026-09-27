@@ -27,9 +27,16 @@ import {
 	agentChildEnv,
 	applyEvent,
 	DEFAULT_AGENT_TIMEOUT_MS,
+	describeAgentEvent,
 	emptyStreamState,
 	readAgentActivity,
 	readAgentProgress,
+	resolveStallMs,
+	stallCheckIntervalMs,
+	stallFailureMessage,
+	stallThresholdMs,
+	timeoutFailureMessage,
+	trackDeclaredTimeouts,
 	type AgentActivity,
 	type AgentProgress,
 	type AgentRunResult,
@@ -40,6 +47,21 @@ const TERMINATION_GRACE_MS = 1_000;
 const MAX_STDERR_CHARS = 8_000;
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 512 * 1024;
+/**
+ * Extension UI methods that *wait* for a client answer.
+ *
+ * These four are the dialogs in the installed build
+ * (`@earendil-works/pi-coding-agent/dist/modes/rpc/rpc-mode.js`): each emits an
+ * `extension_ui_request` and blocks until a matching `extension_ui_response`
+ * arrives, or until its own `timeout` field expires.
+ *
+ * Everything else is either fire-and-forget (`notify`, `setStatus`, `setTitle`,
+ * `setWidget`, `set_editor_text`) or degraded to an immediate value (`custom`
+ * returns `undefined` without emitting anything), so none of it may be answered
+ * — a response to a request with no pending entry is dropped by pi, but sending
+ * one would still be a lie about the protocol.
+ */
+const EXTENSION_DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 
 /** RPC-mode args: a live stdin protocol, `-p` implied by mode, still no session store. */
 export function rpcRunArgs(): string[] {
@@ -71,6 +93,14 @@ export interface RpcChildInput {
 	extensionPaths?: string[];
 	signal?: AbortSignal;
 	timeoutMs?: number;
+	/**
+	 * How long a *turn* may emit nothing before the run is failed. Unset reads
+	 * `PI_AGENT_STALL_MS`, then the shared default; `0` disables it.
+	 *
+	 * The bound is suspended between turns: an idle lane is waiting for its
+	 * owner's reply, which is not the same failure as a wedged turn.
+	 */
+	stallMs?: number;
 	evidencePath?: string;
 	evidenceMaxBytes?: number;
 	onActivity?: (activity: AgentActivity) => void;
@@ -96,6 +126,8 @@ export interface SpawnRpcChildOptions {
 	invocation?: PiInvocation;
 	extraArgs?: string[];
 	systemPromptRoot?: string;
+	/** Silence cap for one child when the input does not set one. */
+	stallMs?: number;
 	/** Test seam: replace `spawn` without touching the real process table. */
 	spawnFn?: typeof spawn;
 }
@@ -140,7 +172,16 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		let buffer = "";
 		let stderr = "";
 		let settled = false;
-		let killedBy: "timeout" | "abort" | undefined;
+		let killedBy: "timeout" | "abort" | "stalled" | undefined;
+		/** How quiet the child was when the stall bound fired; only meaningful with `killedBy === "stalled"`. */
+		let stalledForMs = 0;
+		/** The liveness clock: any parsed event moves it. */
+		let lastEventAt = Date.now();
+		let lastEventLabel = "spawn";
+		/** Declared budgets of the tool calls in flight, keyed by call id; see `trackDeclaredTimeouts`. */
+		const declaredBudgets = new Map<string, number>();
+		/** False between `agent_end` and the next `agent_start`, when silence is expected. */
+		let turnActive = true;
 		let endRequested = false;
 		let terminationRequested = false;
 		let forceKilled = false;
@@ -169,14 +210,35 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			});
 		};
 
+		// The first reason to end the run owns the label. Without the guard the wall
+		// clock relabels a run the silence bound (or a caller's abort) already ended,
+		// because termination has a grace period and the deadline can expire inside
+		// it — which reported a stalled child as "timed out".
 		const timer = setTimeout(() => {
+			if (settled || killedBy) return;
 			killedBy = "timeout";
 			requestTerminate();
 		}, timeoutMs);
 		timer.unref?.();
 
+		// Silence inside a turn means the child is wedged, and the wall clock would
+		// only discover that at the deadline, having spent the whole budget. An idle
+		// lane is exempt: it has nothing to say until its owner replies.
+		const stallMs = resolveStallMs(input.stallMs ?? options.stallMs);
+		const stallTimer = stallMs > 0
+			? setInterval(() => {
+				if (settled || killedBy || !turnActive) return;
+				const quiet = Date.now() - lastEventAt;
+				if (quiet < stallThresholdMs(stallMs, declaredBudgets)) return;
+				stalledForMs = quiet;
+				killedBy = "stalled";
+				requestTerminate();
+			}, stallCheckIntervalMs(stallMs))
+			: undefined;
+		stallTimer?.unref?.();
+
 		const onAbort = (): void => {
-			killedBy = "abort";
+			if (!killedBy) killedBy = "abort";
 			requestTerminate();
 		};
 		if (input.signal) {
@@ -213,6 +275,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
+			if (stallTimer) clearInterval(stallTimer);
 			if (terminationTimer) clearTimeout(terminationTimer);
 			if (drainTimer) clearTimeout(drainTimer);
 			input.signal?.removeEventListener("abort", onAbort);
@@ -234,7 +297,14 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				outcome = {
 					status: "failed",
 					text: state.finalText,
-					errorMessage: `The agent timed out after ${timeoutMs}ms${evidencePath ? `; its event stream is at ${evidencePath}` : ""}`,
+					errorMessage: timeoutFailureMessage({ timeoutMs, ...(evidencePath ? { evidencePath } : {}) }),
+					usage: state.usage,
+				};
+			} else if (killedBy === "stalled") {
+				outcome = {
+					status: "failed",
+					text: state.finalText,
+					errorMessage: stallFailureMessage({ stalledForMs, lastEvent: lastEventLabel, ...(evidencePath ? { evidencePath } : {}) }),
 					usage: state.usage,
 				};
 			} else if (state.errorMessage) {
@@ -252,6 +322,41 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			void evidenceQueue.then(() => resolveDone(outcome), () => resolveDone(outcome));
 		}
 
+		/**
+		 * The single stdin write path, so the dialog responder and the control
+		 * commands cannot disagree about framing or backpressure.
+		 */
+		const write = (command: Record<string, unknown>): boolean => {
+			if (!stdinOpen || settled) return false;
+			try {
+				const ok = child.stdin.write(`${JSON.stringify({ id: randomUUID(), ...command })}\n`);
+				if (!ok) child.stdin.once("drain", () => undefined);
+				return true;
+			} catch {
+				stdinOpen = false;
+				return false;
+			}
+		};
+
+		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string }): boolean => write(command);
+
+		/**
+		 * Answer an extension dialog instead of letting the child wait forever.
+		 *
+		 * The JSON child is handed `noOpUIContext`, which resolves every dialog
+		 * immediately (`confirm` → false, `select`/`input` → undefined). An RPC child
+		 * is handed a real UI context whose dialogs emit `extension_ui_request` and
+		 * then wait for `extension_ui_response` — with no timeout unless the caller
+		 * passed one. Nothing else here answers them, so a single dialog would pin the
+		 * child until the wall clock. Cancelling reproduces the no-op context exactly.
+		 */
+		const answerExtensionUi = (event: Record<string, unknown>): void => {
+			const id = typeof event.id === "string" ? event.id : undefined;
+			const method = typeof event.method === "string" ? event.method : undefined;
+			if (!id || !method || !EXTENSION_DIALOG_METHODS.has(method)) return;
+			write({ type: "extension_ui_response", id, cancelled: true });
+		};
+
 		child.stdout?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => {
 			buffer += chunk;
@@ -265,12 +370,16 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				if (!text) continue;
 				try {
 					const event = JSON.parse(text) as Record<string, unknown>;
+					lastEventAt = Date.now();
+					lastEventLabel = describeAgentEvent(event);
+					trackDeclaredTimeouts(declaredBudgets, event);
+					if (event.type === "extension_ui_request") answerExtensionUi(event);
 					// `agent_end` is a turn boundary under RPC, not the run's end —
 					// same for `agent_start`. applyEvent treats it as the run's end
 					// in JSON mode, so feed it the accumulated-text branch only and
 					// drive idle reporting off the raw type.
-					if (event.type === "agent_start") input.onIdleChange?.(false);
-					else if (event.type === "agent_end") input.onIdleChange?.(true);
+					if (event.type === "agent_start") { turnActive = true; input.onIdleChange?.(false); }
+					else if (event.type === "agent_end") { turnActive = false; input.onIdleChange?.(true); }
 					applyEvent(state, event);
 					const activity = readAgentActivity(event);
 					if (activity) {
@@ -304,18 +413,6 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			exitCode = code;
 			finish();
 		});
-
-		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string }): boolean => {
-			if (!stdinOpen || settled) return false;
-			try {
-				const ok = child.stdin.write(`${JSON.stringify({ id: randomUUID(), ...command })}\n`);
-				if (!ok) child.stdin.once("drain", () => undefined);
-				return true;
-			} catch {
-				stdinOpen = false;
-				return false;
-			}
-		};
 
 		const handle: RpcChild = {
 			pid: child.pid ?? undefined,
