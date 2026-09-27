@@ -317,7 +317,7 @@ export function trackDeclaredTimeouts(budgets: Map<string, number>, event: unkno
   if (!isRecord(event)) return budgets;
   if (event.type === "agent_start" || event.type === "agent_end") budgets.clear();
   else if (typeof event.toolCallId === "string") {
-    if (event.type === "tool_execution_end") budgets.clear();
+    if (event.type === "tool_execution_end") budgets.delete(event.toolCallId);
     else {
       const declared = declaredToolTimeoutMs(event);
       if (declared !== undefined) budgets.set(event.toolCallId, declared + STALL_DECLARED_SLACK_MS);

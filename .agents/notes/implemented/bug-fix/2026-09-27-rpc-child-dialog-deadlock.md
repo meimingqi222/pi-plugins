@@ -29,7 +29,9 @@ and `ctx.ui.confirm`, and `examples/extensions/project-trust.ts` uses
 
 **The RPC child answers dialogs the way the no-op context would.** The stdout
 loop recognises `extension_ui_request` and, for the four methods that *wait*
-(`select`, `confirm`, `input`, `editor` — the documented dialog set), writes back
+(`select`, `confirm`, `input`, `editor` — the dialog set pi's RPC extension-UI spec
+defines, `docs/rpc-extension-ui.md` in the installed
+`@earendil-works/pi-coding-agent`), writes back
 `{ type: "extension_ui_response", id, cancelled: true }`. pi parses `cancelled`
 as the default for every one of those methods, so the child sees exactly what a
 JSON child sees: no UI, dialogs declined, the run continues.
@@ -39,7 +41,10 @@ JSON child sees: no UI, dialogs declined, the run continues.
   would misstate the protocol.
 - `custom` is *not* a dialog method in RPC mode — it returns `undefined` without
   emitting anything — so it is not in the set. Adding it would be dead code that
-  reads like a supported path.
+  reads like a supported path. (Confirmed against the installed package's
+  `dist/modes/rpc/rpc-mode.js`, where `custom` is `async custom() { return
+  undefined; }` while `select`/`confirm`/`input`/`editor` each go through
+  `createDialogPromise`.)
 - The responder shares the one stdin write path with the control commands
   (`write`), so framing, id generation and backpressure cannot diverge between
   them. `send` is now a thin, type-restricted wrapper over it.

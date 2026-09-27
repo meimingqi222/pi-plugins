@@ -50,9 +50,13 @@ when it goes quiet for `stallMs`:
 `trackDeclaredTimeouts` reads `args.timeout` (pi's shell tools take seconds) on
 `tool_execution_start`, lifts the bound to that budget plus a 30s slack, and keys
 it by `toolCallId` so only that call's `tool_execution_end` drops it. The keying
-is not decoration: pi runs a tool batch in parallel by default (no builtin
-declares `executionMode: "sequential"`), so one shared slot let a short `read`
-finishing first strip the exemption from the long silent `bash` still in flight.
+is not decoration: pi runs a tool batch in parallel by default
+(`@earendil-works/pi-agent-core/dist/agent-loop.js`, `executeToolCalls` takes the
+parallel path unless `config.toolExecution === "sequential"` or a member of the
+batch declares `executionMode: "sequential"`, and no builtin sets it —
+`tool-definition-wrapper.js` only passes the field through), so one shared slot
+let a short `read` finishing first strip the exemption from the long silent
+`bash` still in flight.
 A turn boundary clears whatever is left, because a call that never reported an
 end would otherwise exempt the rest of a lane's life. `stallThresholdMs` is the
 one question both transports ask of the result. This is what stops the new bound
@@ -149,8 +153,12 @@ copies.
   "a declared timeout is tracked per call, and only its own end drops it" (the
   keying, the turn-boundary clear, and `stallThresholdMs`),
   "a tool that declared its own timeout outranks the silence bound while it runs"
-  (the wall clock, not the silence bound, must be what ends it), and "a tool that
-  declared nothing is still caught by the silence bound".
+  (the wall clock, not the silence bound, must be what ends it),
+  "a parallel sibling finishing does not strip a long call's declared budget", and
+  "a tool that declared nothing is still caught by the silence bound".
+- `plugins/agent-runner/test/rpc-child.test.ts` — "a parallel sibling finishing
+  does not strip a long call's declared budget" (the RPC twin; the composition is
+  wired on both transports, and a rule wired on one is the same mistake).
 
 Proved: each rule was reverted on its own, and each on its own is red.
 
@@ -163,9 +171,17 @@ Proved: each rule was reverted on its own, and each on its own is red.
   `executor.ts`, "a tool that declared its own timeout" fails in 198ms: the
   silence bound kills the call the command's own budget was meant to own. The
   same edit in `rpc-child.ts` fails the RPC twin in 1305ms.
-- **Red run still to be recorded** for the keying: with `toolCallId` dropped so
-  any `tool_execution_end` clears the map, "a declared timeout is tracked per
-  call" fails at the assertion that a `t2` end leaves `t1`'s budget standing.
+- With the keying dropped — `budgets.delete(event.toolCallId)` back to
+  `budgets.clear()`, replicating the single slot this change replaces — the
+  keying unit test fails in 1.66ms, "a parallel sibling finishing does not strip a
+  long call's declared budget" fails in 194ms on the executor transport and
+  1303ms on the RPC transport, and the RPC sibling test reports "produced no
+  output" where the wall clock should have owned the failure. Note that the
+  *single-call* declared-timeout tests still pass under that revert on both
+  transports: only the parallel sibling test discriminates, which is why the
+  batch case needed an end-to-end twin and not just the unit test.
 - With the `settled || killedBy` guard removed from the wall-clock callback in
   `rpc-child.ts`, "the first bound to fire owns the label" reports `timed out`
-  for a run the silence bound had already ended.
+  for a run the silence bound had already ended. This one is worth reading twice:
+  before the guard existed it made the keying red run *pass*, because the wrong
+  label happened to be the one under assertion.
