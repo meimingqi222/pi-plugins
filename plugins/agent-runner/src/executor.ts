@@ -226,10 +226,23 @@ const STALL_DECLARED_SLACK_MS = 30_000;
 const MAX_STDERR_CHARS = 8_000;
 /** Bounded so a runaway child cannot grow the parent's heap through its own output. */
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
-/** A descendant must not keep the result pending through an inherited pipe. */
-const STDIO_GRACE_MS = 200;
-/** Give Pi time to abort detached tools before enforcing a hard stop. */
-const TERMINATION_GRACE_MS = 1000;
+/**
+ * A descendant must not keep the result pending through an inherited pipe.
+ *
+ * Exported so both transports share one value and one meaning; a test seam can
+ * shorten it per spawn (`SpawnRpcChildOptions.stdioGraceMs`), because a child
+ * that never exits spends the whole window waiting rather than observing it.
+ */
+export const STDIO_GRACE_MS = 200;
+/**
+ * Give Pi time to abort detached tools before enforcing a hard stop.
+ *
+ * This is the window a test pays in full whenever it drives a kill path against
+ * a child that does not exit on SIGTERM, which is most of the RPC transport's
+ * tests. `SpawnRpcChildOptions.terminationGraceMs` shortens it there; the
+ * production value is verified against real children in `process-tree.test.ts`.
+ */
+export const TERMINATION_GRACE_MS = 1000;
 
 export function emptyAgentUsage(): AgentUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };

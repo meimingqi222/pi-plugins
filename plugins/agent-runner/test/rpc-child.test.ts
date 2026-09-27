@@ -5,7 +5,10 @@ import type { ChildProcess } from "node:child_process";
 import { rpcRunArgs, spawnRpcChild } from "../src/rpc-child.ts";
 
 class FakeChild extends EventEmitter {
-	pid = 4242;
+	// No pid: teardown calls `process.kill(-pid)`, and a fixed fake id can
+	// name a real process group on someone's machine. `process-tree.test.ts`
+	// exercises the real kill against real children.
+	pid = undefined;
 	stdin = new PassThrough();
 	stdout = new PassThrough();
 	stderr = new PassThrough();
@@ -34,6 +37,15 @@ function fakeSpawn(child: FakeChild): SpawnFn {
 
 const doneUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
 
+/**
+ * The grace windows exist so a real Pi child can clean up detached shells before
+ * SIGKILL. A `FakeChild` never exits on SIGTERM, so every kill path here would
+ * wait the production second out in full — ~13s across this file, for time no
+ * assertion observes. The production values are measured against real children
+ * in `process-tree.test.ts`; these tests only need the escalation to happen.
+ */
+const FAST = { terminationGraceMs: 20, stdioGraceMs: 20 };
+
 describe("rpcRunArgs", () => {
 	test("selects the RPC protocol without a session store", () => {
 		expect(rpcRunArgs()).toEqual(["--mode", "rpc", "--no-session"]);
@@ -47,7 +59,7 @@ describe("spawnRpcChild", () => {
 		const spawnFn = ((command: string, args: readonly string[]) => { spawnArgs.push([command, ...args]); return child; }) as unknown as SpawnFn;
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hello", cwd: "/tmp" },
-			{ spawnFn, invocation: { command: "pi", args: [] } },
+			{ spawnFn, invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		expect(spawnArgs[0]).toContain("--mode");
 		expect(spawnArgs[0]).toContain("rpc");
@@ -63,7 +75,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp" },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "message_start", message: { role: "assistant" } });
@@ -86,7 +98,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp" },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		handle.terminate();
 		const result = await handle.done;
@@ -99,7 +111,7 @@ describe("spawnRpcChild", () => {
 		const idle: boolean[] = [];
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", onIdleChange: (value) => idle.push(value) },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		expect(idle).toEqual([false]);
@@ -118,7 +130,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp" },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		handle.terminate();
 		await handle.done;
@@ -129,7 +141,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", stallMs: 100 },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "tool_execution_start", toolCallId: "t1", toolName: "find", args: { path: "/home/someone" } });
@@ -147,7 +159,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", stallMs: 80, timeoutMs: 200 },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { timeout: 30 } });
@@ -166,7 +178,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", stallMs: 80, timeoutMs: 200 },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "tool_execution_start", toolCallId: "t1", toolName: "find", args: {} });
@@ -183,7 +195,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", stallMs: 80, timeoutMs: 400 },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { timeout: 30 } });
@@ -198,7 +210,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp", stallMs: 60 },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "agent_end", messages: [] });
@@ -217,7 +229,7 @@ describe("spawnRpcChild", () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp" },
-			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] } },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
 		);
 		child.writeLine({ type: "extension_ui_request", id: "ui-1", method: "confirm", title: "Trust?" });
 		child.writeLine({ type: "extension_ui_request", id: "ui-2", method: "select", title: "Pick" });

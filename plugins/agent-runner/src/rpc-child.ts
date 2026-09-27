@@ -35,6 +35,8 @@ import {
 	stallCheckIntervalMs,
 	stallFailureMessage,
 	stallThresholdMs,
+	STDIO_GRACE_MS,
+	TERMINATION_GRACE_MS,
 	timeoutFailureMessage,
 	trackDeclaredTimeouts,
 	type AgentActivity,
@@ -42,8 +44,6 @@ import {
 	type AgentRunResult,
 } from "./executor.ts";
 
-const STDIO_GRACE_MS = 200;
-const TERMINATION_GRACE_MS = 1_000;
 const MAX_STDERR_CHARS = 8_000;
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 512 * 1024;
@@ -128,6 +128,20 @@ export interface SpawnRpcChildOptions {
 	systemPromptRoot?: string;
 	/** Silence cap for one child when the input does not set one. */
 	stallMs?: number;
+	/**
+	 * Test seam: the SIGTERM-to-SIGKILL escalation window, in milliseconds.
+	 *
+	 * Defaults to `TERMINATION_GRACE_MS`. A test that drives a kill path against a
+	 * child which does not exit on SIGTERM waits this window out in full, so the
+	 * unit tests shorten it while `process-tree.test.ts` measures the production
+	 * value against real children.
+	 */
+	terminationGraceMs?: number;
+	/**
+	 * Test seam: the post-exit pipe drain cap, in milliseconds. Defaults to
+	 * `STDIO_GRACE_MS`, for the same reason as `terminationGraceMs`.
+	 */
+	stdioGraceMs?: number;
 	/** Test seam: replace `spawn` without touching the real process table. */
 	spawnFn?: typeof spawn;
 }
@@ -169,6 +183,8 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		}) as ChildProcessByStdio<import("node:stream").Writable, import("node:stream").Readable, import("node:stream").Readable>;
 
 		const state = emptyStreamState();
+		const terminationGraceMs = Math.max(0, options.terminationGraceMs ?? TERMINATION_GRACE_MS);
+		const stdioGraceMs = Math.max(0, options.stdioGraceMs ?? STDIO_GRACE_MS);
 		let buffer = "";
 		let stderr = "";
 		let settled = false;
@@ -258,7 +274,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			terminationTimer = setTimeout(() => {
 				kill();
 				boundDrain();
-			}, TERMINATION_GRACE_MS);
+			}, terminationGraceMs);
 		}
 
 		function kill(): void {
@@ -268,7 +284,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		}
 
 		function boundDrain(): void {
-			if (!drainTimer && !settled) drainTimer = setTimeout(finish, STDIO_GRACE_MS);
+			if (!drainTimer && !settled) drainTimer = setTimeout(finish, stdioGraceMs);
 		}
 
 		function finish(): void {
