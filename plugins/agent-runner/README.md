@@ -67,7 +67,9 @@ Adding a fourth scheduler means editing `SCHEDULER_DISABLE_FLAGS`, not every
 spawner. A separate `HEADLESS_CHILD_ENV` sets `PI_BG_BASH_THRESHOLD=0`: ambient
 extensions load in the child, but a headless `-p`/rpc run has no session for
 pi-bg-bash's auto-backgrounded job to wake, so the command would return a job
-id whose result never arrives.
+id whose result never arrives. `HEADLESS_CHILD_ENV` also sets `PI_AGENT_CHILD=1`
+so approval extensions (pi-permissions) know prompts can never be answered in
+this process and must deny instead of asking.
 
 **A silent child is bounded twice.** The wall clock (`timeoutMs`, default 15
 minutes) bounds the run — per *turn* on the RPC transport, where an idle lane

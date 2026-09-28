@@ -562,9 +562,14 @@ export const SCHEDULER_DISABLE_FLAGS = {
  * the plugin's env override has the highest precedence, and a `-p`/rpc child
  * has no live session for a backgrounded job to wake — a long command would
  * return a job id whose result never arrives and then die with the process.
+ *
+ * `PI_AGENT_CHILD: "1"` marks the process as a delegated child: approval
+ * plugins (pi-permissions) must not open dialogs in it — there is nobody to
+ * answer — so anything needing approval is denied outright instead.
  */
 export const HEADLESS_CHILD_ENV = {
   PI_BG_BASH_THRESHOLD: "0",
+  PI_AGENT_CHILD: "1",
 } as const;
 
 /** Merge the scheduler-disable contract and headless-child settings into an environment. */
