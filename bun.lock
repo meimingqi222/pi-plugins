@@ -102,6 +102,21 @@
         "@earendil-works/pi-coding-agent": ">=0.85.1",
       },
     },
+    "plugins/permissions": {
+      "name": "pi-permissions",
+      "version": "0.1.0",
+      "dependencies": {
+        "unbash": "4.0.11",
+      },
+      "devDependencies": {
+        "@types/node": "^22.0.0",
+        "bun-types": "^1.4.2",
+        "typescript": "^5.6.0",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": ">=0.85.1",
+      },
+    },
     "plugins/redact": {
       "name": "pi-redact",
       "version": "0.1.0",
@@ -805,6 +820,8 @@
 
     "pi-morph-search": ["pi-morph-search@workspace:plugins/morph-search"],
 
+    "pi-permissions": ["pi-permissions@workspace:plugins/permissions"],
+
     "pi-redact": ["pi-redact@workspace:plugins/redact"],
 
     "pi-run-core": ["pi-run-core@workspace:plugins/run-core"],
@@ -888,6 +905,8 @@
     "typed-array-buffer": ["typed-array-buffer@1.0.3", "", { "dependencies": { "call-bound": "^1.0.3", "es-errors": "^1.3.0", "is-typed-array": "^1.1.14" } }, "sha512-nAYYwfY3qnzX30IkA6AQZjVbtK6duGontcQm1WSG1MD94YLqK0515GNApXkoxKOWMusVssAHWLh9SeaoefYFGw=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "unbash": ["unbash@4.0.11", "", {}, "sha512-FoSOKV7NEofQSkAefMVHam4ZPKYMxjAydxiV72UFEDNV/YofxjGfiZ2A9pZjdL/lRJzTjcu4PABo1JYJX8N5iQ=="],
 
     "undici": ["undici@8.9.0", "", {}, "sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA=="],
 

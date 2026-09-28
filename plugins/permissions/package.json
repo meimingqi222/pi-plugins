@@ -1,0 +1,16 @@
+{
+	"name": "pi-permissions",
+	"version": "0.1.0",
+	"description": "A permission layer for pi: tool-call classification, confirmation prompts, and protected paths.",
+	"type": "module",
+	"main": "./src/index.ts",
+	"exports": { ".": "./src/index.ts" },
+	"files": ["src", "README.md", "ATTRIBUTION.md"],
+	"pi": { "extensions": ["./src/index.ts"] },
+	"scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+	"keywords": ["pi", "pi-package", "permissions", "approval", "security"],
+	"license": "MIT",
+	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.85.1" },
+	"dependencies": { "unbash": "4.0.11" },
+	"devDependencies": { "@types/node": "^22.0.0", "bun-types": "^1.4.2", "typescript": "^5.6.0" }
+}
