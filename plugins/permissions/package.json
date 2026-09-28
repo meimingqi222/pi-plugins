@@ -11,6 +11,6 @@
 	"keywords": ["pi", "pi-package", "permissions", "approval", "security"],
 	"license": "MIT",
 	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.85.1" },
-	"dependencies": { "unbash": "4.0.11" },
+	"dependencies": { "pi-run-core": "workspace:*", "unbash": "4.0.11" },
 	"devDependencies": { "@types/node": "^22.0.0", "bun-types": "^1.4.2", "typescript": "^5.6.0" }
 }

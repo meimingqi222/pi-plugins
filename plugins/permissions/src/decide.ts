@@ -80,5 +80,5 @@ export function decide(classification: Classification, mode: Mode, rules: UserRu
     const matched = rules.find((rule) => rule.kind === "allow" && intents.some((intent) => ruleMatches(rule, intent, env)));
     return { action: "allow", tier, reason, ruleId, matchedRule: matched?.raw, allowAlwaysOffered: true };
   }
-  return { action: "ask", tier, reason, ruleId, allowAlwaysOffered: true };
+  return { action: "ask", tier, reason, ruleId, allowAlwaysOffered: true, askedByRule: asking.some((index) => askMatched.has(index)) };
 }
