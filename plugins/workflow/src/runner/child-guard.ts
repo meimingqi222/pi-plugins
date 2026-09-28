@@ -11,9 +11,15 @@
  * It injects a default `timeout` by mutating the `tool_call` input, so it needs no
  * reimplementation of the shell tool. Two deliberate limits:
  *
- * - It only touches the **builtin** shell tool. If another extension owns `bash`
- *   (for example `pi-bg-bash`, which backgrounds long commands and wakes the
- *   agent later), injecting a hard timeout would defeat it, so it steps aside.
+ * - It touches the builtin shell tool, or an extension's shell tool whose
+ *   parameters schema declares a `timeout` property with the same seconds
+ *   semantics (`pi-bg-bash` does). The old "step aside for bg-bash" rule
+ *   assumed a backgrounded command wakes the agent later — true in the user's
+ *   interactive session, false in a headless child: spawned children run with
+ *   `PI_BG_BASH_THRESHOLD=0` (auto-background off) and no session to wake, so
+ *   an unbounded command is pure risk. An extension shell that declares no
+ *   `timeout` is still left alone — guessing someone else's parameter shape is
+ *   the worse failure.
  * - It only fills a timeout that is **absent**. A command that set its own keeps
  *   it, and a script that wants no bound can set
  *   `PI_WORKFLOW_CHILD_BASH_TIMEOUT_MS=0`.
@@ -57,11 +63,31 @@ export function injectShellTimeout(input: { timeout?: unknown }, seconds: number
 	return true;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/**
+ * Whether the registered shell tool accepts an injected `timeout`: pi's own
+ * builtin tool, or an extension tool whose schema declares the property —
+ * the contract that lets `pi-bg-bash`'s shell take the same bound.
+ */
+export function shellToolAcceptsTimeout(pi: Pick<ExtensionAPI, "getAllTools">, name: string): boolean {
+	if (ownsBuiltinShellTool(pi, name)) return true;
+	try {
+		const tool = pi.getAllTools().find((candidate) => candidate.name === name);
+		const parameters = (tool as { parameters?: unknown } | undefined)?.parameters;
+		return isRecord(parameters) && isRecord(parameters.properties) && "timeout" in parameters.properties;
+	} catch {
+		return false;
+	}
+}
+
 export default function childGuardExtension(pi: ExtensionAPI): void {
 	const seconds = childShellTimeoutSeconds();
 	pi.on("tool_call", (event) => {
 		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
-		if (!ownsBuiltinShellTool(pi, event.toolName)) return;
+		if (!shellToolAcceptsTimeout(pi, event.toolName)) return;
 		injectShellTimeout(event.input as { timeout?: unknown }, seconds);
 	});
 }

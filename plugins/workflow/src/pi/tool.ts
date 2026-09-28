@@ -45,7 +45,7 @@ export const WorkflowParams = Type.Object({
 export const WORKFLOW_DESCRIPTION = [
   "Run a workflow: one JavaScript script that coordinates many isolated agents through agent(), parallel(), pipeline(), and phase().",
   "Each agent() is a separate pi session with its own context window, so fan-out does not fill the main conversation.",
-  "Scripts run in a worker with no wall clock, no randomness, no network, and no filesystem; every agent call is journaled under .pi/workflows/runs so a run can resume instead of paying twice.",
+  "Scripts run in a worker inside a vm context whose global is stubbed for determinism — clocks, randomness, timers, process, require, fetch and dynamic import() are removed or throw — which prevents a script from accidentally reaching the network or filesystem, but is not a security boundary; every agent call is journaled under .pi/workflows/runs so a run can resume instead of paying twice.",
   "Provide exactly one of script, scriptPath, or name.",
 ].join(" ");
 
@@ -76,7 +76,7 @@ export const WORKFLOW_GUIDELINES: string[] = [
   "Keep a run under about 15 agents unless the user asked for scale.",
   "A run with no explicit budget is still capped at 64 agent calls, and at most 4 runs may be live at once; a `parallel()` or `pipeline()` wider than the remaining agent budget is refused whole, before any child starts.",
   "Concurrency is capped by the provider ceiling — default 4 live agents, raisable with PI_WORKFLOW_MAX_CONCURRENCY. maxConcurrency can only lower it; a burst beyond what the provider tolerates becomes failed agents, not queued ones.",
-  "`Date`, `Math.random()`, and `Intl.DateTimeFormat` throw inside a script, and `process`, `require`, `fetch`, and timers are unavailable. Pass timestamps through `args` and vary prompts by index.",
+  "Inside a script `Date`, `Math.random()` and `Intl.DateTimeFormat` throw, `process`, `require`, `fetch`, `crypto`, `performance` and timers are unavailable, and dynamic `import()` (including through `new Function`) is refused — the script runs in a vm context that blocks it. These guards prevent accidental nondeterminism and accidental network/filesystem reach; they are not a security boundary. Pass timestamps through `args` and vary prompts by index.",
 ];
 
 export interface WorkflowToolOptions {

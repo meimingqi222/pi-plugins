@@ -154,10 +154,13 @@ export class WorkflowJournal {
     const entries = await readJsonLines<WorkflowJournalEntry>(paths.journalPath);
     const result: WorkflowJournalEntry[] = [];
     let expected = 0;
-    for (const entry of entries) {
-      // A gap in the sequence means the contiguous prefix ended. Everything
-      // after it is not trustworthy as a replay source.
-      if (!isJournalEntry(entry) || entry.seq !== expected) break;
+    // Parallel calls finish out of order, so seq values are not monotonic in
+    // the file. Sort before applying the gap check — a missing seq still
+    // truncates, because calls written after the hole are not a trustworthy
+    // replay source either way.
+    const ordered = entries.filter(isJournalEntry).slice().sort((a, b) => a.seq - b.seq);
+    for (const entry of ordered) {
+      if (entry.seq !== expected) break;
       result.push(entry);
       expected += 1;
     }

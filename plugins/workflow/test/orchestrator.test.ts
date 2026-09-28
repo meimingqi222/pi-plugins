@@ -114,6 +114,110 @@ describe("workflow orchestration", () => {
   });
 });
 
+describe("workflow resume", () => {
+  // A run with a journal can be resumed from an earlier run's paths; the
+  // previous journal supplies the reusable entries.
+  async function run(
+    script: string,
+    root: string,
+    runId: string,
+    executor: AgentExecutor,
+    resumeFrom?: string,
+  ) {
+    const paths = createWorkflowRunPaths(root, runId);
+    const previous = resumeFrom ? createWorkflowRunPaths(root, resumeFrom) : undefined;
+    const journal = await WorkflowJournal.open(paths, script, previous);
+    try {
+      return await runWorkflow({
+        script,
+        args: null,
+        name: "t",
+        cwd: root,
+        executor,
+        journal,
+        runId,
+        timeoutMs: TIMEOUT_MS,
+      });
+    } finally {
+      await journal.flush();
+    }
+  }
+
+  test("parallel calls resume by content even when completion order changes", async () => {
+    const { root, cleanup } = await withTemp();
+    try {
+      // Each task awaits its own agent() before issuing the next call, so the
+      // second-stage request order is decided by whichever child finished
+      // first. Reversing the delays reorders run 2's requests entirely.
+      const script = `return await parallel([
+        async () => { const a = await agent('A0', {}); return agent('B_0:' + a, {}); },
+        async () => { const a = await agent('A1', {}); return agent('B_1:' + a, {}); },
+        async () => { const a = await agent('A2', {}); return agent('B_2:' + a, {}); },
+      ]);`;
+      const delayed = (delays: Record<string, number>, live?: string[]): AgentExecutor =>
+        async (input) => {
+          live?.push(input.prompt);
+          await new Promise((resolve) => setTimeout(resolve, delays[input.prompt] ?? 0));
+          return { status: "completed", value: `v(${input.prompt})`, usage: { input: 1, output: 1 } } as never;
+        };
+      const first = await run(script, root, "wf_r1", delayed({ A0: 5, A1: 25, A2: 45 }));
+      expect(first.status).toBe("completed");
+
+      const live: string[] = [];
+      const second = await run(script, root, "wf_r2", delayed({ A0: 45, A1: 25, A2: 5 }, live), "wf_r1");
+      expect(second.status).toBe("completed");
+      // Every call, both stages, resolved from the journal: nothing ran live.
+      expect(live).toEqual([]);
+      expect(second.value).toEqual(first.value);
+      expect(second.agentCalls).toBe(6);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("a third identical call runs live while the first two reuse", async () => {
+    const { root, cleanup } = await withTemp();
+    try {
+      const two = `await agent('same', {}); await agent('same', {}); return 'x';`;
+      const three = `await agent('same', {}); await agent('same', {}); await agent('same', {}); return 'x';`;
+      const first = await run(two, root, "wf_r1", recorder(() => ({ value: 1 })).executor);
+      expect(first.status).toBe("completed");
+      const live: string[] = [];
+      const executor: AgentExecutor = async (input) => {
+        live.push(input.prompt);
+        return { status: "completed", value: 1, usage: { input: 1, output: 1 } } as never;
+      };
+      const second = await run(three, root, "wf_r2", executor, "wf_r1");
+      expect(second.status).toBe("completed");
+      // nth identical call ↔ nth identical entry: two hits, one miss.
+      expect(live).toEqual(["same"]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("one changed call runs live and does not stop the rest from reusing", async () => {
+    const { root, cleanup } = await withTemp();
+    try {
+      const original = `await agent('a', {}); await agent('b', {}); await agent('c', {}); return 1;`;
+      const changed = `await agent('a', {}); await agent('B', {}); await agent('c', {}); return 1;`;
+      const first = await run(original, root, "wf_r1", recorder(() => ({ value: 1 })).executor);
+      expect(first.status).toBe("completed");
+      const live: string[] = [];
+      const executor: AgentExecutor = async (input) => {
+        live.push(input.prompt);
+        return { status: "completed", value: 1, usage: { input: 1, output: 1 } } as never;
+      };
+      const second = await run(changed, root, "wf_r2", executor, "wf_r1");
+      expect(second.status).toBe("completed");
+      // 'B' is a different call, not a divergence boundary: 'c' still hit.
+      expect(live).toEqual(["B"]);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe("workflow enforcement", () => {
   test("a run with no budget still bounds its fan-out", async () => {
     // Concurrency and the script are capped; without a default the number of
@@ -172,6 +276,53 @@ describe("workflow enforcement", () => {
       timeoutMs: TIMEOUT_MS,
     });
     expect(peak).toBe(1);
+  });
+
+  test("a writer queued on the writer lock does not hold a concurrency slot", async () => {
+    // Two writers plus a reader at maxConcurrency 2: A runs holding the writer
+    // lock, B queues on it. If B takes its semaphore slot first it starves C —
+    // the lock must be taken before the slot.
+    const started: string[] = [];
+    let releaseA!: () => void;
+    let aStartedResolve!: () => void;
+    const aStarted = new Promise<void>((resolve) => {
+      aStartedResolve = resolve;
+    });
+    const { executor } = recorder(async (input) => {
+      started.push(input.prompt);
+      if (input.prompt === "a") {
+        aStartedResolve();
+        await new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+      }
+      return { value: input.prompt };
+    });
+    const run = runWorkflow({
+      script: `return await parallel([
+        async () => agent('a', { toolProfile: 'developer' }),
+        async () => agent('b', { toolProfile: 'developer' }),
+        async () => agent('c', { toolProfile: 'researcher' }),
+      ]);`,
+      args: null,
+      name: "t",
+      cwd: process.cwd(),
+      executor,
+      maxConcurrency: 2,
+      timeoutMs: TIMEOUT_MS,
+    });
+    await aStarted;
+    const deadline = Date.now() + 2_000;
+    while (!started.includes("c") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Even when the assertion fails, release A so the run can settle.
+    releaseA();
+    expect(started).toContain("c");
+    const result = await run;
+    expect(result.status).toBe("completed");
+    // A and B never ran at once, and C did not wait for both writers.
+    expect(result.value).toEqual(["a", "b", "c"]);
   });
 
   test("two declared readers still run concurrently", async () => {
@@ -377,7 +528,7 @@ describe("workflow resume", () => {
     }
   });
 
-  test("a changed first call makes every later call run live", async () => {
+  test("a changed call runs live without disabling reuse for the rest", async () => {
     const { root, cleanup } = await withTemp();
     try {
       const original = "const a = await agent('first', {}); const b = await agent('second', {}); return [a, b];";
@@ -395,8 +546,8 @@ describe("workflow resume", () => {
       });
       await journal1.flush();
 
-      // Same call positions, different first prompt: resume must stop at the
-      // divergence and not serve the second call from cache either.
+      // A different prompt is a different call, not a divergence boundary:
+      // resume serves the unchanged 'second' call and reruns only 'CHANGED'.
       const changed = "const a = await agent('CHANGED', {}); const b = await agent('second', {}); return [a, b];";
       const second = createWorkflowRunPaths(root, "wf_b");
       const journal2 = await WorkflowJournal.open(second, changed, first);
@@ -410,9 +561,9 @@ describe("workflow resume", () => {
         journal: journal2,
         timeoutMs: TIMEOUT_MS,
       });
-      expect(two.inputs).toHaveLength(2);
-      expect(r2.cacheHits).toBe(0);
-      expect(r2.value).toEqual(["new", "new"]);
+      expect(two.inputs.map((input) => input.prompt)).toEqual(["CHANGED"]);
+      expect(r2.cacheHits).toBe(1);
+      expect(r2.value).toEqual(["new", "old"]);
     } finally {
       await cleanup();
     }

@@ -128,10 +128,15 @@ Inside the script:
 | `budget` | `{ total, spent, remaining }` for the run's token budget |
 | `args` | the tool call's `args` |
 
-Determinism guards are installed in the worker: `Date`, `Math.random()`,
-`Intl.DateTimeFormat`, `crypto` and `performance` throw, and `process`,
-`require`, `fetch`, `setTimeout`, `setInterval` and `setImmediate` are
-unavailable. Pass timestamps through `args`; vary prompts by index.
+Determinism guards run inside a `node:vm` context in the worker — the script's
+global carries only the exposed helpers. `Date`, `Math.random()`,
+`Intl.DateTimeFormat`, `crypto` and `performance` throw; `process`, `require`,
+`fetch`, `setTimeout`, `setInterval` and `setImmediate` are absent; and dynamic
+`import()` — including through `new Function` — is refused because the context
+has no dynamic-import callback. Pass timestamps through `args`; vary prompts by
+index. The guards exist so a resumed run replays the same calls and a script
+cannot *accidentally* reach the network or the filesystem; they are not a
+security boundary — killability, not containment, is what the worker provides.
 
 ### Failure semantics — the asymmetry that costs a run
 
@@ -264,9 +269,11 @@ the builtin shell tool a **10-minute default timeout**, injected by mutating the
 
 - `PI_WORKFLOW_CHILD_BASH_TIMEOUT_MS` overrides it; `0` disables the guard.
 - A command that set its own timeout keeps it.
-- The guard steps aside when another extension owns `bash` — `pi-bg-bash`
-  backgrounds long commands rather than killing them, and a hard timeout would
-defeat that.
+- The guard steps aside only for an extension's `bash`/`powershell` whose
+  schema declares no `timeout` parameter. `pi-bg-bash`'s shell declares one
+  with the same semantics, so it takes the bound — and children spawn with
+  `PI_BG_BASH_THRESHOLD=0` anyway, since a headless child has no session for
+  an auto-backgrounded job to wake.
 
 This bounds an agent at 10 minutes per command instead of the whole per-agent
 cap (15 minutes by default), so a stuck command fails one tool call and the agent
@@ -313,13 +320,17 @@ running child may cross a token limit before it settles.
   `.pi/workflows/runs/<runId>/agents/<agentId>.jsonl`. The children run with
   `--no-session`, so without this a hung agent leaves nothing to read; a timeout
   names its evidence file in the error.
-- **Prefix-only resume.** `resumeFromRunId` reuses the journaled prefix and
-  executes live from the first divergence onward. Once resume is disabled it
-  never re-enables — a lookup that kept searching past a divergence would
-  silently mix an old execution into a new one. A cached call is billed to the
-  earlier run, not this one, and is recorded in the *new* run's journal as
-  `cached`, so a run resumed from a resumed run stays resumable. A reused call
-  also releases the agent-budget slot it was admitted, since it did no work.
+- **Content-addressed resume.** `resumeFromRunId` reuses journaled calls by
+  *content*: `callHash` covers the prompt and options, so a matching hash is a
+  legitimately reusable answer regardless of request order — `parallel()` and
+  `pipeline()` issue calls in completion order, which differs between runs.
+  Identical calls are consumed in order (the nth occurrence pairs with the nth
+  journaled entry), so two identical prompts stay two calls, and a call that
+  does not match runs live without disabling reuse for the rest. A cached call
+  is billed to the earlier run, not this one, and is recorded in the *new*
+  run's journal as `cached`, so a run resumed from a resumed run stays
+  resumable. A reused call also releases the agent-budget slot it was
+  admitted, since it did no work.
 - **The budget bounds one execution, not a chain.** A resume is a new run with
   its own `budget` argument, and the parameter means what it says; so a resume of
   a run that already spent its token budget gets a fresh one, and the total across

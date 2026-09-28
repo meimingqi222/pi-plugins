@@ -1,17 +1,20 @@
 /**
  * The resume rule, with no file I/O.
  *
- * A resumed run must reuse the work already paid for, and must *stop* reusing it
- * at the first point the script diverged. That "prefix only" rule is the whole
- * subtlety of resume, so it lives here as a pure object that can be tested
- * without a filesystem.
+ * A resumed run must reuse the work already paid for. The rule is
+ * *content-addressed*: `callHash` covers all of a call's inputs — prompt and
+ * options — so a matching hash is a legitimately reusable answer regardless of
+ * the order the calls happened to be issued in. In `parallel()`/`pipeline()`
+ * the request order follows child completion timing, and on resume cached
+ * calls resolve instantly and reorder the rest; keying reuse on sequence
+ * position would miss every call past the first timing difference.
  *
- * The rule is one-way: once a call mismatches, or a recorded call is not
- * reusable, resume is disabled for the rest of the run and every later call
- * executes live. It never re-enables. A previous implementation that kept
- * looking for matches would return cached results for calls *after* the
- * divergence, which is worse than no cache at all: the run would silently mix
- * old work into a new execution.
+ * Occurrence counting keeps identity: the previous run's reusable entries are
+ * indexed by hash into FIFO lists ordered by original `seq`, and the nth call
+ * with a given hash consumes the nth entry for it — two identical prompts are
+ * still two calls. A miss does not disable later lookups: a call whose prompt
+ * depends on an earlier result simply has a different hash, and the
+ * independent calls around it still reuse.
  *
  * A malformed or truncated journal is handled by the reader, which stops at the
  * first unparseable line so only a verified contiguous prefix is ever offered
@@ -28,54 +31,57 @@ export function isReusable(entry: WorkflowJournalEntry | undefined, callHash: st
 }
 
 /**
- * Prefix-only resume over a sequence of journaled calls.
+ * Content-addressed resume over a previous run's journaled calls.
  *
- * Construct with the previous run's entries, then ask `cached(seq, hash)` before
- * each call. Sequence numbers are per-run and monotonic, so the map is keyed by
- * `seq` rather than by hash: two identical prompts at different points in a
- * script are two calls, and a hash-keyed cache would collapse them into one.
+ * Construct with the previous run's entries, then ask `cached(seq, hash)`
+ * before each call. `seq` is this run's own request index — it is journaled so
+ * the new run's log stays a contiguous sequence — but reuse is keyed on the
+ * hash alone, because parallel request order is timing-dependent.
  */
 export class ResumeLog {
-  private readonly entries = new Map<number, WorkflowJournalEntry>();
-  private enabled: boolean;
+  private readonly byHash = new Map<string, WorkflowJournalEntry[]>();
+  private loaded = 0;
 
   constructor(previous: readonly WorkflowJournalEntry[] = []) {
-    for (const entry of previous) {
-      if (isJournalEntry(entry)) this.entries.set(entry.seq, entry);
+    // FIFO per hash, ordered by original seq: the nth identical call pairs with
+    // the nth identical previous entry.
+    const ordered = previous.filter(isJournalEntry).slice().sort((a, b) => a.seq - b.seq);
+    for (const entry of ordered) {
+      this.loaded += 1;
+      if (entry.status !== "completed" && entry.status !== "cached") continue;
+      const list = this.byHash.get(entry.callHash) ?? [];
+      list.push(entry);
+      this.byHash.set(entry.callHash, list);
     }
-    this.enabled = this.entries.size > 0;
   }
 
-  /** Whether a previous run is still being replayed. */
+  /** Whether a previous run's entries were loaded. */
   get active(): boolean {
-    return this.enabled;
+    return this.loaded > 0;
   }
 
-  /** Number of entries loaded from the previous run, for reporting. */
+  /** Number of valid entries loaded from the previous run, for reporting. */
   get size(): number {
-    return this.entries.size;
+    return this.loaded;
   }
 
   /**
    * The cached result for this call, or `undefined` to run it live.
    *
-   * Returning `undefined` permanently disables resume: the first divergence
-   * means every later call is a new execution, and continuing to serve cached
-   * results past it would corrupt the run.
+   * A miss consumes nothing and disables nothing: later calls keep looking,
+   * because a different hash is a different call, not a divergence boundary.
    */
-  cached(seq: number, callHash: string): WorkflowJournalEntry | undefined {
-    if (!this.enabled) return undefined;
-    const entry = this.entries.get(seq);
-    if (!isReusable(entry, callHash)) {
-      this.enabled = false;
-      return undefined;
-    }
+  cached(_seq: number, callHash: string): WorkflowJournalEntry | undefined {
+    const list = this.byHash.get(callHash);
+    if (!list || list.length === 0) return undefined;
+    const entry = list.shift();
+    if (list.length === 0) this.byHash.delete(callHash);
     return entry;
   }
 
   /** Stop reusing cached work. Called on any divergence the caller detects itself. */
   disable(): void {
-    this.enabled = false;
+    this.byHash.clear();
   }
 }
 
