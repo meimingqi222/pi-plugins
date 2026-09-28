@@ -117,13 +117,16 @@ describe("reviewer", () => {
     const payload = JSON.parse(context.messages[0]!.content[0]!.text);
     expect(payload).toMatchObject({ cwd: "/work/app", platform: "darwin", toolName: "bash", toolInput: "npm test", userRequest: "please update deps" });
     expect(context.systemPrompt).toContain("Reply with exactly one JSON object");
+    // The rubric scopes the judgment to machine effects, not the user's goals.
+    expect(context.systemPrompt).toContain("not whether the user's goal is legal");
+    expect(context.systemPrompt).toContain("reading files — inside or outside the workspace — qualifies");
   });
 });
 
 describe("jev backend", () => {
   interface JevCall {
     url: string;
-    body: { model?: string; state: Record<string, unknown>; questions: Record<string, { type: string; criteria?: Record<string, string> }> };
+    body: { model?: string; state: Record<string, unknown>; questions: Record<string, { type: string; instructions?: string; criteria?: Record<string, string> }> };
     auth: string;
   }
 
@@ -161,6 +164,26 @@ describe("jev backend", () => {
     expect(calls[0]!.body.questions.verdict.type).toBe("choice");
     expect(Object.keys(calls[0]!.body.questions.verdict.criteria ?? {})).toEqual(["allow", "ask", "deny"]);
     expect(calls[0]!.body.state).toMatchObject({ cwd: "/work", toolName: "bash", toolInput: "npm test" });
+  });
+
+  test("the jev question scopes the judgment to machine effects", async () => {
+    const { ctx } = fakeCtx();
+    const calls: JevCall[] = [];
+    const r = createReviewer(
+      { model: "jev", timeoutMs: 5000, maxPerSession: 5 },
+      { platform: "darwin", cwd: "/work" },
+      NO_AGENT_DIR,
+      () => {},
+      { env: JEV_ENV, fetch: fakeJevFetch("ask", calls) },
+    )!;
+    await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" });
+    const question = calls[0]!.body.questions.verdict;
+    expect(question.instructions).toContain("not whether the user's goal is legal");
+    expect(question.instructions).toContain("heredocs");
+    expect(question.instructions).toContain("answer ask");
+    expect(question.criteria!.allow).toContain("inside or outside the workspace");
+    expect(question.criteria!.deny).toContain("damage this machine");
+    expect(question.criteria!.deny).not.toContain("malicious");
   });
 
   test("no reviewer section autodetects jev when a key exists", async () => {
