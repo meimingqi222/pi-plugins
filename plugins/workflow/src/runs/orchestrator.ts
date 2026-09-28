@@ -335,34 +335,44 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         return { value: cached.result, tokens: 0 };
       }
 
-      await semaphore.acquire();
-      try {
-        const invoke = () =>
-          runAgent({
-            executor: options.executor,
-            input: {
-              prompt,
-              options: agentOptions,
-              cwd: options.cwd,
-              runId,
-              agentId: record.id,
-              ...(options.agentTimeoutMs === undefined ? {} : { timeoutMs: options.agentTimeoutMs }),
-              ...(options.journal
-                ? { evidencePath: join(options.journal.paths.runDir, "agents", `${record.id}.jsonl`) }
-                : {}),
-              ...(options.signal ? { signal: options.signal } : {}),
-            },
-            // The bridge already admitted this call once, so attempt 1 admits
-            // zero agents — but still runs the token check, which is what stops
-            // a retry after the budget was spent. Later attempts are new child
-            // invocations and admit one each.
-            admit: (attempt) => budget.admit(attempt === 1 ? 0 : 1),
+      const invoke = () =>
+        runAgent({
+          executor: options.executor,
+          input: {
+            prompt,
+            options: agentOptions,
+            cwd: options.cwd,
+            runId,
+            agentId: record.id,
+            ...(options.agentTimeoutMs === undefined ? {} : { timeoutMs: options.agentTimeoutMs }),
+            ...(options.journal
+              ? { evidencePath: join(options.journal.paths.runDir, "agents", `${record.id}.jsonl`) }
+              : {}),
             ...(options.signal ? { signal: options.signal } : {}),
-          });
+          },
+          // The bridge already admitted this call once, so attempt 1 admits
+          // zero agents — but still runs the token check, which is what stops
+          // a retry after the budget was spent. Later attempts are new child
+          // invocations and admit one each.
+          admit: (attempt) => budget.admit(attempt === 1 ? 0 : 1),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+      const withSlot = async () => {
+        await semaphore.acquire();
+        try {
+          return await invoke();
+        } finally {
+          semaphore.release();
+        }
+      };
+      try {
         // A declared write-capable role holds the single-writer lock for its
         // whole call, so two `developer` agents in one panel cannot edit the
-        // same file at once.
-        const outcome = isWritingRole(agentOptions.toolProfile) ? await writerLock.run(invoke) : await invoke();
+        // same file at once. The lock is taken *before* the concurrency slot:
+        // a writer queued on the lock inside a taken slot would hold that slot
+        // while doing nothing, and enough queued writers would starve every
+        // read-only agent behind them.
+        const outcome = isWritingRole(agentOptions.toolProfile) ? await writerLock.run(withSlot) : await withSlot();
         usage = mergeWorkflowUsage(usage, outcome.usage);
         budget.record(workflowUsageTokens(outcome.usage));
         record.status = "completed";
@@ -423,8 +433,6 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
           error: message,
         });
         throw error;
-      } finally {
-        semaphore.release();
       }
     },
   };

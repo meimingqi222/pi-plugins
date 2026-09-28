@@ -290,6 +290,23 @@ describe("script host determinism guards", () => {
     `);
     expect(result.value).toEqual({ reassigned: "rejected", usable: "no" });
   });
+
+  test("dynamic import() cannot reach node modules past the guards", async () => {
+    // The vm context has no importModuleDynamically callback, so import()
+    // throws — under both Node and Bun. Without it, `await import("node:fs")`
+    // bypassed every determinism guard.
+    const { result } = await run('return await import("node:fs");');
+    expect(result.completed).toBe(false);
+    expect(result.stopReason).toBe("failed");
+    expect(result.errorMessage).toMatch(/import/i);
+  });
+
+  test("import() through a nested Function is blocked too", async () => {
+    const { result } = await run(`return await new Function("return import('node:os')")();`);
+    expect(result.completed).toBe(false);
+    expect(result.stopReason).toBe("failed");
+    expect(result.errorMessage).toMatch(/import/i);
+  });
 });
 
 describe("script host shutdown", () => {

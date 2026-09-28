@@ -82,7 +82,7 @@ describe("WorkflowJournal", () => {
     expect(await readFile(paths.scriptPath, "utf8")).toBe("// first");
   });
 
-  test("resumes a matching prefix and stops at the first divergence", async () => {
+  test("resumes by call content regardless of order, and a miss disables nothing", async () => {
     const root = await tempRoot();
     const first = createWorkflowRunPaths(root, "wf_run1");
     const journal = await WorkflowJournal.open(first, "// script");
@@ -92,15 +92,16 @@ describe("WorkflowJournal", () => {
 
     const second = createWorkflowRunPaths(root, "wf_run2");
     const resumed = await WorkflowJournal.open(second, "// script", first);
-    expect(resumed.cached(0, "a")).toBeDefined();
-    expect(resumed.cached(1, "b")).toBeDefined();
+    // Reordered requests hit the same entries — the hash is the identity.
+    expect(resumed.cached(0, "b")).toBeDefined();
+    expect(resumed.cached(1, "a")).toBeDefined();
 
     const diverged = createWorkflowRunPaths(root, "wf_run3");
     const after = await WorkflowJournal.open(diverged, "// script", first);
     expect(after.cached(0, "a")).toBeDefined();
     expect(after.cached(1, "changed")).toBeUndefined();
-    // Past the divergence nothing is reused, including a call that would match.
-    expect(after.cached(1, "b")).toBeUndefined();
+    // A different call ran live, but the other entries remain reusable.
+    expect(after.cached(2, "b")).toBeDefined();
   });
 
   test("a gap in the sequence truncates the reusable prefix", async () => {

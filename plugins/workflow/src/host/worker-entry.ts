@@ -9,9 +9,12 @@
  * `installDeterminismGuards.toString()`, so `sandbox.ts` stays the single source
  * of truth — a hand-copied second copy is exactly the drift this avoids.
  *
- * The script is compiled with `new AsyncFunction(body)` rather than `eval`, so
- * top-level `await` and `return` work; a script is the body of an async
- * function, not a module.
+ * The script runs inside a `node:vm` context created in the worker rather than
+ * as an `AsyncFunction` in the worker's own realm: the context's global holds
+ * only the exposed helpers, and — the point — its `import()` has no callback
+ * wired, so `await import("node:fs")` inside a script throws instead of
+ * reaching the filesystem past the guards. Top-level `await` and `return`
+ * still work: a script is the body of an async function, not a module.
  */
 
 import { installDeterminismGuards } from "./sandbox.ts";
@@ -35,12 +38,18 @@ export interface WorkerPayload {
 export function renderWorkerSource(): string {
   return `"use strict";
 const { parentPort, workerData } = require("node:worker_threads");
+const vm = require("node:vm");
 const payload = workerData.payload;
-// Captured before the guards run: they remove setImmediate from the global, and
-// the worker's own terminal flush needs a real scheduler to survive that.
+// The guards run inside the script's vm context, not the worker realm; this is
+// only a deferred flush so a terminal postMessage is never written in the same
+// tick the worker exits.
 const scheduleFlush = setImmediate;
 
-(${installDeterminismGuards.toString()})(globalThis);
+// Emitted, not invoked: its *source* is re-run inside the vm context below so
+// the script's global — not the worker's — loses clocks, randomness, timers,
+// process, require and fetch. The worker realm keeps its intrinsics for its
+// own bridge code.
+const installGuards = ${installDeterminismGuards.toString()};
 
 let sequence = 0;
 const pending = new Map();
@@ -145,25 +154,31 @@ const budget = Object.freeze({
 });
 
 const exposed = { agent: agent, parallel: parallel, pipeline: pipeline, phase: phase, log: log, budget: budget, args: payload.args };
-for (const key of Object.keys(exposed)) {
-  Object.defineProperty(globalThis, key, { value: exposed[key], writable: false, configurable: false, enumerable: true });
-}
-Object.defineProperty(globalThis, "meta", { value: null, writable: true, configurable: false, enumerable: true });
 
 (async function () {
   try {
     await syncBudget();
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    // The script's whole world: a fresh vm context whose global carries the
+    // exposed helpers and nothing else. With no importModuleDynamically
+    // callback, a dynamic import -- from the script body or through a nested
+    // Function -- throws in both Node and Bun, so a script can no longer reach
+    // node:fs, node:os or the network behind the guards' back.
+    const context = vm.createContext({});
+    vm.runInContext("(" + installGuards.toString() + ")(globalThis)", context);
+    vm.runInContext(
+      "(function (exposed) { for (const key of Object.keys(exposed)) Object.defineProperty(globalThis, key, { value: exposed[key], writable: false, configurable: false, enumerable: true }); Object.defineProperty(globalThis, 'meta', { value: null, writable: true, configurable: false, enumerable: true }); })",
+      context,
+    )(exposed);
     // Strict mode, so a script that assigns to a guarded global fails loudly
     // instead of silently keeping the guard: the assignment is what the author
-    // wrote, and a silent no-op hides that it did nothing. The directive is a
-    // single-quoted literal here so it survives this template unchanged.
-    const main = new AsyncFunction('"use strict";\\n' + payload.script);
+    // wrote, and a silent no-op hides that it did nothing.
+    const main = vm.runInContext('(async function(){"use strict";\\n' + payload.script + '\\n})', context, { filename: "workflow-script.js" });
     const value = await main();
+    const meta = vm.runInContext("globalThis.meta", context) || {};
     // Give every queued postMessage a turn to flush before the worker ends:
     // a terminal message written in the same tick as exit can be dropped.
     scheduleFlush(function () {
-      parentPort.postMessage({ kind: "complete", value: value === undefined ? null : value, meta: globalThis.meta || {} });
+      parentPort.postMessage({ kind: "complete", value: value === undefined ? null : value, meta: meta });
     });
   } catch (error) {
     scheduleFlush(function () {

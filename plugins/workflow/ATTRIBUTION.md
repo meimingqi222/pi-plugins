@@ -21,7 +21,8 @@ directory and has to use pi's conventions.
 | Behaviour | Step-Code | Here | Reason |
 | --- | --- | --- | --- |
 | Storage root | `.stepcode/workflows` | `.pi/workflows` | This is a pi plugin; the directory belongs to pi. |
-| Resume state | a `resumeEnabled` boolean and a `Map` inside `WorkflowJournal` | a pure `ResumeLog` object in `core/`, no file I/O | The prefix-only rule is the subtle part and must be testable without a filesystem. |
+| Resume state | a `resumeEnabled` boolean and a `Map` inside `WorkflowJournal` | a pure `ResumeLog` object in `core/`, no file I/O | The resume rule is the subtle part and must be testable without a filesystem. |
+| Resume matching | seq-position prefix; disabled forever at the first mismatch | content-addressed: reuse is keyed by `callHash` with per-hash occurrence counting, and a miss disables nothing | Request order in `parallel()`/`pipeline()` follows child completion timing and reorders again on a resumed run; keying on position missed every call past the first timing difference. |
 | Journal read | `readJsonLines` returns every parseable line | `WorkflowJournal.load` also truncates at the first sequence gap | A contiguous prefix is the only safe replay source; upstream relied on the caller's hash checks alone. |
 | Isolation seam | `runInIsolatedVm` with the `isolated-vm` native addon | a `node:worker_threads` worker (`host/bridge.ts`) | `isolated-vm` cannot load in pi's `bun --compile` binary. A worker gives the property that matters — `terminate()` kills a synchronous infinite loop — on both Node and Bun, without a native addon or a second interpreter. |
 | HoH `iterate()` | present | not ported | Overlaps `pi-goal`'s verifier; deferred deliberately. With role profiles in place the loop is expressible as `agent()` calls in a script. |

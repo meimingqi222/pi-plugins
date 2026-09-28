@@ -74,7 +74,7 @@ describe("ownsBuiltinShellTool", () => {
 });
 
 describe("child guard extension", () => {
-	function withHandlers(tools: Array<{ name: string; sourceInfo: { source: string } }>) {
+	function withHandlers(tools: Array<{ name: string; sourceInfo: { source: string }; parameters?: unknown }>) {
 		const handlers: Array<(event: { toolName: string; input: unknown }) => unknown> = [];
 		const pi = {
 			on: (_name: string, handler: (event: { toolName: string; input: unknown }) => unknown) => {
@@ -101,12 +101,25 @@ describe("child guard extension", () => {
 		expect(input.timeout).toBe(3);
 	});
 
-	test("steps aside when another extension owns bash", () => {
-		// e.g. pi-bg-bash backgrounds long commands; a hard timeout would defeat it.
+	test("steps aside when another extension owns bash without a timeout parameter", () => {
+		// An extension shell that declares no `timeout` in its schema cannot take
+		// the bound — guessing its parameter shape is the worse failure.
 		const handlers = withHandlers([{ name: "bash", sourceInfo: { source: "extension" } }]);
 		const input: { timeout?: unknown } = {};
 		handlers[0]!({ toolName: "bash", input });
 		expect(input.timeout).toBeUndefined();
+	});
+
+	test("injects into an extension shell that declares a timeout parameter", () => {
+		// pi-bg-bash's bash declares `timeout` with the same seconds semantics —
+		// and in a headless child nothing wakes a backgrounded job anyway.
+		const handlers = withHandlers([
+			{ name: "bash", sourceInfo: { source: "extension" }, parameters: { type: "object", properties: { command: {}, timeout: {} } } },
+		]);
+		const input: { timeout?: unknown } = {};
+		handlers[0]!({ toolName: "bash", input });
+		expect(typeof input.timeout).toBe("number");
+		expect(input.timeout as number).toBeGreaterThan(0);
 	});
 
 	test("ignores tools that are not shells", () => {

@@ -56,20 +56,36 @@ describe("workflowJsonValue", () => {
 });
 
 describe("ResumeLog", () => {
-	test("serves the whole prefix when every call matches", () => {
+	test("serves a previous run's calls when every hash matches", () => {
 		const log = new ResumeLog([entry({ seq: 0, callHash: "a" }), entry({ seq: 1, callHash: "b" })]);
 		expect(log.cached(0, "a")).toBeDefined();
 		expect(log.cached(1, "b")).toBeDefined();
 		expect(log.active).toBe(true);
 	});
-	test("a mismatch disables resume for every later call", () => {
-		// The bug this prevents: a hash-keyed lookup that keeps searching would
-		// return cached work for calls *after* the divergence.
+	test("reuse is keyed by content, not request order", () => {
+		// Parallel calls reach the journal in completion order; a resume
+		// observes a different order and must still hit.
+		const log = new ResumeLog([entry({ seq: 0, callHash: "a" }), entry({ seq: 1, callHash: "b" })]);
+		expect(log.cached(0, "b")).toBeDefined();
+		expect(log.cached(1, "a")).toBeDefined();
+	});
+	test("a miss disables nothing: later calls still reuse", () => {
+		// A call whose prompt depends on earlier output hashes differently and
+		// runs live; the independent calls around it are still reusable.
 		const log = new ResumeLog([entry({ seq: 0, callHash: "a" }), entry({ seq: 1, callHash: "b" })]);
 		expect(log.cached(0, "a")).toBeDefined();
-		expect(log.cached(1, "different")).toBeUndefined();
-		expect(log.active).toBe(false);
-		expect(log.cached(1, "b")).toBeUndefined();
+		expect(log.cached(1, "changed")).toBeUndefined();
+		expect(log.cached(2, "b")).toBeDefined();
+	});
+	test("identical calls are consumed in order: the nth call gets the nth entry", () => {
+		const log = new ResumeLog([
+			entry({ seq: 0, callHash: "same", callId: "first", result: 1 }),
+			entry({ seq: 1, callHash: "same", callId: "second", result: 2 }),
+		]);
+		expect(log.cached(0, "same")?.callId).toBe("first");
+		expect(log.cached(1, "same")?.callId).toBe("second");
+		// A third identical call has no third entry: it runs live.
+		expect(log.cached(2, "same")).toBeUndefined();
 	});
 	test("a cached entry is reusable, a failed one is not", () => {
 		const log = new ResumeLog([
@@ -91,12 +107,7 @@ describe("ResumeLog", () => {
 			entry({ seq: 1, callHash: "b" }),
 		]);
 		expect(log.size).toBe(1);
-		expect(log.cached(1, "b")).toBeDefined();
-	});
-	test("two identical prompts at different positions stay distinct calls", () => {
-		const log = new ResumeLog([entry({ seq: 0, callHash: "same" }), entry({ seq: 1, callHash: "same" })]);
-		expect(log.cached(0, "same")).toBeDefined();
-		expect(log.cached(1, "same")).toBeDefined();
+		expect(log.cached(0, "b")).toBeDefined();
 	});
 });
 
