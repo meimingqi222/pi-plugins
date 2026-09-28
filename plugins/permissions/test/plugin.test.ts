@@ -255,6 +255,35 @@ describe("pi-permissions extension wiring", () => {
     expect(ui.selectCalls[0]!.title).toContain("looks unrelated");
   });
 
+  test("auto: reviewer sees the command past the 240-char display summary", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui, { registry: { reply: { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"ask","reason":"needs a look"}' }] } } });
+    const marker = "TAIL-MARKER-9f2c";
+    const command = `mytool --flag ${"x".repeat(240)} && echo ${marker}`;
+    await toolCall({ toolName: "bash", input: { command } });
+    const context = ctx.registry.calls[0] as { messages: { content: { text: string }[] }[] };
+    const payload = JSON.parse(context.messages[0]!.content[0]!.text) as { toolInput: string };
+    expect(payload.toolInput).toContain(marker);
+    // The human dialog keeps the bounded summary.
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ui.selectCalls[0]!.title).toContain("…");
+    expect(ui.selectCalls[0]!.title).not.toContain(marker);
+  });
+
+  test("auto: the reviewer payload keeps the command's newlines", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui);
+    const command = "cd /tmp && python3 - <<'PY'\nprint(1)\nPY";
+    expect(await toolCall({ toolName: "bash", input: { command } })).toBeUndefined();
+    const context = ctx.registry.calls[0] as { messages: { content: { text: string }[] }[] };
+    const payload = JSON.parse(context.messages[0]!.content[0]!.text) as { toolInput: string };
+    expect(payload.toolInput).toContain("\nprint(1)\n");
+  });
+
   test("auto + dangerous never reaches the reviewer", async () => {
     process.env.PI_PERMISSIONS_MODE = "auto";
     writeGlobalConfig({ reviewer: { model: "test/small" } });
@@ -368,4 +397,6 @@ test("pi loads the entry point under Node (strip-only) and registers /permission
     encoding: "utf-8",
   });
   expect(JSON.parse(stdout)).toEqual({ errors: [], commands: ["permissions"] });
-});
+  // Spawns Node and loads the real extension: ~1.5s idle, but a loaded
+  // machine can push it past bun's 5s default — that is not a product bug.
+}, 30_000);

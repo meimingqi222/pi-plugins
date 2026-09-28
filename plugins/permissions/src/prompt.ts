@@ -25,15 +25,23 @@ export const OPT_ALLOW_ALWAYS = "Always allow in this project";
 export const OPT_DENY = "Deny";
 export const OPT_DENY_FEEDBACK = "Deny with feedback…";
 
-/** Strip control chars, flatten newlines, bound the summary shown to the user. */
-export function summarizeInput(tool: string, input: Record<string, unknown>): string {
+/**
+ * The tool call's text with control characters stripped; newlines and tabs
+ * stay, so multi-line code (heredocs) keeps its structure. Unbounded — the
+ * reviewer bounds its own payload. The dialog must not use this: a command
+ * cut mid-token reads as an unparseable call and biases the reviewer to `ask`.
+ */
+export function describeInput(tool: string, input: Record<string, unknown>): string {
   const key =
     (typeof input.command === "string" && input.command) ||
     (typeof input.path === "string" && input.path) ||
     JSON.stringify(input);
-  const flat = String(key)
-    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/gu, "")
-    .replace(/\s*\n\s*/gu, " ");
+  return String(key).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/gu, "");
+}
+
+/** One line, bounded — what the approval dialog shows. */
+export function summarizeInput(tool: string, input: Record<string, unknown>): string {
+  const flat = describeInput(tool, input).replace(/\s*\n\s*/gu, " ");
   return flat.length > 240 ? `${flat.slice(0, 240)}…` : flat;
 }
 

@@ -17,7 +17,7 @@ import { createPolicyEnv } from "./env.ts";
 import { createReviewer, type Reviewer } from "./reviewer.ts";
 import { detectSandbox, resolveSandboxPolicy, sandboxDeps, wrapSandboxed, type SandboxAvailability } from "./sandbox/index.ts";
 import { parseRule, type UserRule } from "./rules.ts";
-import { buildAllowRules, createPrompter, summarizeInput } from "./prompt.ts";
+import { buildAllowRules, createPrompter, describeInput, summarizeInput } from "./prompt.ts";
 import type { Classification, Mode, PolicyEnv } from "./types.ts";
 
 const MODES = new Set<Mode>(["read-only", "ask", "auto", "yolo"]);
@@ -215,7 +215,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
           const verdict = await active.review({
             ctx,
             toolName: event.toolName,
-            toolInput: summarizeInput(event.toolName, event.input as Record<string, unknown>),
+            // The reviewer gets the whole call, newlines included; reviewer.ts
+            // bounds the payload itself. The 240-char dialog summary would cut
+            // long commands and erase the block structure of embedded code.
+            toolInput: describeInput(event.toolName, event.input as Record<string, unknown>),
             staticAnalysis: reason,
             signal: ctx.signal,
           });
