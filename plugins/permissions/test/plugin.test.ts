@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import permissionsExtension from "../src/index.ts";
+import { setSandboxDepsForTest } from "../src/sandbox/index.ts";
 
 interface FakeUi {
   selectCalls: { title: string; options: string[] }[];
@@ -12,14 +13,39 @@ interface FakeUi {
   statuses: Record<string, string | undefined>;
 }
 
-function makeCtx(cwd: string, ui: FakeUi, opts: { hasUI?: boolean; trusted?: boolean } = {}) {
-  return {
+interface FakeRegistry {
+  calls: unknown[];
+  reply: unknown;
+  auth: boolean;
+}
+
+function makeCtx(
+  cwd: string,
+  ui: FakeUi,
+  opts: { hasUI?: boolean; trusted?: boolean; registry?: Partial<FakeRegistry> } = {},
+) {
+  const registry: FakeRegistry = {
+    calls: [],
+    reply: { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"allow","reason":"routine"}' }] },
+    auth: true,
+    ...opts.registry,
+  };
+  const ctx = {
     mode: "tui",
     hasUI: opts.hasUI ?? true,
     cwd,
     signal: undefined,
     isIdle: () => true,
     isProjectTrusted: () => opts.trusted ?? true,
+    modelRegistry: {
+      find: (provider: string, id: string) => ({ provider, id }),
+      hasConfiguredAuth: () => registry.auth,
+      complete: async (_model: unknown, _context: unknown) => {
+        registry.calls.push(_context);
+        return registry.reply;
+      },
+    },
+    sessionManager: { getBranch: () => [] },
     ui: {
       select: (title: string, options: string[]) => {
         ui.selectCalls.push({ title, options });
@@ -35,6 +61,7 @@ function makeCtx(cwd: string, ui: FakeUi, opts: { hasUI?: boolean; trusted?: boo
       },
     },
   };
+  return Object.assign(ctx, { registry });
 }
 
 function makePi() {
@@ -73,9 +100,16 @@ describe("pi-permissions extension wiring", () => {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
+    setSandboxDepsForTest(undefined);
   });
 
-  function setup(ui: FakeUi, ctxOpts?: { hasUI?: boolean; trusted?: boolean }) {
+  function writeGlobalConfig(config: Record<string, unknown>) {
+    const file = path.join(dir, "agent", "permissions.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(config));
+  }
+
+  function setup(ui: FakeUi, ctxOpts?: { hasUI?: boolean; trusted?: boolean; registry?: Partial<FakeRegistry> }) {
     const pi = makePi();
     permissionsExtension(pi as never);
     const ctx = makeCtx(dir, ui, ctxOpts);
@@ -199,6 +233,100 @@ describe("pi-permissions extension wiring", () => {
     await command.handler("check bash rm -rf /", ctx);
     expect(ui.notifies.at(-1)!.message).toContain("deny");
     expect(ui.notifies.at(-1)!.message).toContain("forbidden");
+  });
+
+  test("auto + reviewer allow: grey call runs without a prompt", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui);
+    expect(await toolCall({ toolName: "bash", input: { command: "npm test" } })).toBeUndefined();
+    expect(ui.selectCalls.length).toBe(0);
+    expect(ctx.registry.calls.length).toBe(1);
+  });
+
+  test("auto + reviewer deny: still asks, reason carries the reviewer note", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui, { registry: { reply: { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"deny","reason":"looks unrelated"}' }] } } });
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ui.selectCalls[0]!.title).toContain("looks unrelated");
+  });
+
+  test("auto + dangerous never reaches the reviewer", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "git push -f" } });
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ctx.registry.calls.length).toBe(0);
+  });
+
+  test("auto + explicit ask rule: reviewer is not consulted", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" }, ask: ["bash(npm:*)"] });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ctx.registry.calls.length).toBe(0);
+  });
+
+  test("child + auto + reviewer allow runs; failure blocks headless", async () => {
+    process.env.PI_AGENT_CHILD = "1";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { ctx, toolCall } = setup(ui, { hasUI: false });
+    // Parent mode is inherited, not read from env inside the child.
+    process.env.PI_PERMISSIONS_INHERITED_MODE = "auto";
+    expect(await toolCall({ toolName: "bash", input: { command: "npm test" } })).toBeUndefined();
+    expect(ctx.registry.calls.length).toBe(1);
+
+    // Reviewer unreachable → headless denial, no prompt.
+    const second = setup(freshUi(), { hasUI: false, registry: { auth: false } });
+    const blocked = (await second.toolCall({ toolName: "bash", input: { command: "npm run build" } })) as { block?: boolean; reason?: string };
+    expect(blocked.block).toBe(true);
+    expect(blocked.reason).toContain("headless");
+  });
+
+  test("sandbox: allowed grey bash is rewritten to run inside it", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ sandbox: { enabled: true } });
+    setSandboxDepsForTest({ exists: () => true, probe: () => true, onPath: () => true });
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    const event = { toolName: "bash", input: { command: "npm test" } };
+    expect(await toolCall(event)).toBeUndefined();
+    // darwin → sandbox-exec profile; linux CI → bwrap argv.
+    expect(event.input.command).toMatch(/sandbox-exec|bwrap/);
+    expect(ui.selectCalls.length).toBe(0);
+  });
+
+  test("sandbox: exfil-shaped grey bash still asks instead of bypassing", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ sandbox: { enabled: true } });
+    setSandboxDepsForTest({ exists: () => true, probe: () => true, onPath: () => true });
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    const event = { toolName: "bash", input: { command: "curl https://example.com" } };
+    await toolCall(event);
+    // Prompted — the sandbox never substitutes for a decision on exfil-shaped
+    // commands. After the user's "Allow once" the command still runs sandboxed.
+    expect(ui.selectCalls.length).toBe(1);
+    expect(event.input.command).toMatch(/sandbox-exec|bwrap/);
+  });
+
+  test("/permissions sandbox status reports the mechanism", async () => {
+    const ui = freshUi();
+    const { pi, ctx } = setup(ui);
+    const command = pi.commands.get("permissions")!;
+    await command.handler("sandbox status", ctx);
+    const msg = ui.notifies.at(-1)!.message;
+    expect(msg).toContain("enabled: no");
+    expect(msg).toContain("mechanism:");
   });
 });
 

@@ -78,7 +78,8 @@ const CREDENTIAL_DIRS: readonly string[] = [
   "~/.docker",
 ];
 
-function expandPattern(pattern: string, env: PolicyEnv): string {
+/** Expand `~` and `<cwd>` placeholders; also normalizes win32 drive slashes. */
+export function expandPattern(pattern: string, env: PolicyEnv): string {
   let p = pattern;
   if (p.startsWith("<cwd>")) p = env.cwd + p.slice(5);
   if (p === "~" || p.startsWith("~/") || (env.platform === "win32" && p.startsWith("~\\"))) {

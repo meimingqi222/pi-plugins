@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { modeRank } from "./types.ts";
-import type { Mode } from "./types.ts";
+import type { Mode, ReviewerConfig, SandboxSettings } from "./types.ts";
 
 export interface PermFileConfig {
   mode?: Mode;
@@ -17,6 +17,8 @@ export interface PermFileConfig {
   deny: string[];
   additionalDirectories: string[];
   protectedPaths: { read: string[]; write: string[] };
+  reviewer?: ReviewerConfig;
+  sandbox?: Partial<SandboxSettings>;
   projects?: Record<string, ProjectOverride>;
 }
 
@@ -26,6 +28,8 @@ export interface ProjectOverride {
   ask: string[];
   deny: string[];
   additionalDirectories: string[];
+  reviewer?: ReviewerConfig;
+  sandbox?: Partial<SandboxSettings>;
 }
 
 const MODES = new Set(["read-only", "ask", "auto", "yolo"]);
@@ -34,16 +38,50 @@ function asStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+export const DEFAULT_REVIEWER_TIMEOUT_MS = 15_000;
+export const DEFAULT_REVIEWER_MAX_PER_SESSION = 100;
+
+function parseReviewer(value: unknown): ReviewerConfig | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.model !== "string" || !raw.model.includes("/")) return undefined;
+  return {
+    model: raw.model,
+    timeoutMs: typeof raw.timeoutMs === "number" && raw.timeoutMs > 0 ? raw.timeoutMs : DEFAULT_REVIEWER_TIMEOUT_MS,
+    maxPerSession:
+      typeof raw.maxPerSession === "number" && Number.isSafeInteger(raw.maxPerSession) && raw.maxPerSession > 0
+        ? raw.maxPerSession
+        : DEFAULT_REVIEWER_MAX_PER_SESSION,
+  };
+}
+
+function parseSandbox(value: unknown): Partial<SandboxSettings> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: Partial<SandboxSettings> = {};
+  if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
+  if (raw.network === "on" || raw.network === "off") out.network = raw.network;
+  const allowWrite = asStringList(raw.allowWrite);
+  if (allowWrite.length) out.allowWrite = allowWrite;
+  const denyRead = asStringList(raw.denyRead);
+  if (denyRead.length) out.denyRead = denyRead;
+  return out;
+}
+
 function parseOverride(value: unknown): ProjectOverride | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const raw = value as Record<string, unknown>;
   const mode = typeof raw.mode === "string" && MODES.has(raw.mode) ? (raw.mode as Mode) : undefined;
+  const reviewer = parseReviewer(raw.reviewer);
+  const sandbox = parseSandbox(raw.sandbox);
   return {
     mode,
     allow: asStringList(raw.allow),
     ask: asStringList(raw.ask),
     deny: asStringList(raw.deny),
     additionalDirectories: asStringList(raw.additionalDirectories),
+    ...(reviewer ? { reviewer } : {}),
+    ...(sandbox ? { sandbox } : {}),
   };
 }
 
@@ -70,6 +108,10 @@ export function parsePermFile(text: string): { config?: PermFileConfig; error?: 
     },
   };
   if (typeof obj.mode === "string" && MODES.has(obj.mode)) config.mode = obj.mode as Mode;
+  const reviewer = parseReviewer(obj.reviewer);
+  if (reviewer) config.reviewer = reviewer;
+  const sandbox = parseSandbox(obj.sandbox);
+  if (sandbox) config.sandbox = sandbox;
   if (typeof obj.projects === "object" && obj.projects !== null) {
     config.projects = {};
     for (const [key, value] of Object.entries(obj.projects as Record<string, unknown>)) {
@@ -106,6 +148,8 @@ export interface MergedConfig {
   additionalDirectories: string[];
   protectedRead: string[];
   protectedWrite: string[];
+  reviewer?: ReviewerConfig;
+  sandbox: SandboxSettings;
   warnings: string[];
 }
 
@@ -152,6 +196,21 @@ export function mergeConfig(globalFile: string, projectFile: string, trusted: bo
     projectMode = undefined;
   }
 
+  // Reviewer: only from sources that may loosen (global, per-project, trusted project file).
+  const reviewer = (trusted ? project.config.reviewer : undefined) ?? perProject?.reviewer ?? global.config.reviewer;
+
+  // Sandbox merges like the rest: an untrusted project may tighten (enable,
+  // network "off", denyRead) but not loosen (disable, extra allowWrite).
+  const gs = global.config.sandbox ?? {};
+  const ps = perProject?.sandbox ?? {};
+  const prs = project.config.sandbox ?? {};
+  const sandbox: SandboxSettings = {
+    enabled: trusted ? (prs.enabled ?? ps.enabled ?? gs.enabled ?? false) : Boolean(gs.enabled ?? ps.enabled) || prs.enabled === true,
+    network: gs.network === "off" || ps.network === "off" || prs.network === "off" ? "off" : "on",
+    allowWrite: [...(gs.allowWrite ?? []), ...(ps.allowWrite ?? []), ...(trusted ? (prs.allowWrite ?? []) : [])],
+    denyRead: [...(gs.denyRead ?? []), ...(ps.denyRead ?? []), ...(prs.denyRead ?? [])],
+  };
+
   return {
     globalMode: perProject?.mode ?? global.config.mode,
     projectMode,
@@ -160,6 +219,8 @@ export function mergeConfig(globalFile: string, projectFile: string, trusted: bo
     additionalDirectories,
     protectedRead: [...global.config.protectedPaths.read, ...project.config.protectedPaths.read],
     protectedWrite: [...global.config.protectedPaths.write, ...project.config.protectedPaths.write],
+    reviewer,
+    sandbox,
     warnings,
   };
 }
@@ -201,5 +262,20 @@ export function saveGlobalMode(globalFile: string, mode: Mode): void {
     // Fresh file is fine.
   }
   raw.mode = mode;
+  writeJsonAtomic(globalFile, raw);
+}
+
+/** Persist sandbox.enabled into the global file ("/permissions sandbox on|off --save"). */
+export function saveGlobalSandboxEnabled(globalFile: string, enabled: boolean): void {
+  let raw: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(globalFile, "utf8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) raw = parsed as Record<string, unknown>;
+  } catch {
+    // Fresh file is fine.
+  }
+  const sandbox = (typeof raw.sandbox === "object" && raw.sandbox !== null ? raw.sandbox : {}) as Record<string, unknown>;
+  sandbox.enabled = enabled;
+  raw.sandbox = sandbox;
   writeJsonAtomic(globalFile, raw);
 }

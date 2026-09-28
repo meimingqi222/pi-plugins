@@ -100,6 +100,29 @@ export interface Decision {
   matchedRule?: string;
   /** Whether the prompt may offer "always allow" options (false for dangerous). */
   allowAlwaysOffered: boolean;
+  /**
+   * The ask came from an explicit `ask` rule rather than the mode table —
+   * the auto-mode reviewer must not override it (§11.1).
+   */
+  askedByRule?: boolean;
+}
+
+/** Reviewer model settings from config (`reviewer` key, §11.2). */
+export interface ReviewerConfig {
+  /** "provider/model-id", resolved via `ctx.modelRegistry.find`. */
+  model: string;
+  timeoutMs: number;
+  maxPerSession: number;
+}
+
+/** Sandbox settings from config (`sandbox` key, §12.2). */
+export interface SandboxSettings {
+  enabled: boolean;
+  network: "on" | "off";
+  /** Extra writable paths beyond the defaults. */
+  allowWrite: string[];
+  /** Extra paths the sandboxed command may not read. */
+  denyRead: string[];
 }
 
 /**

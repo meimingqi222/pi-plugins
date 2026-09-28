@@ -16,16 +16,17 @@ pi install -l ./plugins/permissions
 The default mode is `yolo` — the plugin behaves like stock pi except that the
 dangerous/forbidden tiers still apply.
 
-| tier \ mode | read-only | ask | auto (P1) | yolo |
+| tier \ mode | read-only | ask | auto | yolo |
 |---|---|---|---|---|
 | safe, read-only | allow | allow | allow | allow |
 | safe, mutating | **deny** | ask | allow | allow |
-| grey | deny | ask | ask¹ | allow |
+| grey | deny | ask | reviewer model¹ | allow |
 | dangerous | deny | ask | ask | **ask** |
 | forbidden | deny | deny | deny | deny |
 
-¹ P2 will route grey calls in `auto` through a small reviewer model first;
-in P1 `auto` behaves like `ask` for grey.
+¹ In `auto`, a grey call first tries the reviewer model (if configured) and
+the sandbox bypass (if enabled); a deny verdict still asks — the reviewer is
+advisory, never the authority. An explicit `ask` rule is never overridden.
 
 "Ask" in a context where nobody can answer (delegated children, `--mode json`)
 becomes a denial with an explanation.
@@ -92,6 +93,8 @@ Writing these is dangerous (`protected-write`); reading them is ordinary:
   "deny": ["read(**/secrets/**)"],
   "additionalDirectories": ["~/work/shared-lib"],
   "protectedPaths": { "read": [], "write": [] },
+  "reviewer": { "model": "anthropic/claude-haiku-4-5", "timeoutMs": 15000, "maxPerSession": 100 },
+  "sandbox": { "enabled": false, "network": "on", "allowWrite": [], "denyRead": [] },
   "projects": {
     "/Users/me/work/app": { "allow": ["bash(make build:*)"] }
   }
@@ -113,7 +116,42 @@ Mode precedence: inherited (children) → `PI_PERMISSIONS_MODE` → session
 - `/permissions mode <read-only|ask|auto|yolo> [--save]` — session mode; `--save` writes the global file.
 - `/permissions rules` — effective rules with their source.
 - `/permissions check <tool> <input>` — classify without executing, e.g. `/permissions check bash rm -rf /`.
+- `/permissions sandbox [on|off [--save] | status]` — optional OS sandbox; status shows the mechanism and policy size.
 - `/permissions reload` — re-read the config files.
+
+## Reviewer (auto mode)
+
+Set `reviewer.model` to `provider/model-id` in the global or a trusted project
+config. In `auto`, a grey call is first judged by an isolated tool-free model
+call (prompt-injection hardened system prompt; the call is `DATA`, never
+instructions). `allow` releases it; `ask`/`deny`/timeout/error fall back to the
+human prompt — a deny just annotates the prompt. Results are cached per
+identical call and capped at `maxPerSession` real calls per session.
+
+## Sandbox
+
+Off by default. When on (`/permissions sandbox on`, or `sandbox.enabled` in
+config), every **allowed** bash command is rewritten to run inside:
+
+- **macOS**: `/usr/bin/sandbox-exec` with a generated seatbelt profile
+  (verified on macOS 27). Writes confined to the workspace, temp dirs, and
+  package caches (`~/.npm`, `~/.cache`, …); `~/.ssh`, `~/.aws`, `~/.gnupg`,
+  `~/.config/gcloud`, `~/.azure`, `~/.kube` and `~/.pi/agent/auth.json` are
+  unreadable. `sandbox.network: "off"` denies all outbound TCP including
+  localhost — `npm install` will fail; keep it `on` for normal work.
+- **Linux**: `bwrap` when on PATH and usable (probed once per session —
+  containers without user namespaces report unavailable).
+- **Windows**: not supported — `unavailable on win32 (policy only)`; use WSL
+  or a container for real isolation.
+
+The rewrite happens inside `tool_call`, so it covers both pi's builtin bash
+and `pi-bg-bash` without replacing either tool. In `auto` mode a sandboxed
+grey bash call skips the reviewer entirely — except exfil-shaped commands
+(`curl`, `wget`, `nc`, `scp`, `rsync`, `ssh`, …), which still go to the
+reviewer or the user.
+
+Known side effect: extensions whose `tool_call` handler runs after this plugin
+see the *rewritten* command (e.g. a bare-`sleep` detector sees the wrapper).
 
 ## Delegated children
 
