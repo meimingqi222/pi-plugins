@@ -49,9 +49,12 @@ execution to *during* it.
   agent run it is sent as a steer; after `agent_end` it waits for
   `agent_settled`. If Pi is busy compacting without an active run, delivery
   waits until Pi becomes idle or a new run starts.
-- **`bg_tasks`.** `list`, `status`, `result`, `log`, `wait`, `kill`. `result`
-  returns metadata and at most 40 lines / 4 KB of output; `log` returns at
-  most 2000 lines / 50 KB. `wait` observes one or up to eight jobs (`any` or
+- **`bg_tasks`.** `list`, `status`, `result`, `log`, `output`, `wait`, `kill`.
+  `result` returns metadata and at most 40 lines / 4 KB of output; `log`
+  returns at most 2000 lines / 50 KB. `output` returns only what the job
+  produced since the previous `output` call (same cap; skipped bytes are
+  reported), so prefer it when checking a running job repeatedly. `wait`
+  observes one or up to eight jobs (`any` or
   `all`) for at most 30 seconds without a polling loop. Await or inspect a
   required command before claiming it succeeded. For a much longer job that
   should resume the agent, use `notify: "always"`.
@@ -70,7 +73,10 @@ execution to *during* it.
 
 ## Cross-platform
 
-The runner never hard-codes `bash -lc`. It resolves the shell through pi's own
+The runner never hard-codes `bash -lc`. It honours pi's `shellPath` and
+`shellCommandPrefix` settings exactly like the built-in tool — the prefix is
+prepended as `prefix\ncommand` before execution while the job record keeps
+the command the model wrote — resolves the shell through pi's own
 `getShellConfig()` — Git Bash on Windows, `/bin/bash` then `sh` on Unix, and
 stdin transport for legacy WSL `bash.exe` — and terminates process trees the way
 each platform requires: a detached process group and a negative-pid `SIGKILL` on
@@ -114,6 +120,10 @@ at most the newest 200 files are kept.
 
 ## Limits
 
+- **Auto-background is off inside spawned agent children.** `pi-agent-runner`'s
+  `agentChildEnv()` sets `PI_BG_BASH_THRESHOLD=0`, so a delegated `-p`/rpc child
+  keeps blocking behaviour — a backgrounded job there has no session to wake
+  and its result would never arrive. Explicit `background: true` is unaffected.
 - **Only the `bash` tool is wrapped.** On Windows pi also exposes `powershell`;
   a long PowerShell command is not auto-backgrounded and keeps the built-in
   blocking behaviour.
