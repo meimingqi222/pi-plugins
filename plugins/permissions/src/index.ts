@@ -41,7 +41,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
   let merged: MergedConfig | undefined;
   let sessionMode: Mode | undefined;
   let sessionRules: UserRule[] = [];
-  let reviewer: Reviewer | undefined;
+  let reviewer: Reviewer | undefined | null = null; // null = not yet created
   let sandboxOverride: boolean | undefined;
   let sandboxAvailability: SandboxAvailability | undefined;
   const prompter = createPrompter();
@@ -68,7 +68,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     }
     env = builtEnv;
     merged = mergedConfig;
-    reviewer = undefined; // rebuilt lazily from the new config
+    reviewer = null; // rebuilt lazily from the new config
     sandboxAvailability = detectSandbox(builtEnv);
     return { env: builtEnv, merged: mergedConfig };
   };
@@ -87,10 +87,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     if (wrapped) event.input.command = wrapped;
   };
 
+  // §11.2: with no reviewer section the reviewer still activates when a Jev
+  // key exists — jev is the fast default backend. "none" disables it.
   const reviewerFor = (ctx: ExtensionContext, mergedConfig: MergedConfig): Reviewer | undefined => {
-    if (!mergedConfig.reviewer || !env) return undefined;
-    if (!reviewer) {
-      reviewer = createReviewer(mergedConfig.reviewer, env, (message) => {
+    if (!env || mergedConfig.reviewer?.model === "none") return undefined;
+    if (reviewer === null) {
+      reviewer = createReviewer(mergedConfig.reviewer, env, getAgentDir(), (message) => {
         try {
           ctx.ui.notify(message, "warning");
         } catch {

@@ -11,6 +11,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isolatedComplete, parseJsonReply, type RegisteredModel } from "pi-run-core";
+import { jevReview, resolveJevKey } from "./jev.ts";
 import type { PolicyEnv, ReviewerConfig } from "./types.ts";
 
 const SYSTEM_PROMPT = `You review a single tool call made by a coding agent and decide whether it can run without asking the user.
@@ -82,13 +83,27 @@ function resolveModel(ctx: Pick<ExtensionContext, "modelRegistry">, spec: string
   }
 }
 
+/**
+ * Backend selection (§11.2):
+ * - `model: "none"` — reviewer disabled.
+ * - `model: "jev"` or unset — the TypeSafe System One endpoint when its key
+ *   exists (TYPESAFE_API_KEY / auth.json["typesafe"]); unset is autodetect, so
+ *   a missing key disables silently, while an explicit "jev" without a key
+ *   warns once.
+ * - `model: "provider/id"` — resolved through pi's model registry.
+ */
 export function createReviewer(
-  config: ReviewerConfig,
+  config: ReviewerConfig | undefined,
   env: Pick<PolicyEnv, "platform" | "cwd">,
+  agentDir: string,
   notify: (message: string) => void,
-): Reviewer {
-  const cache = new Map<string, ReviewVerdict>();
-  let calls = 0;
+  deps: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
+): Reviewer | undefined {
+  const spec = config?.model;
+  const timeoutMs = config?.timeoutMs ?? 15_000;
+  const maxPerSession = config?.maxPerSession ?? 100;
+  if (spec === "none") return undefined;
+
   let warned = false;
   const warnOnce = (message: string): void => {
     if (warned) return;
@@ -96,37 +111,48 @@ export function createReviewer(
     notify(message);
   };
 
+  type Backend = "jev" | "registry";
+  let backend: Backend;
+  let jevKey: string | undefined;
+  if (!spec || spec === "jev") {
+    jevKey = resolveJevKey(agentDir, deps.env);
+    if (!jevKey) {
+      if (spec === "jev") warnOnce("pi-permissions: reviewer model jev needs TYPESAFE_API_KEY or auth.json[typesafe]");
+      return undefined;
+    }
+    backend = "jev";
+  } else {
+    backend = "registry";
+  }
+
+  const cache = new Map<string, ReviewVerdict>();
+  let calls = 0;
+
   return {
     async review(input) {
       const key = `${input.toolName}\n${input.toolInput}`;
       const cached = cache.get(key);
       if (cached) return cached;
-      if (calls >= config.maxPerSession) {
-        warnOnce(`pi-permissions: reviewer budget spent (${config.maxPerSession} calls); asking instead`);
-        return undefined;
-      }
-      const model = resolveModel(input.ctx, config.model);
-      if (!model) {
-        warnOnce(`pi-permissions: reviewer model "${config.model}" not found; asking instead`);
+      if (calls >= maxPerSession) {
+        warnOnce(`pi-permissions: reviewer budget spent (${maxPerSession} calls); asking instead`);
         return undefined;
       }
       calls += 1;
       try {
-        const reply = await isolatedComplete(input.ctx, {
-          model,
-          signal: input.signal ?? new AbortController().signal,
-          systemPrompt: SYSTEM_PROMPT,
-          timeoutMs: config.timeoutMs,
-          payload: {
-            cwd: env.cwd,
-            platform: env.platform,
-            userRequest: lastUserRequest(input.ctx),
-            toolName: input.toolName,
-            toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
-            staticAnalysis: input.staticAnalysis,
-          },
-        });
-        const verdict = parseJsonReply(reply.text, isVerdict);
+        const verdict =
+          backend === "jev"
+            ? await jevReview(
+                {
+                  cwd: env.cwd,
+                  platform: env.platform,
+                  userRequest: lastUserRequest(input.ctx),
+                  toolName: input.toolName,
+                  toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
+                  staticAnalysis: input.staticAnalysis,
+                },
+                { apiKey: jevKey!, timeoutMs, signal: input.signal, fetch: deps.fetch },
+              )
+            : await registryReview(input, env, spec!, timeoutMs);
         cache.set(key, verdict);
         return verdict;
       } catch {
@@ -136,4 +162,32 @@ export function createReviewer(
       }
     },
   };
+
+  async function registryReview(
+    input: Parameters<Reviewer["review"]>[0],
+    policyEnv: Pick<PolicyEnv, "platform" | "cwd">,
+    modelSpec: string,
+    timeoutMs: number,
+  ): Promise<ReviewVerdict> {
+    const model = resolveModel(input.ctx, modelSpec);
+    if (!model) {
+      warnOnce(`pi-permissions: reviewer model "${modelSpec}" not found; asking instead`);
+      throw new Error("reviewer model not found");
+    }
+    const reply = await isolatedComplete(input.ctx, {
+      model,
+      signal: input.signal ?? new AbortController().signal,
+      systemPrompt: SYSTEM_PROMPT,
+      timeoutMs,
+      payload: {
+        cwd: policyEnv.cwd,
+        platform: policyEnv.platform,
+        userRequest: lastUserRequest(input.ctx),
+        toolName: input.toolName,
+        toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
+        staticAnalysis: input.staticAnalysis,
+      },
+    });
+    return parseJsonReply(reply.text, isVerdict);
+  }
 }

@@ -44,9 +44,10 @@ export const DEFAULT_REVIEWER_MAX_PER_SESSION = 100;
 function parseReviewer(value: unknown): ReviewerConfig | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const raw = value as Record<string, unknown>;
-  if (typeof raw.model !== "string" || !raw.model.includes("/")) return undefined;
+  const model = typeof raw.model === "string" && raw.model.length > 0 ? raw.model : undefined;
+  if (model && model !== "jev" && model !== "none" && !model.includes("/")) return undefined;
   return {
-    model: raw.model,
+    model,
     timeoutMs: typeof raw.timeoutMs === "number" && raw.timeoutMs > 0 ? raw.timeoutMs : DEFAULT_REVIEWER_TIMEOUT_MS,
     maxPerSession:
       typeof raw.maxPerSession === "number" && Number.isSafeInteger(raw.maxPerSession) && raw.maxPerSession > 0

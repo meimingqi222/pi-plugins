@@ -109,8 +109,12 @@ export interface Decision {
 
 /** Reviewer model settings from config (`reviewer` key, §11.2). */
 export interface ReviewerConfig {
-  /** "provider/model-id", resolved via `ctx.modelRegistry.find`. */
-  model: string;
+  /**
+   * "jev" → the TypeSafe System One endpoint (auth: TYPESAFE_API_KEY or
+   * auth.json["typesafe"]); "provider/model-id" → `ctx.modelRegistry.find`;
+   * "none" → disabled. Undefined means autodetect: jev when its key exists.
+   */
+  model?: string;
   timeoutMs: number;
   maxPerSession: number;
 }
