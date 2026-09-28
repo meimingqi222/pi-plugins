@@ -3,10 +3,11 @@
  * endpoint — a `choice` question returns a verdict with probabilities, which
  * maps directly onto allow/ask/deny and is much cheaper than a full model call.
  *
- * Jev is NOT a pi model provider: it authenticates via `auth.json["typesafe"]`
- * or `TYPESAFE_API_KEY`, so `modelRegistry.find` can never resolve it. The key
- * file read here mirrors pi-jev-compact's `api-key.ts`; it is duplicated rather
- * than imported because that plugin ships no library surface.
+ * Jev is NOT a pi model provider: it authenticates via `TYPESAFE_API_KEY`,
+ * `<agentDir>/jev-compact.json` or `auth.json["typesafe"]`, so
+ * `modelRegistry.find` can never resolve it. The auth resolution here mirrors
+ * pi-jev-compact's `api-key.ts`; it is duplicated rather than imported because
+ * that plugin ships no library surface.
  */
 
 import * as fs from "node:fs";
@@ -14,6 +15,8 @@ import * as path from "node:path";
 
 const SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone";
 const DEFAULT_JEV_MODEL = "jev-latest";
+/** pi-jev-compact's plugin-owned config file, read here so one key serves both. */
+const JEV_CONFIG_FILE = "jev-compact.json";
 
 export interface JevReviewInput {
   cwd: string;
@@ -29,26 +32,42 @@ export interface JevVerdict {
   reason: string;
 }
 
-/** TYPESAFE_API_KEY, else auth.json["typesafe"].api_key. Whitespace is stripped. */
-export function resolveJevKey(agentDir: string, env: Record<string, string | undefined> = process.env): string | undefined {
-  const fromEnv = env.TYPESAFE_API_KEY;
-  if (typeof fromEnv === "string" && fromEnv.replace(/\s+/g, "").length > 0) {
-    return fromEnv.replace(/\s+/g, "");
-  }
+function normalizeKey(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const key = raw.replace(/\s+/g, "");
+  return key.length > 0 ? key : undefined;
+}
+
+function readJson(file: string): Record<string, unknown> | undefined {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf8")) as Record<string, unknown>;
-    const entry = parsed?.typesafe;
-    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-      const credential = entry as { type?: unknown; key?: unknown };
-      if (credential.type === "api_key" && typeof credential.key === "string") {
-        const key = credential.key.replace(/\s+/g, "");
-        if (key.length > 0) return key;
-      }
-    }
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
   } catch {
-    // No readable auth.json — Jev is unavailable.
+    return undefined;
+  }
+}
+
+/**
+ * Key resolution mirrors pi-jev-compact's `api-key.ts`, so one configuration
+ * serves both plugins: `TYPESAFE_API_KEY` → `<agentDir>/jev-compact.json`
+ * (`{"apiKey": …}`) → `<agentDir>/auth.json["typesafe"]`.
+ */
+export function resolveJevKey(agentDir: string, env: Record<string, string | undefined> = process.env): string | undefined {
+  const fromEnv = normalizeKey(env.TYPESAFE_API_KEY);
+  if (fromEnv) return fromEnv;
+  const fromConfig = normalizeKey(readJson(path.join(agentDir, JEV_CONFIG_FILE))?.apiKey);
+  if (fromConfig) return fromConfig;
+  const entry = readJson(path.join(agentDir, "auth.json"))?.typesafe;
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    const credential = entry as { type?: unknown; key?: unknown };
+    if (credential.type === "api_key") return normalizeKey(credential.key);
   }
   return undefined;
+}
+
+/** Endpoint/model overrides, the same env vars pi-jev-compact honours. */
+export function resolveJevEndpoint(env: Record<string, string | undefined> = process.env): { model?: string; baseUrl?: string } {
+  return { model: env.JEV_COMPACT_MODEL || undefined, baseUrl: env.JEV_COMPACT_BASE_URL || undefined };
 }
 
 interface JevChoiceAnswer {

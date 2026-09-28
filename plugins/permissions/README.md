@@ -127,9 +127,11 @@ a deny just annotates the prompt. Results are cached per identical call and
 capped at `maxPerSession` real calls per session. Two backends:
 
 - **`"jev"`** (the default) — the TypeSafe System One endpoint, a purpose-built
-  fast decision model. Authenticates via `TYPESAFE_API_KEY` or
-  `auth.json["typesafe"]`; it is *not* a pi model provider. With no `reviewer`
-  section at all the reviewer still activates when a Jev key exists.
+  fast decision model. Key resolution is shared with pi-jev-compact:
+  `TYPESAFE_API_KEY` → `~/.pi/agent/jev-compact.json` (`{"apiKey": …}`) →
+  `auth.json["typesafe"]`; `JEV_COMPACT_MODEL`/`JEV_COMPACT_BASE_URL` override
+  the endpoint. It is *not* a pi model provider. With no `reviewer` section at
+  all the reviewer still activates when a Jev key exists.
 - **`"provider/model-id"`** — any model registered in pi's model registry,
   judged via an isolated tool-free call (prompt-injection hardened system
   prompt; the call is `DATA`, never instructions), e.g.
