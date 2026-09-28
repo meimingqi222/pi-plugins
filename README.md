@@ -16,6 +16,7 @@ can be installed without pulling in its siblings.
 | [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: wait for the answer or let it run in the background. One-level fan-out, user-scoped agent definitions. |
 | [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
 | [morph-search](plugins/morph-search) | `pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
+| [permissions](plugins/permissions) | `pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized approval prompts, headless-child denials. |
 
 ### Not a plugin: `pi-run-core`
 
@@ -70,6 +71,7 @@ pi install -l ./plugins/goal
 pi install -l ./plugins/bg-bash
 pi install -l ./plugins/subagent
 pi install -l ./plugins/morph-search
+pi install -l ./plugins/permissions
 pi install npm:pi-redact               # once published
 ```
 
