@@ -68,11 +68,17 @@ deadline that actually elapsed reports an elapsed time.
 
 `reply` sends a follow-up message to a live background child (they run on
 pi's RPC transport, so the process survives its own turn). On an **idle**
-lane — turn ended, child alive — it starts a new turn. Mid-turn,
+lane — turn settled, child alive — it starts a new turn. Mid-turn,
 `interrupt: true` steers (injected after the current tool calls), while the
-default queues a `follow_up` for after the turn. An idle lane settles on its
-own after a keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`),
-delivering its last answer — a fire-and-forget caller is never held open.
+default queues a `follow_up` for after the turn. A turn's answer is
+delivered when the turn actually settles (`agent_settled`), not when the
+process exits: the lane then reads as answered-awaiting-reply, and `show`
+and `wait` already carry its text. An idle lane settles on its own after a
+keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`) — the window only
+keeps the process warm for replies; ending it does not re-deliver an answer
+already sent, and a failure mid-turn still reports. Idle lanes hold no
+capacity slot, so a parked lane never blocks a launch and a reply that wakes
+one is always allowed.
 
 Extension dialogs inside an RPC child are answered rather than left hanging. An
 RPC child is handed a real UI context, so `select`/`confirm`/`input`/`editor`/
@@ -88,7 +94,12 @@ resolve to `general`. User `.md` files with a matching name replace a
 built-in. The `agent` argument accepts an optional `alias` for the display
 name shown in the fleet widget and panel.
 
-At most four background subagents run at once. Their handles and results remain
+At most four subagents run at once (`PI_SUBAGENT_MAX_CONCURRENCY`, a positive
+integer, overrides it). The cap counts *busy* lanes of both kinds — pi runs a
+tool batch in parallel, so foreground calls share it too: a blocking call past
+the cap waits for a slot instead of being refused, and an idle lane parked
+awaiting a `reply` holds none. A background launch at the cap is still
+refused. Handles and results remain
 in memory for the current session; the most recent 20 settled tasks are kept.
 Switching sessions, navigating the history tree, forking, or shutting down
 cancels active tasks and suppresses their late results. Completed tasks wake
@@ -243,7 +254,9 @@ rather than a contract each plugin re-implements.
 
 A child that dies of a transport failure is not retried: re-running a delegated
 task that may already have written is worse than a missing answer. A hung child
-is killed by a 15-minute wall-clock cap (`DEFAULT_AGENT_TIMEOUT_MS`).
+is killed by a 15-minute wall-clock cap (`DEFAULT_AGENT_TIMEOUT_MS`) — per turn
+on an RPC lane, so keep-alive idle time and earlier turns do not eat a reply
+turn's budget; the keep-alive window is what bounds an idle lane.
 
 ## Goal accounting
 

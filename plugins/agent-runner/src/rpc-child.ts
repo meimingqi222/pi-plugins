@@ -5,7 +5,9 @@
  * `agent_end` event is the run's end. That shape cannot answer "one more
  * question" — the child exits when its turn ends. This transport runs
  * `--mode rpc` instead: stdin stays open for `prompt`/`steer`/`follow_up`/
- * `abort` commands, and `agent_end` marks the *turn's* end, not the run's.
+ * `abort` commands, and `agent_settled` marks a *turn's* end, not the run's
+ * (`agent_end` only ends the model's stream; pi may still retry, compact, or
+ * drain a queued prompt before the turn is really over).
  *
  * The two transports share everything that made the JSON child correct:
  * `--no-session`, `agentChildEnv()` (the one-level fan-out flags travel in
@@ -16,12 +18,16 @@
  */
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { killAgentTree } from "./process.ts";
+import {
+	createEvidenceWriter,
+	createJsonLineReader,
+	mapRunOutcome,
+	MAX_STDERR_CHARS,
+	writeSystemPromptFile,
+} from "./child-io.ts";
 import { resolvePiInvocation, type PiInvocation } from "./spawn.ts";
 import {
 	agentChildEnv,
@@ -44,8 +50,6 @@ import {
 	type AgentRunResult,
 } from "./executor.ts";
 
-const MAX_STDERR_CHARS = 8_000;
-const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 512 * 1024;
 /**
  * Extension UI methods that *wait* for a client answer.
@@ -66,21 +70,6 @@ const EXTENSION_DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"
 /** RPC-mode args: a live stdin protocol, `-p` implied by mode, still no session store. */
 export function rpcRunArgs(): string[] {
 	return ["--mode", "rpc", "--no-session"];
-}
-
-/** Copied from executor.ts' `writeSystemPrompt` (package-internal there). */
-async function writeSystemPromptFile(systemPrompt: string | undefined, root = tmpdir()): Promise<{ dir: string; file: string } | undefined> {
-	if (!systemPrompt || !systemPrompt.trim()) return undefined;
-	let dir: string | undefined;
-	try {
-		dir = await mkdtemp(join(root, "pi-rpc-agent-"));
-		const file = join(dir, "system-prompt.md");
-		await writeFile(file, systemPrompt, { encoding: "utf-8", mode: 0o600 });
-		return { dir, file };
-	} catch (error) {
-		if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-		throw new Error(`Could not prepare delegated system prompt: ${error instanceof Error ? error.message : String(error)}`);
-	}
 }
 
 export interface RpcChildInput {
@@ -105,8 +94,26 @@ export interface RpcChildInput {
 	evidenceMaxBytes?: number;
 	onActivity?: (activity: AgentActivity) => void;
 	onProgress?: (event: AgentProgress) => void;
-	/** Fires with `true` when a turn ends (lane is idle, awaiting a prompt) and `false` when a turn starts. */
+	/**
+	 * Fires with `true` when a turn is fully settled (lane is idle, awaiting a
+	 * prompt) and `false` when a turn starts. Turn end is `agent_settled`, not
+	 * `agent_end`: pi can still retry, compact, or drain a queued prompt between
+	 * the two, so the lane is not safe to prompt until `agent_settled`.
+	 */
 	onIdleChange?: (idle: boolean) => void;
+	/**
+	 * Fires once per `agent_settled` with that turn's outcome: `completed`,
+	 * or `failed` when the turn's state carries an error. `usage` is cumulative
+	 * across turns, not per-turn. The run itself stays open — `done` still
+	 * resolves only when the child finishes.
+	 */
+	onTurnSettled?: (result: AgentRunResult) => void;
+	/**
+	 * Fires when pi answers a stdin command with `success: false` — e.g. a
+	 * prompt pi refused. Without this the failure line is indistinguishable
+	 * from the run's event stream and a rejected command looks sent.
+	 */
+	onCommandError?: (info: { command: string; error: string }) => void;
 }
 
 /** A live child handle: send commands, read the eventual run result, or end it. */
@@ -115,7 +122,7 @@ export interface RpcChild {
 	/** Resolves with the run outcome when the child is finished — by `end`, `terminate`, deadline, abort, or exit. */
 	readonly done: Promise<AgentRunResult>;
 	/** Queue a stdin command. Returns false when stdin is already gone (dead or draining). */
-	send(command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string }): boolean;
+	send(command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string; streamingBehavior?: "steer" | "followUp" }): boolean;
 	/** Graceful finish: terminate the child, resolve `done` with the normal outcome mapping. */
 	end(): void;
 	/** Hard stop: resolve `done` as an abort and kill the process. */
@@ -152,7 +159,7 @@ export interface SpawnRpcChildOptions {
  */
 export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChildOptions = {}): Promise<RpcChild> {
 	const invocation = options.invocation ?? resolvePiInvocation();
-	const systemPrompt = await writeSystemPromptFile(input.systemPrompt, options.systemPromptRoot);
+	const systemPrompt = await writeSystemPromptFile(input.systemPrompt, options.systemPromptRoot, "pi-rpc-agent-");
 	const spawnFn = options.spawnFn ?? spawn;
 	try {
 		const args = [
@@ -185,7 +192,6 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		const state = emptyStreamState();
 		const terminationGraceMs = Math.max(0, options.terminationGraceMs ?? TERMINATION_GRACE_MS);
 		const stdioGraceMs = Math.max(0, options.stdioGraceMs ?? STDIO_GRACE_MS);
-		let buffer = "";
 		let stderr = "";
 		let settled = false;
 		let killedBy: "timeout" | "abort" | "stalled" | undefined;
@@ -196,7 +202,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		let lastEventLabel = "spawn";
 		/** Declared budgets of the tool calls in flight, keyed by call id; see `trackDeclaredTimeouts`. */
 		const declaredBudgets = new Map<string, number>();
-		/** False between `agent_end` and the next `agent_start`, when silence is expected. */
+		/** False between `agent_settled` and the next `agent_start`, when silence is expected. */
 		let turnActive = true;
 		let endRequested = false;
 		let terminationRequested = false;
@@ -205,37 +211,29 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
 		let drainTimer: ReturnType<typeof setTimeout> | undefined;
 		let exitCode: number | null = null;
-		let evidenceBytes = 0;
-		let evidenceQueue: Promise<void> = evidencePath
-			? mkdir(dirname(evidencePath), { recursive: true }).then(() => undefined, () => undefined)
-			: Promise.resolve();
+		const evidence = createEvidenceWriter({ path: evidencePath, maxBytes: evidenceMaxBytes });
 
-		const writeEvidence = (line: string): void => {
-			if (!evidencePath) return;
-			evidenceQueue = evidenceQueue.then(async () => {
-				if (evidenceBytes >= evidenceMaxBytes) {
-					if (evidenceBytes < evidenceMaxBytes + 1_000) {
-						evidenceBytes += 1_000;
-						await appendFile(evidencePath, JSON.stringify({ type: "evidence_truncated", bytes: evidenceMaxBytes }) + "\n").catch(() => undefined);
-					}
-					return;
-				}
-				const chunk = `${line}\n`;
-				evidenceBytes += Buffer.byteLength(chunk);
-				await appendFile(evidencePath, chunk).catch(() => undefined);
-			});
+		// The wall clock bounds a *turn*, not the whole child lifetime: an idle
+		// lane awaiting a reply is bounded by the caller's keepalive, and counting
+		// that idle time against the turn's budget would kill the next turn with
+		// time it never spent. The first reason to end a run owns the label —
+		// without the guard the wall clock relabels a run the silence bound (or a
+		// caller's abort) already ended, because termination has a grace period
+		// and the deadline can expire inside it.
+		let turnTimer: ReturnType<typeof setTimeout> | undefined;
+		const armTurnTimer = (): void => {
+			if (turnTimer || settled) return;
+			turnTimer = setTimeout(() => {
+				turnTimer = undefined;
+				if (settled || killedBy) return;
+				killedBy = "timeout";
+				requestTerminate();
+			}, timeoutMs);
+			turnTimer.unref?.();
 		};
-
-		// The first reason to end the run owns the label. Without the guard the wall
-		// clock relabels a run the silence bound (or a caller's abort) already ended,
-		// because termination has a grace period and the deadline can expire inside
-		// it — which reported a stalled child as "timed out".
-		const timer = setTimeout(() => {
-			if (settled || killedBy) return;
-			killedBy = "timeout";
-			requestTerminate();
-		}, timeoutMs);
-		timer.unref?.();
+		const clearTurnTimer = (): void => {
+			if (turnTimer) { clearTimeout(turnTimer); turnTimer = undefined; }
+		};
 
 		// Silence inside a turn means the child is wedged, and the wall clock would
 		// only discover that at the deadline, having spent the whole budget. An idle
@@ -290,7 +288,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		function finish(): void {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			clearTurnTimer();
 			if (stallTimer) clearInterval(stallTimer);
 			if (terminationTimer) clearTimeout(terminationTimer);
 			if (drainTimer) clearTimeout(drainTimer);
@@ -301,51 +299,32 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			child.stderr?.destroy();
 			child.unref();
 
-			if (state.errorMessage === undefined && stderr.trim()) state.errorMessage = stderr.trim().slice(0, 2_000);
-			if (state.errorMessage === undefined && exitCode !== null && exitCode !== 0) {
-				state.errorMessage = `The agent exited with code ${exitCode}.`;
-			}
+			const outcome = mapRunOutcome({
+				killedBy,
+				stalledForMs,
+				lastEventLabel,
+				timeoutMs,
+				stderr,
+				exitCode,
+				state,
+				...(evidencePath ? { evidencePath } : {}),
+			});
 
-			let outcome: AgentRunResult;
-			if (killedBy === "abort") {
-				outcome = { status: "aborted", stopReason: "aborted", text: state.finalText, usage: state.usage };
-			} else if (killedBy === "timeout") {
-				outcome = {
-					status: "failed",
-					text: state.finalText,
-					errorMessage: timeoutFailureMessage({ timeoutMs, ...(evidencePath ? { evidencePath } : {}) }),
-					usage: state.usage,
-				};
-			} else if (killedBy === "stalled") {
-				outcome = {
-					status: "failed",
-					text: state.finalText,
-					errorMessage: stallFailureMessage({ stalledForMs, lastEvent: lastEventLabel, ...(evidencePath ? { evidencePath } : {}) }),
-					usage: state.usage,
-				};
-			} else if (state.errorMessage) {
-				outcome = { status: "failed", errorMessage: state.errorMessage, text: state.finalText, usage: state.usage };
-			} else {
-				outcome = {
-					status: "completed",
-					text: state.finalText,
-					usage: state.usage,
-					...(state.model ? { model: state.model } : {}),
-					...(state.stopReason ? { stopReason: state.stopReason } : {}),
-				};
-			}
-
-			void evidenceQueue.then(() => resolveDone(outcome), () => resolveDone(outcome));
+			void evidence.flush().then(() => resolveDone(outcome), () => resolveDone(outcome));
 		}
 
 		/**
 		 * The single stdin write path, so the dialog responder and the control
 		 * commands cannot disagree about framing or backpressure.
 		 */
+		/** Command ids in flight → their type, so a failed `response` can name what was refused. */
+		const pendingCommands = new Map<string, string>();
 		const write = (command: Record<string, unknown>): boolean => {
 			if (!stdinOpen || settled) return false;
 			try {
-				const ok = child.stdin.write(`${JSON.stringify({ id: randomUUID(), ...command })}\n`);
+				const id = randomUUID();
+				const ok = child.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
+				if (typeof command.type === "string") pendingCommands.set(id, command.type);
 				if (!ok) child.stdin.once("drain", () => undefined);
 				return true;
 			} catch {
@@ -354,7 +333,12 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			}
 		};
 
-		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string }): boolean => write(command);
+		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string; streamingBehavior?: "steer" | "followUp" }): boolean =>
+			// A prompt always carries `followUp`: without it pi throws "Agent is
+			// already processing" when the command lands inside the agent_end→
+			// agent_settled window (retry, compaction, queued work) instead of
+			// queueing it.
+			write(command.type === "prompt" ? { streamingBehavior: "followUp", ...command } : command);
 
 		/**
 		 * Answer an extension dialog instead of letting the child wait forever.
@@ -374,43 +358,73 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		};
 
 		child.stdout?.setEncoding("utf8");
-		child.stdout?.on("data", (chunk: string) => {
-			buffer += chunk;
-			if (buffer.length > MAX_BUFFER_CHARS) buffer = buffer.slice(-MAX_BUFFER_CHARS / 2);
-			let index: number;
-			while ((index = buffer.indexOf("\n")) >= 0) {
-				const line = buffer.slice(0, index);
-				buffer = buffer.slice(index + 1);
-				writeEvidence(line.replace(/\r$/u, ""));
-				const text = line.replace(/\r$/u, "").trim();
-				if (!text) continue;
-				try {
-					const event = JSON.parse(text) as Record<string, unknown>;
-					lastEventAt = Date.now();
-					lastEventLabel = describeAgentEvent(event);
-					trackDeclaredTimeouts(declaredBudgets, event);
-					if (event.type === "extension_ui_request") answerExtensionUi(event);
-					// `agent_end` is a turn boundary under RPC, not the run's end —
-					// same for `agent_start`. applyEvent treats it as the run's end
-					// in JSON mode, so feed it the accumulated-text branch only and
-					// drive idle reporting off the raw type.
-					if (event.type === "agent_start") { turnActive = true; input.onIdleChange?.(false); }
-					else if (event.type === "agent_end") { turnActive = false; input.onIdleChange?.(true); }
-					applyEvent(state, event);
-					const activity = readAgentActivity(event);
-					if (activity) {
-						try { input.onActivity?.(activity); } catch { /* observers cannot fail a child run */ }
+		child.stdout?.on("data", createJsonLineReader((line, parsed) => {
+			evidence.write(line);
+			if (parsed === undefined) return;
+			// A parsed line is either a stream event or a protocol ack (`response`,
+			// `extension_*`); both are handled here, and the stream fold only
+			// needs the event shapes it knows.
+			try {
+				const event = parsed as Record<string, unknown>;
+				lastEventAt = Date.now();
+				lastEventLabel = describeAgentEvent(event);
+				trackDeclaredTimeouts(declaredBudgets, event);
+				if (event.type === "extension_ui_request") answerExtensionUi(event);
+				if (event.type === "response") {
+					// A command ack: pair it with what was sent so a refusal
+					// surfaces through onCommandError instead of passing for noise.
+					const id = typeof event.id === "string" ? event.id : undefined;
+					const command = (id !== undefined ? pendingCommands.get(id) : undefined)
+						?? (typeof event.command === "string" ? event.command : "unknown");
+					if (id !== undefined) pendingCommands.delete(id);
+					if (event.success === false) {
+						const error = typeof event.error === "string" ? event.error : "command rejected";
+						try { input.onCommandError?.({ command, error }); } catch { /* observers cannot fail a child run */ }
 					}
-					const progress = readAgentProgress(event);
-					if (progress) {
-						try { input.onProgress?.(progress); } catch { /* UI updates cannot fail the run */ }
-					}
-				} catch {
-					// A non-JSON line (or an RPC `response`/`extension_*` ack) is
-					// protocol noise the fold never needs.
 				}
+				// `agent_end` is the model's last message; `agent_settled` is the
+				// turn's real end — pi may retry, compact, or drain a queue
+				// between them. Idle, the per-turn wall clock and per-turn
+				// results all key off `agent_settled`.
+				if (event.type === "agent_start") {
+					turnActive = true;
+					// A fresh turn clears the previous turn's leftovers: a lane
+					// that recovered must not report a stale failure, and a turn
+					// that produced no text must not re-report the last answer.
+					delete state.errorMessage;
+					state.finalText = "";
+					armTurnTimer();
+					input.onIdleChange?.(false);
+				} else if (event.type === "agent_settled") {
+					turnActive = false;
+					clearTurnTimer();
+					input.onIdleChange?.(true);
+					if (input.onTurnSettled) {
+						const turn: AgentRunResult = state.errorMessage
+							? { status: "failed", errorMessage: state.errorMessage, text: state.finalText, usage: state.usage }
+							: {
+								status: "completed",
+								text: state.finalText,
+								usage: state.usage,
+								...(state.model ? { model: state.model } : {}),
+								...(state.stopReason ? { stopReason: state.stopReason } : {}),
+							};
+						try { input.onTurnSettled(turn); } catch { /* observers cannot fail a child run */ }
+					}
+				}
+				applyEvent(state, event);
+				const activity = readAgentActivity(event);
+				if (activity) {
+					try { input.onActivity?.(activity); } catch { /* observers cannot fail a child run */ }
+				}
+				const progress = readAgentProgress(event);
+				if (progress) {
+					try { input.onProgress?.(progress); } catch { /* UI updates cannot fail the run */ }
+				}
+			} catch {
+				// A malformed event is protocol noise the fold never needs.
 			}
-		});
+		}));
 		child.stderr?.setEncoding("utf8");
 		child.stderr?.on("data", (chunk: string) => {
 			if (stderr.length < MAX_STDERR_CHARS) stderr += chunk;
@@ -422,7 +436,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		});
 		child.on("exit", (code) => {
 			exitCode = code;
-			if (timer) clearTimeout(timer);
+			clearTurnTimer();
 			boundDrain();
 		});
 		child.on("close", (code) => {
@@ -452,6 +466,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		// The first turn starts as soon as the command lands; a write failure is
 		// reported through `done` (the child will exit and `finish` maps it).
 		send({ type: "prompt", message: input.prompt });
+		armTurnTimer();
 		return handle;
 	} finally {
 		if (systemPrompt) await rm(systemPrompt.dir, { recursive: true, force: true }).catch(() => undefined);

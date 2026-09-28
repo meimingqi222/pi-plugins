@@ -22,6 +22,7 @@ export {
 export {
   DEFAULT_AGENT_TIMEOUT_MS,
   DEFAULT_STALL_MS,
+  HEADLESS_CHILD_ENV,
   SCHEDULER_DISABLE_FLAGS,
   agentChildEnv,
   applyEvent,

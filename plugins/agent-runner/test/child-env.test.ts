@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SCHEDULER_DISABLE_FLAGS, agentChildEnv } from "../src/index.ts";
+import { HEADLESS_CHILD_ENV, SCHEDULER_DISABLE_FLAGS, agentChildEnv } from "../src/index.ts";
 
 /**
  * A spawned agent must be told it is not the user's session.
@@ -11,7 +11,14 @@ import { SCHEDULER_DISABLE_FLAGS, agentChildEnv } from "../src/index.ts";
  */
 describe("agentChildEnv", () => {
   test("sets every scheduler-disable switch", () => {
-    expect(agentChildEnv({ PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin", ...SCHEDULER_DISABLE_FLAGS });
+    expect(agentChildEnv({ PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin", ...SCHEDULER_DISABLE_FLAGS, ...HEADLESS_CHILD_ENV });
+  });
+
+  test("disables pi-bg-bash's auto-backgrounding in the headless child", () => {
+    // A backgrounded job in a `-p`/rpc child has no session to wake: its result
+    // never arrives, and process exit kills it. The env value has the highest
+    // precedence in pi-bg-bash's threshold resolution.
+    expect(agentChildEnv({}).PI_BG_BASH_THRESHOLD).toBe("0");
   });
 
   test("inherits the parent environment rather than replacing it", () => {

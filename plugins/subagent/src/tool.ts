@@ -20,6 +20,7 @@ import {
   spawnRpcChild,
   type AgentActivity,
   type AgentExecutor,
+  type AgentRunResult,
   type AgentUsage,
   type RpcChild,
   type SpawnRpcChildOptions,
@@ -152,12 +153,48 @@ export interface SubagentCallContext {
    * Run the child on the live-RPC transport instead of the one-shot JSON pipe.
    * `onChild` receives the handle once spawned — the caller keeps it to send
    * `steer`/`follow_up`/`prompt` follow-ups and to `end` the lane at keepAlive
-   * expiry. `onIdleChange` marks turn boundaries: true on `agent_end`, false
-   * on `agent_start`.
+   * expiry. `onIdleChange` marks turn boundaries: true on `agent_settled`,
+   * false on `agent_start`. `onTurnSettled` carries each turn's raw result as
+   * the turn finishes, while the process is still alive; `onCommandError`
+   * reports a stdin command pi refused.
    */
   rpc?: {
     onChild: (child: RpcChild) => void;
     onIdleChange?: (idle: boolean) => void;
+    onTurnSettled?: (result: AgentRunResult) => void;
+    onCommandError?: (info: { command: string; error: string }) => void;
+  };
+}
+
+/**
+ * Map a child run's raw outcome — a whole run or a single settled turn — to the
+ * tool result shape the model sees. One mapping for both: a background lane
+ * reports each turn through `onTurnSettled` long before its process exits.
+ */
+export function toSubagentToolResult(
+  result: AgentRunResult,
+  agentName: string,
+  progress?: SubagentProgress,
+): AgentToolResult<SubagentDetails> {
+  const details: SubagentDetails = {
+    agent: agentName,
+    status: result.status,
+    ...(result.model ? { model: result.model } : {}),
+    usage: result.usage,
+    ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+    output: result.text ?? "",
+    ...(progress ? { progress } : {}),
+  };
+
+  const text =
+    result.status === "completed"
+      ? truncate(result.text || "(the agent returned no text)")
+      : `Agent "${agentName}" ${result.status}: ${result.errorMessage ?? "no error message"}`;
+
+  return {
+    content: [{ type: "text", text }],
+    details,
+    usage: toPiUsage(result.usage),
   };
 }
 
@@ -194,6 +231,8 @@ export async function executeSubagent(
           ...(input.onActivity ? { onActivity: input.onActivity } : {}),
           ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           ...(ctx.rpc?.onIdleChange ? { onIdleChange: ctx.rpc.onIdleChange } : {}),
+          ...(ctx.rpc?.onTurnSettled ? { onTurnSettled: ctx.rpc.onTurnSettled } : {}),
+          ...(ctx.rpc?.onCommandError ? { onCommandError: ctx.rpc.onCommandError } : {}),
         }, options.rpcSpawn);
         ctx.rpc?.onChild(child);
         return child.done;
@@ -292,24 +331,5 @@ export async function executeSubagent(
 
   delete progress.activeTool;
 
-  const details: SubagentDetails = {
-    agent: agent.name,
-    status: result.status,
-    ...(result.model ? { model: result.model } : {}),
-    usage: result.usage,
-    ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-    output: result.text ?? "",
-    progress,
-  };
-
-  const text =
-    result.status === "completed"
-      ? truncate(result.text || "(the agent returned no text)")
-      : `Agent "${agent.name}" ${result.status}: ${result.errorMessage ?? "no error message"}`;
-
-  return {
-    content: [{ type: "text", text }],
-    details,
-    usage: toPiUsage(result.usage),
-  };
+  return toSubagentToolResult(result, agent.name, progress);
 }

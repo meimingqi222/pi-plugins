@@ -64,10 +64,15 @@ success.
 `PI_GOAL_DISABLE=1`, `PI_WORKFLOW_DISABLED=1` and `PI_SUBAGENT_DISABLE=1`, so it
 neither resumes the user's goal, nor starts a workflow, nor delegates again.
 Adding a fourth scheduler means editing `SCHEDULER_DISABLE_FLAGS`, not every
-spawner.
+spawner. A separate `HEADLESS_CHILD_ENV` sets `PI_BG_BASH_THRESHOLD=0`: ambient
+extensions load in the child, but a headless `-p`/rpc run has no session for
+pi-bg-bash's auto-backgrounded job to wake, so the command would return a job
+id whose result never arrives.
 
 **A silent child is bounded twice.** The wall clock (`timeoutMs`, default 15
-minutes) bounds the run; a silence bound (`stallMs`, `PI_AGENT_STALL_MS`, default
+minutes) bounds the run — per *turn* on the RPC transport, where an idle lane
+awaiting a reply spends none of it and each `agent_start` re-arms it; a silence
+bound (`stallMs`, `PI_AGENT_STALL_MS`, default
 5 minutes) fails it earlier and names the last event, because the deadline alone
 diagnoses nothing. A tool call that declared its own `timeout` — pi's shell tools
 take seconds, and `pi-workflow`'s child guard injects one — outranks the silence

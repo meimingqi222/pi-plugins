@@ -32,22 +32,63 @@ function pendingWork() {
 }
 
 describe("the lane registry", () => {
-	test("foreground lanes appear in list() but never occupy a background slot", async () => {
+	test("foreground lanes appear in list() and hold a concurrency slot like any busy lane", async () => {
 		const settled: string[] = [];
 		const registry = new LaneRegistry((lane) => settled.push(lane.id), 1);
 		const fg = pendingWork();
-		const launched = registry.launch("explore", "fg task", SESSION, fg.work, { kind: "foreground" });
+		const launched = registry.launch("explore", "fg task", SESSION, fg.work, { kind: "foreground", slotHeld: true });
 		expect(launched.record.kind).toBe("foreground");
 		expect(registry.list(SESSION).map((lane) => lane.id)).toContain(launched.record.id);
-		// The single background slot is still free: capacity counts only background lanes.
-		expect(registry.atCapacity()).toBe(false);
-		const bg = pendingWork();
-		registry.launch("explore", "bg task", SESSION, bg.work);
+		// A busy foreground call fills the fleet: pi runs a tool batch in
+		// parallel, so an uncapped blocking call would bypass the cap entirely.
 		expect(registry.atCapacity()).toBe(true);
+		const bg = pendingWork();
+		expect(() => registry.launch("explore", "bg task", SESSION, bg.work)).toThrow("At most 1 subagents");
 		fg.finish();
 		await launched.done;
 		expect(settled).toContain(launched.record.id);
-		bg.finish();
+		expect(registry.atCapacity()).toBe(false);
+	});
+
+	test("acquireSlot parks a caller FIFO until a busy lane settles or goes idle", async () => {
+		const registry = new LaneRegistry(() => {}, 1);
+		const a = pendingWork();
+		registry.launch("explore", "a", SESSION, a.work, { kind: "foreground" });
+		const first = registry.acquireSlot();
+		let granted = false;
+		void first.then((ok) => { granted = ok; });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(granted).toBe(false);
+		// Settle frees the slot; the queued caller is granted it.
+		a.finish();
+		expect(await first).toBe(true);
+		// The reservation already counts as busy — a second caller still waits
+		// even though the granted lane has not launched yet.
+		expect(registry.busyCount()).toBe(1);
+		const bg = pendingWork();
+		expect(() => registry.launch("explore", "b", SESSION, bg.work)).toThrow("At most 1 subagents");
+		// The granted reservation becomes the lane.
+		const launched = registry.launch("explore", "fg", SESSION, pendingWork().work, { kind: "foreground", slotHeld: true });
+		expect(registry.busyCount()).toBe(1);
+		// An idle lane frees its slot without settling.
+		const second = registry.acquireSlot();
+		let secondGranted = false;
+		void second.then((ok) => { secondGranted = ok; });
+		registry.setIdle(launched.record.id, true);
+		expect(await second).toBe(true);
+		registry.releaseSlot();
+	});
+
+	test("a queued acquireSlot resolves false on abort and spawns nothing", async () => {
+		const registry = new LaneRegistry(() => {}, 1);
+		const a = pendingWork();
+		registry.launch("explore", "a", SESSION, a.work, { kind: "foreground" });
+		const controller = new AbortController();
+		const queued = registry.acquireSlot(controller.signal);
+		controller.abort();
+		expect(await queued).toBe(false);
+		expect(registry.busyCount()).toBe(1);
+		a.finish();
 	});
 
 	test("stop refuses a foreground lane but abort() reaches it internally", async () => {

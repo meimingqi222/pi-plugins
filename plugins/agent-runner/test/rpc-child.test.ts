@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { rpcRunArgs, spawnRpcChild } from "../src/rpc-child.ts";
 
 class FakeChild extends EventEmitter {
@@ -94,6 +97,28 @@ describe("spawnRpcChild", () => {
 		expect(result.text).toContain("first answer");
 	});
 
+	(process.platform === "win32" ? test.skip : test)("the evidence log is written private: directory 0o700, file 0o600", async () => {
+		// The log holds prompts and tool output; the JSON transport already
+		// writes it owner-only and the RPC transport must not be the laxer copy.
+		const root = await mkdtemp(join(tmpdir(), "pi-rpc-evidence-"));
+		try {
+			const dir = join(root, "ev");
+			const evidencePath = join(dir, "events.jsonl");
+			const child = new FakeChild();
+			const handle = await spawnRpcChild(
+				{ prompt: "Task: hi", cwd: "/tmp", evidencePath },
+				{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+			);
+			child.writeLine({ type: "agent_start" });
+			handle.end();
+			await handle.done;
+			expect((await stat(dir)).mode & 0o777).toBe(0o700);
+			expect((await stat(evidencePath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test("terminate() resolves done as aborted and kills the child", async () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
@@ -115,7 +140,11 @@ describe("spawnRpcChild", () => {
 		);
 		child.writeLine({ type: "agent_start" });
 		expect(idle).toEqual([false]);
+		// agent_end is not the turn's end: pi may still retry, compact, or drain a
+		// queue. Only agent_settled marks the lane idle.
 		child.writeLine({ type: "agent_end", messages: [] });
+		expect(idle).toEqual([false]);
+		child.writeLine({ type: "agent_settled" });
 		expect(idle).toEqual([false, true]);
 		expect(handle.send({ type: "steer", message: "now do Y" })).toBe(true);
 		expect(handle.send({ type: "follow_up", message: "queued Q" })).toBe(true);
@@ -214,6 +243,7 @@ describe("spawnRpcChild", () => {
 		);
 		child.writeLine({ type: "agent_start" });
 		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
 		// Several stall windows pass while the child waits for its owner.
 		await new Promise((resolve) => setTimeout(resolve, 250));
 		const raced = await Promise.race([handle.done.then(() => "settled"), new Promise((r) => setTimeout(() => r("pending"), 10))]);
@@ -223,6 +253,153 @@ describe("spawnRpcChild", () => {
 		const result = await handle.done;
 		expect(result.status).toBe("failed");
 		expect(result.errorMessage).toContain("produced no output");
+	}, 10_000);
+
+	test("onTurnSettled fires once per agent_settled with that turn's outcome", async () => {
+		const child = new FakeChild();
+		const turns: Array<{ status: string; text?: string; errorMessage?: string }> = [];
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", onTurnSettled: (result) => turns.push(result) },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first answer" }], usage: doneUsage } });
+		child.writeLine({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "first answer" }], usage: doneUsage }] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns).toHaveLength(1);
+		expect(turns[0]!.status).toBe("completed");
+		expect(turns[0]!.text).toBe("first answer");
+		// A second turn produces a second result, with the second turn's text.
+		handle.send({ type: "prompt", message: "again" });
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second answer" }], usage: doneUsage } });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns).toHaveLength(2);
+		expect(turns[1]!.text).toBe("second answer");
+		handle.terminate();
+		await handle.done;
+	});
+
+	test("a turn with an error settles as failed, and a recovered turn clears it", async () => {
+		const child = new FakeChild();
+		const turns: Array<{ status: string; errorMessage?: string }> = [];
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", onTurnSettled: (result) => turns.push(result) },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "error", message: "provider exploded" });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns).toHaveLength(1);
+		expect(turns[0]!.status).toBe("failed");
+		expect(turns[0]!.errorMessage).toBe("provider exploded");
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered" }], usage: doneUsage } });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns).toHaveLength(2);
+		expect(turns[1]!.status).toBe("completed");
+		handle.terminate();
+		await handle.done;
+	});
+
+	test("a new turn does not re-report the previous turn's text", async () => {
+		const child = new FakeChild();
+		const turns: Array<{ status: string; text?: string }> = [];
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", onTurnSettled: (result) => turns.push(result) },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first answer" }], usage: doneUsage } });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns[0]!.text).toBe("first answer");
+		// A turn that produced no assistant text reports none — not the
+		// previous turn's answer again.
+		handle.send({ type: "prompt", message: "again" });
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		expect(turns).toHaveLength(2);
+		expect(turns[1]!.text).toBe("");
+		handle.terminate();
+		// And the final outcome carries the last turn's text — empty here.
+		expect((await handle.done).text).toBe("");
+	});
+
+	test("the run's final text survives an idle gap between turns", async () => {
+		const child = new FakeChild();
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp" },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "the answer" }], usage: doneUsage } });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		// Keepalive end: no new turn started, so the answer is still the outcome.
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		handle.end();
+		expect((await handle.done).text).toBe("the answer");
+	});
+
+	test("a failed command response reaches onCommandError instead of being dropped", async () => {
+		const child = new FakeChild();
+		const errors: Array<{ command: string; error: string }> = [];
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", onCommandError: (info) => errors.push(info) },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		handle.send({ type: "prompt", message: "reply turn" });
+		const writes = child.writes.join("").trim().split("\n").map((line) => JSON.parse(line) as { id: string; type: string });
+		const prompt = writes.filter((write) => write.type === "prompt").at(-1)!;
+		child.writeLine({ type: "response", id: prompt.id, command: "prompt", success: false, error: "Agent is already processing" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(errors).toContainEqual({ command: "prompt", error: "Agent is already processing" });
+		handle.terminate();
+		await handle.done;
+	});
+
+	test("prompt commands carry streamingBehavior followUp so pi queues them mid-turn", async () => {
+		const child = new FakeChild();
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp" },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		handle.send({ type: "prompt", message: "next question" });
+		handle.send({ type: "steer", message: "no flag on steer" });
+		const writes = child.writes.join("").trim().split("\n").map((line) => JSON.parse(line) as { type: string; streamingBehavior?: string });
+		expect(writes.filter((write) => write.type === "prompt")).toHaveLength(2);
+		for (const write of writes.filter((entry) => entry.type === "prompt")) {
+			expect(write.streamingBehavior).toBe("followUp");
+		}
+		expect(writes.find((write) => write.type === "steer")!.streamingBehavior).toBeUndefined();
+		handle.terminate();
+		await handle.done;
+	});
+
+	test("the wall clock is per-turn: idle time does not spend it, a long turn does", async () => {
+		const child = new FakeChild();
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", timeoutMs: 150 },
+			{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		child.writeLine({ type: "agent_start" });
+		child.writeLine({ type: "agent_end", messages: [] });
+		child.writeLine({ type: "agent_settled" });
+		// Well past timeoutMs, but the lane is idle awaiting a reply: still alive.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const raced = await Promise.race([handle.done.then(() => "settled"), new Promise((r) => setTimeout(() => r("pending"), 10))]);
+		expect(raced).toBe("pending");
+		// The reply turn gets a fresh budget; exceeding it fails with a timeout.
+		handle.send({ type: "prompt", message: "again" });
+		child.writeLine({ type: "agent_start" });
+		const result = await handle.done;
+		expect(result.status).toBe("failed");
+		expect(result.errorMessage).toContain("timed out");
 	}, 10_000);
 
 	test("a dialog request is cancelled instead of pinning the child forever", async () => {
