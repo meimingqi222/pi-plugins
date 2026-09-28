@@ -59,7 +59,7 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 			"Use bash normally for short commands; commands that outlive the auto-background threshold are moved to the background and return a job id.",
 			"Set background: true for long-running commands you do not need to finish before the next step, such as builds, full test suites, dev servers, watchers, downloads, or deploys.",
 			"When a background job's result is required for your conclusion, use bg_tasks wait/result before claiming it succeeded. For a long job that should resume you on completion, set notify: always.",
-			"Use bg_tasks to list jobs, inspect bounded results or logs, wait for required jobs, or stop a stuck job. Default successful completions do not wake you.",
+			"Use bg_tasks to list jobs, inspect bounded results or logs, wait for required jobs, or stop a stuck job. Prefer bg_tasks output when checking a running job repeatedly — it returns only new output since the previous call. Default successful completions do not wake you.",
 		],
 		parameters: schema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -109,11 +109,22 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				updateTimer = undefined;
 			};
 
+			// Honour pi's shell settings so this is a drop-in replacement for the
+			// builtin tool: `shellPath` picks the interpreter, `shellCommandPrefix`
+			// is prepended exactly as `${prefix}\n${command}`. The recorded command
+			// and log header keep what the model wrote — the prefix is
+			// environment setup, not the command.
+			const shellSettings = runtime.shellSettings?.(ctx.cwd) ?? {};
+			const resolvedCommand = shellSettings.commandPrefix
+				? `${shellSettings.commandPrefix}\n${params.command}`
+				: params.command;
+
 			let running;
 			try {
 				running = startCommand({
-					command: params.command,
+					command: resolvedCommand,
 					cwd: ctx.cwd,
+					...(shellSettings.shellPath ? { shellPath: shellSettings.shellPath } : {}),
 					env: buildEnv(ctx),
 					logPath: job.logPath,
 					logHeader: logHeader(job, sessionId),

@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { SettledDeliveryQueue, createWorkReporter } from "pi-run-core";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
@@ -148,6 +149,21 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		registry,
 		autoBackgroundSeconds: (cwd) => resolveAutoBackgroundSeconds(loadThresholdSources(cwd)),
 		backgroundLimit: () => BACKGROUND_JOB_LIMIT,
+		// Resolved per call: cheap, and a project-level settings file written
+		// mid-session takes effect immediately. `create` only reads — settings
+		// are persisted by explicit mutation, not by construction — and a
+		// settings file that cannot be read must not fail the command.
+		shellSettings: (cwd) => {
+			try {
+				const settings = SettingsManager.create(cwd, getAgentDir());
+				return {
+					shellPath: settings.getShellPath(),
+					commandPrefix: settings.getShellCommandPrefix(),
+				};
+			} catch {
+				return {};
+			}
+		},
 		captureOrigin,
 		started: (job, ctx, isCurrent) => {
 			// A job has just become live background work: bind the UI context here

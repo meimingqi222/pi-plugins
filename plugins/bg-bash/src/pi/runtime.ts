@@ -16,6 +16,14 @@ export interface Runtime {
 	/** Maximum number of concurrent background jobs. */
 	backgroundLimit(): number;
 	/**
+	 * pi's shell settings for a working directory (`shellPath`,
+	 * `shellCommandPrefix`) — the overrides the builtin bash tool honours, so
+	 * this plugin is a drop-in replacement only if it applies them too.
+	 * Injectable: tests substitute a reader without constructing pi's
+	 * SettingsManager.
+	 */
+	shellSettings?: (cwd: string) => { shellPath?: string; commandPrefix?: string };
+	/**
 	 * Snapshot the launching session identity, so a completion that arrives
 	 * after a session or branch switch can be dropped instead of injected.
 	 */

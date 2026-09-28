@@ -9,6 +9,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { JobRegistry } from "../src/core/jobs.ts";
 import { createBgBashTool } from "../src/pi/bash-tool.ts";
 import type { Runtime } from "../src/pi/runtime.ts";
@@ -57,5 +60,46 @@ describe("bash tool capacity", () => {
 		const result = await tool.execute("c3", { command: "echo completed" }, undefined, undefined, ctx);
 
 		expect(result.details).toMatchObject({ status: "exited", exitCode: 0, mode: "foreground" });
+	});
+});
+
+describe("shell settings", () => {
+	test("prepends the configured shellCommandPrefix like the builtin tool", async () => {
+		const tool = createBgBashTool({
+			...runtimeWith(new JobRegistry()),
+			shellSettings: () => ({ commandPrefix: "export BG_PREFIX_PROBE=ok" }),
+		});
+		const result = await tool.execute("p1", { command: "echo $BG_PREFIX_PROBE" }, undefined, undefined, ctx);
+		expect(result.content.map((part: any) => part.text).join("")).toContain("ok");
+		// The prefix is environment setup; the recorded command is the user's.
+		expect(result.details).toMatchObject({ command: "echo $BG_PREFIX_PROBE" });
+	});
+
+	test("passes the configured shellPath through to the runner", async () => {
+		if (process.platform === "win32") return;
+		// A stand-in shell that ignores its arguments and prints a marker, so
+		// the output proves which executable ran the command.
+		const dir = mkdtempSync(join(tmpdir(), "bg-bash-shell-"));
+		try {
+			const fakeShell = join(dir, "probe-shell");
+			writeFileSync(fakeShell, "#!/bin/sh\nprintf 'PROBE-SHELL-RAN\\n'\n");
+			chmodSync(fakeShell, 0o755);
+			const tool = createBgBashTool({
+				...runtimeWith(new JobRegistry()),
+				shellSettings: () => ({ shellPath: fakeShell }),
+			});
+			const result = await tool.execute("p2", { command: "echo not-the-real-shell" }, undefined, undefined, ctx);
+			const text = result.content.map((part: any) => part.text).join("");
+			expect(text).toContain("PROBE-SHELL-RAN");
+			expect(text).not.toContain("not-the-real-shell");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("runs without a settings reader, as before the seam existed", async () => {
+		const tool = createBgBashTool(runtimeWith(new JobRegistry()));
+		const result = await tool.execute("p3", { command: "echo no-settings" }, undefined, undefined, ctx);
+		expect(result.content.map((part: any) => part.text).join("")).toContain("no-settings");
 	});
 });

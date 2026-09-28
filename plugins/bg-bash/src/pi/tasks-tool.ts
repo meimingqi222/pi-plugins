@@ -1,5 +1,5 @@
 /** Bounded inspection, waiting, and control for detached shell jobs. */
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { truncateTail, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Job } from "../core/jobs.ts";
@@ -9,6 +9,8 @@ import type { Runtime } from "./runtime.ts";
 
 const MAX_LOG_LINES = 2000;
 const MAX_LOG_BYTES = 50 * 1024;
+const OUTPUT_MAX_LINES = 2000;
+const OUTPUT_MAX_BYTES = 50 * 1024;
 const RESULT_LINES = 40;
 const RESULT_BYTES = 4 * 1024;
 const MAX_WAIT_SECONDS = 30;
@@ -18,8 +20,9 @@ const schema = Type.Object({
 	action: Type.Union([
 		Type.Literal("list"), Type.Literal("status"), Type.Literal("result"),
 		Type.Literal("log"), Type.Literal("wait"), Type.Literal("kill"),
+		Type.Literal("output"),
 	]),
-	id: Type.Optional(Type.String({ description: "Job id for status/result/log/kill, or one job to wait for" })),
+	id: Type.Optional(Type.String({ description: "Job id for status/result/log/output/kill, or one job to wait for" })),
 	ids: Type.Optional(Type.Array(Type.String(), { description: "Up to 8 job ids for wait" })),
 	lines: Type.Optional(Type.Number({ description: "Trailing log lines, clamped to 1–2000 (default 200)" })),
 	timeout: Type.Optional(Type.Number({ description: "Wait timeout in seconds, clamped to 0–30 (default 30)" })),
@@ -27,10 +30,13 @@ const schema = Type.Object({
 });
 
 export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schema, undefined> {
+	// Per-job byte cursors for `output`, keyed by the Job object so a recycled
+	// id from a new session cannot inherit a stale offset.
+	const outputCursors = new WeakMap<Job, number>();
 	return {
 		name: "bg_tasks",
 		label: "bg_tasks",
-		description: "List, inspect, wait for, or stop background bash jobs. result gives bounded status and output; log reads a bounded tail. Success does not wake the agent by default.",
+		description: "List, inspect, wait for, or stop background bash jobs. result gives bounded status and output; log reads a bounded tail; output returns only output produced since the previous output call — prefer it when checking a running job repeatedly. Success does not wake the agent by default.",
 		promptSnippet: "Inspect or wait for background bash jobs before relying on their results.",
 		parameters: schema,
 		async execute(_toolCallId, params, signal) {
@@ -56,6 +62,13 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 					if (outcome === "changed") return answer("Background job registry changed while waiting; query bg_tasks list before relying on a result.");
 					const headline = outcome === "timeout" ? `Wait timed out after ${seconds}s. For long jobs that should resume the agent, start them with notify: "always".` : outcome === "aborted" ? "Wait cancelled." : "Requested job state reached.";
 					return answer(`${headline}\n${jobs.map(formatResult).join("\n\n")}`);
+				}
+				case "output": {
+					const job = requireJob(runtime, params.id);
+					const chunk = incrementalOutput(job, outputCursors);
+					const status = `Job ${job.id}: ${job.status}${job.exitCode === null || job.exitCode === undefined ? "" : ` (exit ${job.exitCode})`}`;
+					if (chunk === undefined) return answer(`${status}\noutput unavailable (log missing or expired).`);
+					return answer(`${status}\n${chunk.trim() ? chunk : "(no new output)"}`);
 				}
 				case "kill": {
 					const job = requireJob(runtime, params.id);
@@ -99,6 +112,73 @@ function jobOutput(job: Job): string | undefined {
 	}
 	if (!output && job.status !== "running" && (!job.logPath || !existsSync(job.logPath))) return undefined;
 	return output;
+}
+
+/**
+ * Output appended to the job's log since the previous `output` call — the
+ * polling-friendly complement to `log`, which always returns a tail. Returns
+ * undefined when there is no readable log file.
+ */
+function incrementalOutput(job: Job, cursors: WeakMap<Job, number>): string | undefined {
+	if (!job.logPath) return undefined;
+	let fd: number | undefined;
+	try {
+		if (lstatSync(job.logPath).isSymbolicLink()) return undefined;
+		fd = openSync(job.logPath, "r");
+		const size = fstatSync(fd).size;
+		let cursor = cursors.get(job);
+		if (cursor === undefined || cursor > size) {
+			// First read, or the file shrank: command output begins after the
+			// `# …` header lines the runner writes first.
+			cursor = headerEnd(fd);
+		}
+		const newBytes = size - cursor;
+		if (newBytes <= 0) {
+			cursors.set(job, size);
+			return "";
+		}
+		// Cap what we return to a tail window; the cursor still advances to the
+		// end of the file so skipped bytes are never offered again.
+		const readLength = Math.min(newBytes, OUTPUT_MAX_BYTES);
+		const readStart = size - readLength;
+		const buffer = Buffer.alloc(readLength);
+		readSync(fd, buffer, 0, readLength, readStart);
+		cursors.set(job, size);
+		let text = buffer.toString("utf8");
+		if (readStart > cursor) {
+			// The window opened mid-line; drop the partial line so the tail
+			// begins on a boundary. A window that is one long line is kept.
+			const newline = text.indexOf("\n");
+			if (newline !== -1) text = text.slice(newline + 1);
+		}
+		const tail = truncateTail(text, { maxLines: OUTPUT_MAX_LINES, maxBytes: OUTPUT_MAX_BYTES });
+		const skippedBytes = newBytes - Buffer.byteLength(tail.content, "utf8");
+		return skippedBytes > 0 ? `[${skippedBytes} earlier bytes skipped]\n${tail.content}` : tail.content;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				// Ignore close failures.
+			}
+		}
+	}
+}
+
+/** Byte offset just past the `# …` header lines the runner prepends to a log. */
+function headerEnd(fd: number): number {
+	const head = Buffer.alloc(4096);
+	const read = readSync(fd, head, 0, head.length, 0);
+	let offset = 0;
+	for (const line of head.toString("utf8", 0, read).split("\n")) {
+		const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+		// A partial trailing line is not consumed — wait for its newline.
+		if (offset + lineBytes > read || !line.startsWith("# ")) break;
+		offset += lineBytes;
+	}
+	return offset;
 }
 
 function formatResult(job: Job): string {
