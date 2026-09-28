@@ -68,6 +68,10 @@ export interface Lane {
 	 * follow-up prompt. Absent while a turn is in flight and on JSON children.
 	 */
 	idleSince?: number;
+	/** How many turn results this lane produced while staying alive (RPC lanes). */
+	turnsAnswered?: number;
+	/** The last stdin command pi refused, short enough for a status line. */
+	lastCommandError?: string;
 }
 
 interface ActiveLane {
@@ -94,6 +98,11 @@ export interface LaunchOptions {
 	alias?: string;
 	kind?: LaneKind;
 	generation?: number;
+	/**
+	 * The caller already holds a slot claimed through `acquireSlot` — the
+	 * reservation becomes this lane instead of being released.
+	 */
+	slotHeld?: boolean;
 }
 
 /** Session-local, bounded handles for delegations — background tasks and foreground calls alike. */
@@ -101,6 +110,14 @@ export class LaneRegistry {
 	private readonly active = new Map<string, ActiveLane>();
 	private readonly settled: Lane[] = [];
 	private readonly waiters = new Set<(lane: Lane) => void>();
+	/**
+	 * Slots a queued foreground call has been granted but not yet turned into a
+	 * lane. Counted as busy so two calls waking in the same tick cannot both
+	 * see a free slot.
+	 */
+	private reservedSlots = 0;
+	/** FIFO queue of foreground calls parked on a full fleet. */
+	private readonly slotWaiters: Array<{ grant: () => void }> = [];
 
 	constructor(
 		private readonly onSettled: (lane: Lane) => void,
@@ -121,9 +138,14 @@ export class LaneRegistry {
 		options: LaunchOptions = {},
 	): { record: Lane; done: Promise<void> } {
 		const kind = options.kind ?? "background";
-		if (kind === "background" && this.backgroundActiveCount() >= this.maxActive) {
-			throw new Error(`At most ${this.maxActive} background subagents may run at once. Check or cancel one with subagent_tasks.`);
+		// A background launch is refused when the fleet is busy. A foreground
+		// call never reaches here without a slot: it parked on `acquireSlot`
+		// first, because pi runs a tool batch in parallel and N blocking calls
+		// would otherwise spawn N children at once.
+		if (kind === "background" && this.busyCount() >= this.maxActive) {
+			throw new Error(`At most ${this.maxActive} subagents may run at once. Check or cancel one with subagent_tasks.`);
 		}
+		if (options.slotHeld) this.reservedSlots = Math.max(0, this.reservedSlots - 1);
 		const lane: Lane = {
 			id: `sa-${randomUUID()}`,
 			agent,
@@ -182,8 +204,41 @@ export class LaneRegistry {
 	setIdle(id: string, idle: boolean, now = Date.now()): void {
 		const lane = this.active.get(id)?.lane;
 		if (!lane) return;
-		if (idle) lane.idleSince = now;
-		else delete lane.idleSince;
+		if (idle) {
+			lane.idleSince = now;
+			// An idle lane frees its concurrency slot: it is parked awaiting a
+			// reply, not doing work.
+			this.wakeSlotWaiter();
+		} else {
+			delete lane.idleSince;
+		}
+	}
+
+	/**
+	 * Record a settled *turn* on a lane that is still running: the RPC child
+	 * answers once per turn while staying alive for replies. Waiters are
+	 * notified the same way a final settle notifies them, so a `wait` parked on
+	 * the lane returns the answer instead of sitting out its deadline.
+	 */
+	setTurnResult(id: string, result: AgentToolResult<SubagentDetails>): void {
+		const lane = this.active.get(id)?.lane;
+		if (!lane) return;
+		lane.result = result;
+		lane.turnsAnswered = (lane.turnsAnswered ?? 0) + 1;
+		const visible = publicLane(lane);
+		for (const waiter of [...this.waiters]) {
+			try {
+				waiter(visible);
+			} catch {
+				// One waiter failing must not keep the others waiting.
+			}
+		}
+	}
+
+	/** Record a refused stdin command so `show` can report what pi rejected. */
+	setCommandError(id: string, error: string): void {
+		const lane = this.active.get(id)?.lane;
+		if (lane) lane.lastCommandError = error;
 	}
 
 	idleSince(sessionId: string, id: string): number | undefined {
@@ -210,7 +265,7 @@ export class LaneRegistry {
 	}
 
 	atCapacity(): boolean {
-		return this.backgroundActiveCount() >= this.maxActive;
+		return this.busyCount() >= this.maxActive;
 	}
 
 	/** Counts running lanes across sessions and kinds; the fleet ticker starts on this. */
@@ -218,10 +273,67 @@ export class LaneRegistry {
 		return this.active.size;
 	}
 
-	private backgroundActiveCount(): number {
-		let count = 0;
-		for (const entry of this.active.values()) if (entry.lane.kind === "background") count += 1;
+	/**
+	 * Lanes holding a concurrency slot — running and not idle — of either kind,
+	 * plus reservations a queued foreground call has been granted but not yet
+	 * launched. An idle lane (`idleSince` set) is parked awaiting a reply on
+	 * the caller's keepalive, not doing work: charging it a slot would let four
+	 * answered lanes block every launch, and a reply re-activating one is
+	 * always allowed even past the cap.
+	 */
+	busyCount(): number {
+		let count = this.reservedSlots;
+		for (const entry of this.active.values()) {
+			if (entry.lane.status === "running" && entry.lane.idleSince === undefined) count += 1;
+		}
 		return count;
+	}
+
+	/**
+	 * Claim a concurrency slot for a launch that must wait rather than refuse —
+	 * the foreground path. The claim is a reservation counted as busy
+	 * immediately, so calls racing in the same tick cannot both observe a free
+	 * slot; `launch` with `slotHeld` turns the reservation into the lane.
+	 * FIFO: each freed slot wakes exactly one waiter. Resolves `false` when
+	 * `signal` fires while queued — the caller then aborts having spawned
+	 * nothing.
+	 */
+	acquireSlot(signal?: AbortSignal): Promise<boolean> {
+		if (signal?.aborted) return Promise.resolve(false);
+		if (this.slotWaiters.length === 0 && this.busyCount() < this.maxActive) {
+			this.reservedSlots += 1;
+			return Promise.resolve(true);
+		}
+		return new Promise<boolean>((resolve) => {
+			const waiter = { grant: (): void => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve(true);
+			} };
+			const onAbort = (): void => {
+				const index = this.slotWaiters.indexOf(waiter);
+				if (index < 0) return;
+				this.slotWaiters.splice(index, 1);
+				resolve(false);
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+			this.slotWaiters.push(waiter);
+		});
+	}
+
+	/** Drop a granted-but-unused reservation (the call was interrupted before it launched). */
+	releaseSlot(): void {
+		if (this.reservedSlots === 0) return;
+		this.reservedSlots -= 1;
+		this.wakeSlotWaiter();
+	}
+
+	private wakeSlotWaiter(): void {
+		// Wake only the head: a freed slot admits exactly one waiting call.
+		if (this.busyCount() >= this.maxActive) return;
+		const next = this.slotWaiters.shift();
+		if (!next) return;
+		this.reservedSlots += 1;
+		next.grant();
 	}
 
 	get activeLimit(): number {
@@ -240,8 +352,15 @@ export class LaneRegistry {
 	 */
 	waitFor(sessionId: string, id: string, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
 		const existing = this.get(sessionId, id);
-		if (!existing || existing.status !== "running") return Promise.resolve({ lane: existing, outcome: "settled" });
+		// A lane that produced a turn answer AND went idle has something to
+		// return: "running" only means the process survives for a reply. A busy
+		// lane still holds the *previous* turn's result, so result alone is not
+		// grounds to stop waiting — that would hand back a stale answer.
+		if (!existing || existing.status !== "running" || (existing.result !== undefined && existing.idleSince !== undefined)) {
+			return Promise.resolve({ lane: existing, outcome: "settled" });
+		}
 		if (signal?.aborted) return Promise.resolve({ lane: existing, outcome: "interrupted" });
+		const turnsAtStart = existing.turnsAnswered ?? 0;
 		return new Promise((resolve) => {
 			const done = (outcome: WaitOutcome) => resolve({ lane: this.get(sessionId, id), outcome });
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -252,6 +371,9 @@ export class LaneRegistry {
 			};
 			const onSettled = (lane: Lane): void => {
 				if (lane.id !== id) return;
+				// A running lane is only done waiting when a *new* turn result
+				// landed after this wait started.
+				if (lane.status === "running" && (lane.turnsAnswered ?? 0) <= turnsAtStart) return;
 				cleanup();
 				done("settled");
 			};
@@ -272,6 +394,8 @@ export class LaneRegistry {
 	private settle(lane: Lane): void {
 		if (!this.active.delete(lane.id)) return;
 		lane.finishedAt = Date.now();
+		// The freed slot may admit a queued foreground call.
+		this.wakeSlotWaiter();
 		this.settled.push(lane);
 		while (this.settled.length > this.historyLimit) this.settled.shift();
 		const visible = publicLane(lane);

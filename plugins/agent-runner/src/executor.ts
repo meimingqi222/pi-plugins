@@ -20,11 +20,16 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { rm } from "node:fs/promises";
 import { jsonRunArgs, resolvePiInvocation, type PiInvocation } from "./spawn.ts";
 import { killAgentTree } from "./process.ts";
+import {
+  createEvidenceWriter,
+  createJsonLineReader,
+  mapRunOutcome,
+  MAX_STDERR_CHARS,
+  writeSystemPromptFile,
+} from "./child-io.ts";
 
 export interface AgentUsage {
   input: number;
@@ -223,9 +228,6 @@ const MIN_STALL_CHECK_MS = 25;
  * a command may declare its own; the tool's timeout must be the one that reports.
  */
 const STALL_DECLARED_SLACK_MS = 30_000;
-const MAX_STDERR_CHARS = 8_000;
-/** Bounded so a runaway child cannot grow the parent's heap through its own output. */
-const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
 /**
  * A descendant must not keep the result pending through an inherited pipe.
  *
@@ -553,33 +555,21 @@ export const SCHEDULER_DISABLE_FLAGS = {
   PI_SUBAGENT_DISABLE: "1",
 } as const;
 
-/** Merge the scheduler-disable contract into an environment. */
+/**
+ * Ambient-extension settings a *headless* child needs — not scheduler flags.
+ *
+ * `PI_BG_BASH_THRESHOLD: "0"` disables pi-bg-bash's automatic backgrounding:
+ * the plugin's env override has the highest precedence, and a `-p`/rpc child
+ * has no live session for a backgrounded job to wake — a long command would
+ * return a job id whose result never arrives and then die with the process.
+ */
+export const HEADLESS_CHILD_ENV = {
+  PI_BG_BASH_THRESHOLD: "0",
+} as const;
+
+/** Merge the scheduler-disable contract and headless-child settings into an environment. */
 export function agentChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...env, ...SCHEDULER_DISABLE_FLAGS };
-}
-
-/** Write the delegated system prompt to a private temp file, or return undefined. */
-async function writeSystemPrompt(systemPrompt: string | undefined, root = tmpdir()): Promise<{ dir: string; file: string } | undefined> {
-  if (!systemPrompt || !systemPrompt.trim()) return undefined;
-  let dir: string | undefined;
-  try {
-    dir = await mkdtemp(join(root, "pi-agent-"));
-    const file = join(dir, "system-prompt.md");
-    await writeFile(file, systemPrompt, { encoding: "utf-8", mode: 0o600 });
-    return { dir, file };
-  } catch (error) {
-    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    throw new Error(`Could not prepare delegated system prompt: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-function tryParse(parse: ((text: string) => unknown) | undefined, text: string): unknown {
-  if (!parse) return undefined;
-  try {
-    return parse(text);
-  } catch {
-    return undefined;
-  }
+  return { ...env, ...SCHEDULER_DISABLE_FLAGS, ...HEADLESS_CHILD_ENV };
 }
 
 /**
@@ -592,9 +582,9 @@ function tryParse(parse: ((text: string) => unknown) | undefined, text: string):
 export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentExecutor {
   return async (input: AgentRunInput): Promise<AgentRunResult> => {
     const invocation = options.invocation ?? resolvePiInvocation();
-    let systemPrompt: Awaited<ReturnType<typeof writeSystemPrompt>>;
+    let systemPrompt: Awaited<ReturnType<typeof writeSystemPromptFile>>;
     try {
-      systemPrompt = await writeSystemPrompt(input.systemPrompt, options.systemPromptRoot);
+      systemPrompt = await writeSystemPromptFile(input.systemPrompt, options.systemPromptRoot);
     } catch (error) {
       return { status: "failed", usage: emptyAgentUsage(), errorMessage: error instanceof Error ? error.message : String(error) };
     }
@@ -621,7 +611,6 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         });
 
         const state = emptyStreamState();
-        let buffer = "";
         let stderr = "";
         let settled = false;
         let killedBy: "timeout" | "abort" | "stalled" | undefined;
@@ -638,46 +627,13 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         let drainTimer: ReturnType<typeof setTimeout> | undefined;
         let exitCode: number | null = null;
 
-        // Evidence sink: the child's raw event stream, one JSON object per line.
-        // Appends are ordered through one queue and best-effort, so a write
-        // failure never fails the run.
+        // Evidence sink: the child's raw event stream, one JSON object per
+        // line, written owner-only and bounded by the caller's cap.
         const evidencePath = input.evidencePath;
-        let evidenceBytes = 0;
-        const evidenceMaxBytes = input.evidenceMaxBytes && input.evidenceMaxBytes > 0
-          ? Math.floor(input.evidenceMaxBytes)
-          : undefined;
-        const evidenceTruncationMarker = evidenceMaxBytes === undefined
-          ? undefined
-          : `${JSON.stringify({ type: "evidence_truncated", maxBytes: evidenceMaxBytes })}\n`;
-        const evidenceMarkerBytes = evidenceTruncationMarker
-          ? Buffer.byteLength(evidenceTruncationMarker, "utf8")
-          : 0;
-        let evidenceTruncated = false;
-        let evidenceQueue: Promise<void> = evidencePath
-          ? mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 })
-              .then(async () => {
-                try { evidenceBytes = (await stat(evidencePath)).size; } catch { /* New file. */ }
-              })
-              .catch(() => undefined)
-          : Promise.resolve();
-        function writeEvidence(line: string): void {
-          if (!evidencePath) return;
-          evidenceQueue = evidenceQueue.then(async () => {
-            if (evidenceTruncated) return;
-            const record = `${line}\n`;
-            const bytes = Buffer.byteLength(record, "utf8");
-            if (evidenceMaxBytes !== undefined && evidenceBytes + bytes > evidenceMaxBytes - evidenceMarkerBytes) {
-              evidenceTruncated = true;
-              if (evidenceTruncationMarker && evidenceBytes + evidenceMarkerBytes <= evidenceMaxBytes) {
-                await appendFile(evidencePath!, evidenceTruncationMarker, { encoding: "utf8", mode: 0o600 });
-                evidenceBytes += evidenceMarkerBytes;
-              }
-              return;
-            }
-            await appendFile(evidencePath!, record, { encoding: "utf8", mode: 0o600 });
-            evidenceBytes += bytes;
-          }).catch(() => undefined);
-        }
+        const evidence = createEvidenceWriter({
+          path: evidencePath,
+          ...(input.evidenceMaxBytes !== undefined ? { maxBytes: input.evidenceMaxBytes } : {}),
+        });
 
         // The call's cap wins over the executor's default, so a run's
         // `agentTimeoutMs` bounds one child rather than the whole script.
@@ -766,91 +722,53 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           child.stderr?.destroy();
           child.unref();
 
-          if (state.errorMessage === undefined && stderr.trim()) state.errorMessage = stderr.trim().slice(0, 2_000);
-          if (state.errorMessage === undefined && exitCode !== null && exitCode !== 0) {
-            state.errorMessage = `The agent exited with code ${exitCode}.`;
-          }
-
-          let outcome: AgentRunResult;
-          if (killedBy) {
-            outcome =
-              killedBy === "abort"
-                ? { status: "aborted", stopReason: "aborted", text: state.finalText, usage: state.usage }
-                : {
-                    status: "failed",
-                    text: state.finalText,
-                    errorMessage: killedBy === "stalled"
-                      ? stallFailureMessage({ stalledForMs, lastEvent: lastEventLabel, ...(evidencePath ? { evidencePath } : {}) })
-                      : timeoutFailureMessage({ timeoutMs, ...(evidencePath ? { evidencePath } : {}) }),
-                    usage: state.usage,
-                  };
-          } else if (state.errorMessage) {
-            outcome = { status: "failed", errorMessage: state.errorMessage, text: state.finalText, usage: state.usage };
-          } else {
-            // Only parse when the caller asked for a value. Without `parse` the
-            // contract is "the reply text is the value", and a reply that happens
-            // to be JSON-shaped must still arrive as text.
-            const parsed = tryParse(input.parse, state.finalText);
-            outcome = {
-              status: "completed",
-              text: state.finalText,
-              ...(parsed === undefined ? {} : { value: parsed }),
-              usage: state.usage,
-              ...(state.model ? { model: state.model } : {}),
-              ...(state.stopReason ? { stopReason: state.stopReason } : {}),
-            };
-          }
+          const outcome = mapRunOutcome({
+            killedBy,
+            stalledForMs,
+            lastEventLabel,
+            timeoutMs,
+            stderr,
+            exitCode,
+            state,
+            ...(evidencePath ? { evidencePath } : {}),
+            ...(input.parse ? { parse: input.parse } : {}),
+          });
 
           // Flush the evidence sink before reporting, so a caller that reads the
           // file after the result arrives sees every line.
-          void evidenceQueue.then(
+          void evidence.flush().then(
             () => resolve(outcome),
             () => resolve(outcome),
           );
         }
 
-        // Rule 3: drain stdout continuously, splitting only on LF.
-        child.stdout?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => {
-          buffer += chunk;
-          if (buffer.length > MAX_BUFFER_CHARS) {
-            // Keep the tail; a partial record at the head is unusable anyway.
-            buffer = buffer.slice(-MAX_BUFFER_CHARS / 2);
-          }
-          let index: number;
-          while ((index = buffer.indexOf("\n")) >= 0) {
-            const line = buffer.slice(0, index);
-            buffer = buffer.slice(index + 1);
-            writeEvidence(line.replace(/\r$/u, ""));
-            const text = line.replace(/\r$/u, "").trim();
-            if (!text) continue;
+        // Rule 3: drain stdout continuously.
+        const readChunk = createJsonLineReader((line, event) => {
+          evidence.write(line);
+          if (event === undefined) return;
+          lastEventAt = Date.now();
+          lastEventLabel = describeAgentEvent(event);
+          trackDeclaredTimeouts(declaredBudgets, event);
+          applyEvent(state, event);
+          const activity = readAgentActivity(event);
+          if (activity) {
             try {
-              const event = JSON.parse(text);
-              lastEventAt = Date.now();
-              lastEventLabel = describeAgentEvent(event);
-              trackDeclaredTimeouts(declaredBudgets, event);
-              applyEvent(state, event);
-              const activity = readAgentActivity(event);
-              if (activity) {
-                try {
-                  input.onActivity?.(activity);
-                } catch {
-                  // Status observers cannot fail the child run.
-                }
-              }
-              const progress = readAgentProgress(event);
-              if (progress) {
-                try {
-                  input.onProgress?.(progress);
-                } catch {
-                  // UI updates cannot fail the child run.
-                }
-              }
+              input.onActivity?.(activity);
             } catch {
-              // A non-JSON line is diagnostics, not an event.
+              // Status observers cannot fail the child run.
+            }
+          }
+          const progress = readAgentProgress(event);
+          if (progress) {
+            try {
+              input.onProgress?.(progress);
+            } catch {
+              // UI updates cannot fail the child run.
             }
           }
         });
+        child.stdout?.setEncoding("utf8");
+        child.stdout?.on("data", readChunk);
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", (chunk: string) => {
           if (stderr.length < MAX_STDERR_CHARS) stderr += chunk;

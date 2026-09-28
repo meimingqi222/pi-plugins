@@ -54,6 +54,9 @@ export function formatBackground(lane: Lane): string {
 	const now = Date.now();
 	const elapsed = Math.round(((lane.finishedAt ?? now) - lane.startedAt) / 1000);
 	const tools = lane.progress?.completedTools ? ` · ${lane.progress.completedTools} tools` : "";
+	// A refused stdin command (a reply pi rejected) must not die in the child's
+	// output stream — show it on every rendering of the lane.
+	const commandError = lane.lastCommandError ? ` · command error: ${lane.lastCommandError}` : "";
 	const progress = lane.progress;
 	// A child that has never emitted an event still derives `stalled` from its
 	// start time; the flag belongs on the plain line rather than being hidden.
@@ -61,7 +64,7 @@ export function formatBackground(lane: Lane): string {
 		const stall = deriveChildState(lane, now) === "stalled"
 			? ` · no child event for ${formatDuration(Math.floor((now - lane.startedAt) / 1_000))} (possible stall)`
 			: "";
-		return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools}${stall}`;
+		return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools}${stall}${commandError}`;
 	}
 
 	const quietMs = Math.max(0, now - progress.lastActivityAt);
@@ -72,12 +75,15 @@ export function formatBackground(lane: Lane): string {
 		? `tool ${activeTool || "execution"}`
 		: progress.phase;
 	const childState = deriveChildState(lane, now);
+	const idleAge = formatDuration(Math.floor((now - (lane.idleSince ?? now)) / 1_000));
 	const activity = childState === "stalled"
 		? ` · no child event for ${quiet} (possible stall)`
 		: childState === "idle"
-			? ` · idle for ${formatDuration(Math.floor((now - (lane.idleSince ?? now)) / 1_000))} — awaiting a reply`
+			? lane.result
+				? ` · answered ${idleAge} ago — awaiting a reply`
+				: ` · idle for ${idleAge} — awaiting a reply`
 			: ` · last ${progress.lastEvent} ${quiet} ago`;
-	return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools} · ${phase}${activity}`;
+	return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools} · ${phase}${activity}${commandError}`;
 }
 
 export function formatDuration(seconds: number): string {

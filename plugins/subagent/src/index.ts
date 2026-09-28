@@ -16,7 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { connectGoalSpend, readTokenUsage, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { formatBackground } from "./background.ts";
-import { LaneRegistry } from "./lane.ts";
+import { LaneRegistry, type Lane } from "./lane.ts";
 import { formatFleetListing } from "./fleet.ts";
 import { createSubagentsPanel } from "./panel.ts";
 import { createFleetReporter } from "./widget.ts";
@@ -32,6 +32,7 @@ import {
   executeSubagent,
   emptySubagentUsage,
   formatActivity,
+  toSubagentToolResult,
   type SubagentDetails,
   type SubagentToolOptions,
 } from "./tool.ts";
@@ -68,6 +69,12 @@ export function subagentsDisabled(env: NodeJS.ProcessEnv = process.env): boolean
   return value === "1" || value === "true" || value === "on";
 }
 
+/** The fleet-wide cap on busy lanes of either kind; `PI_SUBAGENT_MAX_CONCURRENCY`, default 4. */
+export function resolveLaneLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.PI_SUBAGENT_MAX_CONCURRENCY);
+  return Number.isInteger(raw) && raw > 0 ? raw : 4;
+}
+
 /** Descriptor form, so a host with a test executor can build its own. */
 export function subagentExtension(options: SubagentExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
@@ -76,7 +83,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
     const delivery = new SettledDeliveryQueue(pi);
-    const pending = new Map<string, { lease?: GoalSpendLease; isCurrent: () => boolean; isIdle: () => boolean }>();
+    const pending = new Map<string, {
+      lease?: GoalSpendLease;
+      isCurrent: () => boolean;
+      isIdle: () => boolean;
+      /** Turns whose answers were already handed to Pi; the final settle must not re-deliver them. */
+      deliveredTurns?: number;
+    }>();
 
     // The fleet surfaces need the session's UI context: widgets are scoped to
     // the `ctx` they were mounted on, and the registry is keyed to the session
@@ -152,6 +165,29 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       if (timer) { clearTimeout(timer); idleTimers.delete(id); }
     };
 
+    /**
+     * Hand one lane outcome to Pi as a `subagent-result` message. Shared by the
+     * per-turn path (the lane is still alive; `record.status` reads "running",
+     * so the trigger decision goes through the result's own status) and the
+     * final settle.
+     */
+    function deliverLaneResult(record: Lane, launch: { isCurrent: () => boolean; isIdle: () => boolean }): void {
+      if (!launch.isCurrent()) return;
+      const answer = record.result?.content.find((item) => item.type === "text");
+      const summary = answer?.type === "text" ? answer.text : record.errorMessage ?? "No answer was returned.";
+      delivery.deliver(launch.isIdle, () => {
+        if (!launch.isCurrent()) return;
+        try {
+          pi.sendMessage({
+            customType: "subagent-result",
+            content: `${formatBackground(record)}\n\n${summary}`,
+            display: true,
+            details: record,
+          }, record.result?.details?.status === "completed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+        } catch { /* The settled task remains available through subagent_tasks. */ }
+      });
+    }
+
     const registry = new LaneRegistry((record) => {
       reporter.sync();
       liveChildren.delete(record.id);
@@ -169,20 +205,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
       }
       if (!launch?.isCurrent()) return;
-      const answer = record.result?.content.find((item) => item.type === "text");
-      const summary = answer?.type === "text" ? answer.text : record.errorMessage ?? "No answer was returned.";
-      delivery.deliver(launch.isIdle, () => {
-        if (!launch.isCurrent()) return;
-        try {
-          pi.sendMessage({
-            customType: "subagent-result",
-            content: `${formatBackground(record)}\n\n${summary}`,
-            display: true,
-            details: record,
-          }, record.status === "completed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
-        } catch { /* The settled task remains available through subagent_tasks. */ }
-      });
-    });
+      // A completed run whose last turn was already delivered at agent_settled
+      // has nothing new to say — keepalive expiry must not re-send the answer.
+      if (launch.deliveredTurns !== undefined && record.status === "completed" && (record.turnsAnswered ?? 0) <= launch.deliveredTurns) return;
+      deliverLaneResult(record, launch);
+    }, resolveLaneLimit());
 
     const endSession = () => {
       generation += 1;
@@ -355,7 +382,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           }
           if (registry.atCapacity()) {
             return {
-              content: [{ type: "text", text: `At most ${registry.activeLimit} background subagents may run at once. Check or cancel one with subagent_tasks.` }],
+              content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Check or cancel one with subagent_tasks.` }],
               details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
             };
           }
@@ -393,6 +420,21 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                       timer.unref?.();
                       idleTimers.set(id, timer);
                     }
+                  },
+                  // A settled turn IS the answer — deliver it now rather than
+                  // after keepalive expiry ends the process. The lane keeps
+                  // running status; `idleSince` + `result` mark it answered.
+                  onTurnSettled: (turn) => {
+                    const current = registry.get(sessionId, id);
+                    registry.setTurnResult(id, toSubagentToolResult(turn, resolved?.name ?? params.agent, current?.progress));
+                    const record = registry.get(sessionId, id);
+                    const launch = pending.get(id);
+                    if (!record || !launch?.isCurrent()) return;
+                    launch.deliveredTurns = record.turnsAnswered ?? 0;
+                    deliverLaneResult(record, launch);
+                  },
+                  onCommandError: (info) => {
+                    registry.setCommandError(id, `${info.command}: ${info.error}`.slice(0, 200));
                   },
                 },
               }, options);
@@ -439,6 +481,25 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             throw error;
           }
         }
+        // Foreground calls share the fleet's concurrency cap: pi runs a tool
+        // batch in parallel, so N blocking calls would otherwise spawn N
+        // children at once. Unlike a background launch, a blocking call waits
+        // for a slot instead of being refused — it is the session's own turn.
+        if (registry.atCapacity()) {
+          try {
+            onUpdate?.({
+              content: [{ type: "text", text: `waiting for a subagent slot (${registry.busyCount()} busy)` }],
+              details: { agent: params.agent, status: "running" as const, usage: emptySubagentUsage(), output: "" },
+            });
+          } catch { /* A progress update cannot fail the call. */ }
+        }
+        const slotGranted = await registry.acquireSlot(signal);
+        if (!slotGranted || signal?.aborted) {
+          // Granted but already interrupted: hand the slot to the next waiter.
+          if (slotGranted) registry.releaseSlot();
+          lease?.finish(0);
+          return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
+        }
         const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
         const fgResolved = resolveAgent(fgAgents, params.agent);
         const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
@@ -457,7 +518,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             ...(onUpdate ? { onUpdate } : {}),
             onProgress: (progress) => registry.setProgress(id, progress),
           }, options);
-        }, { kind: "foreground", alias: params.alias, generation });
+        }, { kind: "foreground", alias: params.alias, generation, slotHeld: true });
         const onAbort = () => registry.abort(launched.record.id);
         signal?.addEventListener("abort", onAbort, { once: true });
         if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
@@ -530,12 +591,17 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           const { lane: record, outcome } = await registry.waitFor(sessionId, params.id, seconds * 1_000, signal);
           if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
           // Only a deadline that actually elapsed may claim an elapsed time.
-          const tail = record.status !== "running"
+          // A "settled" wait on a still-running lane means a turn answer
+          // arrived — the lane survives for replies, so there is no elapsed
+          // claim and the answer text is appended like `show` does.
+          const tail = record.status !== "running" || outcome === "settled"
             ? ""
             : outcome === "interrupted"
               ? " This wait was interrupted, so it is still running — its answer will arrive when it finishes."
               : ` Still running after ${seconds}s — its answer will arrive when it finishes.`;
-          return { content: [{ type: "text", text: `${formatBackground(record)}.${tail}` }], details: record };
+          const waitAnswer = record.result?.content.find((item) => item.type === "text");
+          const extra = waitAnswer?.type === "text" ? `\n\n${waitAnswer.text}` : record.errorMessage ? `\n\n${record.errorMessage}` : "";
+          return { content: [{ type: "text", text: `${formatBackground(record)}.${tail}${extra}` }], details: record };
         }
         const record = registry.get(sessionId, params.id);
         if (!record) return { content: [{ type: "text", text: `No subagent task ${params.id} exists in this session.` }], details: undefined };
