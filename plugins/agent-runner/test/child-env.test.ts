@@ -21,6 +21,12 @@ describe("agentChildEnv", () => {
     expect(agentChildEnv({}).PI_BG_BASH_THRESHOLD).toBe("0");
   });
 
+  test("marks the child as a headless agent for approval plugins", () => {
+    // pi-permissions treats PI_AGENT_CHILD=1 as "nobody can answer a prompt":
+    // asks become denials instead of a dialog that can never be shown.
+    expect(agentChildEnv({}).PI_AGENT_CHILD).toBe("1");
+  });
+
   test("inherits the parent environment rather than replacing it", () => {
     // A child still needs its PATH and its provider credentials.
     expect(agentChildEnv({ OPENAI_API_KEY: "k" }).OPENAI_API_KEY).toBe("k");
