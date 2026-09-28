@@ -11,7 +11,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isolatedComplete, parseJsonReply, type RegisteredModel } from "pi-run-core";
-import { jevReview, resolveJevKey } from "./jev.ts";
+import { jevReview, resolveJevEndpoint, resolveJevKey } from "./jev.ts";
 import type { PolicyEnv, ReviewerConfig } from "./types.ts";
 
 const SYSTEM_PROMPT = `You review a single tool call made by a coding agent and decide whether it can run without asking the user.
@@ -150,7 +150,7 @@ export function createReviewer(
                   toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
                   staticAnalysis: input.staticAnalysis,
                 },
-                { apiKey: jevKey!, timeoutMs, signal: input.signal, fetch: deps.fetch },
+                { apiKey: jevKey!, ...resolveJevEndpoint(deps.env), timeoutMs, signal: input.signal, fetch: deps.fetch },
               )
             : await registryReview(input, env, spec!, timeoutMs);
         cache.set(key, verdict);

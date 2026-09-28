@@ -211,6 +211,41 @@ describe("jev backend", () => {
     }
   });
 
+  test("jev-compact.json supplies the key, and the env var wins over it", async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-perm-jev-"));
+    try {
+      await fs.promises.writeFile(path.join(dir, "jev-compact.json"), JSON.stringify({ apiKey: "cfgkey" }));
+      const { ctx } = fakeCtx();
+      const calls: JevCall[] = [];
+      const fromFile = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, dir, () => {}, {
+        env: {},
+        fetch: fakeJevFetch("allow", calls),
+      })!;
+      await fromFile.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" });
+      expect(calls[0]!.auth).toBe("Bearer cfgkey");
+      const fromEnv = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, dir, () => {}, {
+        env: JEV_ENV,
+        fetch: fakeJevFetch("allow", calls),
+      })!;
+      await fromEnv.review({ ctx, toolName: "bash", toolInput: "y", staticAnalysis: "x" });
+      expect(calls[1]!.auth).toBe("Bearer key");
+    } finally {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("JEV_COMPACT_MODEL and JEV_COMPACT_BASE_URL reach the request", async () => {
+    const { ctx } = fakeCtx();
+    const calls: JevCall[] = [];
+    const r = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, {
+      env: { ...JEV_ENV, JEV_COMPACT_MODEL: "jev-x", JEV_COMPACT_BASE_URL: "https://example.test/one" },
+      fetch: fakeJevFetch("deny", calls),
+    })!;
+    expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toMatchObject({ verdict: "deny" });
+    expect(calls[0]!.url).toBe("https://example.test/one");
+    expect(calls[0]!.body.model).toBe("jev-x");
+  });
+
   test("a jev transport error falls back to asking", async () => {
     const { ctx } = fakeCtx();
     const failing = (async () => ({ ok: false, status: 500, text: async () => "boom" }) as Response) as unknown as typeof fetch;
