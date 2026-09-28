@@ -943,3 +943,10 @@ P2 与 P3 已实现，以下与计划正文有出入的地方以此节为准：
   `/permissions sandbox off` 临时关闭。
 - **审核模型的并发**：reviewer 与弹窗共用同一串行队列之外的通道，未加锁；
   缓存写发生在 await 之后，并发相同调用可能重复请求一次模型（无害）。
+- **reviewer 默认后端是 Jev（2026-09-28 修订）**：`reviewer.model` 现在
+  取三种值——`"jev"`、`"provider/model-id"`、`"none"`。整个 `reviewer`
+  节缺省且 Jev key 存在（`TYPESAFE_API_KEY` 或 `auth.json["typesafe"]`）
+  时自动启用 Jev；显式 `"jev"` 但无 key 会 warn 一次后禁用（退回询问）。
+  Jev 不是 pi model provider，走独立的 System One HTTP 契约
+  （`choice` 问题映射 allow/ask/deny），认证代码与 pi-jev-compact 的
+  `api-key.ts` 逻辑平行（该插件无库导出，故小量重复而非共享）。

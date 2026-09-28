@@ -93,7 +93,7 @@ Writing these is dangerous (`protected-write`); reading them is ordinary:
   "deny": ["read(**/secrets/**)"],
   "additionalDirectories": ["~/work/shared-lib"],
   "protectedPaths": { "read": [], "write": [] },
-  "reviewer": { "model": "anthropic/claude-haiku-4-5", "timeoutMs": 15000, "maxPerSession": 100 },
+  "reviewer": { "model": "jev", "timeoutMs": 15000, "maxPerSession": 100 },
   "sandbox": { "enabled": false, "network": "on", "allowWrite": [], "denyRead": [] },
   "projects": {
     "/Users/me/work/app": { "allow": ["bash(make build:*)"] }
@@ -121,12 +121,23 @@ Mode precedence: inherited (children) → `PI_PERMISSIONS_MODE` → session
 
 ## Reviewer (auto mode)
 
-Set `reviewer.model` to `provider/model-id` in the global or a trusted project
-config. In `auto`, a grey call is first judged by an isolated tool-free model
-call (prompt-injection hardened system prompt; the call is `DATA`, never
-instructions). `allow` releases it; `ask`/`deny`/timeout/error fall back to the
-human prompt — a deny just annotates the prompt. Results are cached per
-identical call and capped at `maxPerSession` real calls per session.
+In `auto`, a grey call is first judged by a reviewer before a human is asked.
+`allow` releases it; `ask`/`deny`/timeout/error fall back to the human prompt —
+a deny just annotates the prompt. Results are cached per identical call and
+capped at `maxPerSession` real calls per session. Two backends:
+
+- **`"jev"`** (the default) — the TypeSafe System One endpoint, a purpose-built
+  fast decision model. Authenticates via `TYPESAFE_API_KEY` or
+  `auth.json["typesafe"]`; it is *not* a pi model provider. With no `reviewer`
+  section at all the reviewer still activates when a Jev key exists.
+- **`"provider/model-id"`** — any model registered in pi's model registry,
+  judged via an isolated tool-free call (prompt-injection hardened system
+  prompt; the call is `DATA`, never instructions), e.g.
+  `"anthropic/claude-haiku-4-5"`.
+
+Set `reviewer.model` to `"none"` to disable the reviewer entirely. The section
+honours the usual trust rules: a project's `reviewer` config only applies when
+the project is trusted.
 
 ## Sandbox
 
