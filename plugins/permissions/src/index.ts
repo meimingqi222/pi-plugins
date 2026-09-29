@@ -11,9 +11,10 @@ import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import { classifyToolCall, networkExfilShaped, type ShellDialect } from "./classify.ts";
-import { mergeConfig, appendProjectAllowRule, saveGlobalMode, saveGlobalSandboxEnabled, type MergedConfig } from "./config.ts";
+import { mergeConfig, appendProjectAllowRule, appendAdditionalDirectory, saveGlobalMode, saveGlobalSandboxEnabled, type MergedConfig } from "./config.ts";
 import { decide } from "./decide.ts";
 import { createPolicyEnv } from "./env.ts";
+import { isInside } from "./paths.ts";
 import { createReviewer, type Reviewer } from "./reviewer.ts";
 import { detectSandbox, resolveSandboxPolicy, sandboxDeps, wrapSandboxed, type SandboxAvailability } from "./sandbox/index.ts";
 import { parseRule, type UserRule } from "./rules.ts";
@@ -36,6 +37,29 @@ function shellDialect(shellPath: string | undefined): ShellDialect {
   return "unsupported";
 }
 
+/**
+ * The one directory a user could add to `additionalDirectories` to make this
+ * call ordinary. Offered only for a dangerous `rm` whose offending targets all
+ * sit in the same directory, so the grant can never be broader than the deletion
+ * the user is looking at; `undefined` means there is nothing coherent to grant.
+ */
+function grantableDirectory(classification: Classification, env: PolicyEnv): string | undefined {
+  const scratch = [env.cwd, ...env.additionalDirs, ...env.tempDirs];
+  const offending = new Set<number>();
+  classification.intents.forEach((intent, index) => {
+    if (intent.kind === "exec" && intent.ruleId === "rm-recursive-force") offending.add(index);
+  });
+  if (offending.size === 0) return undefined;
+  const parents = new Set<string>();
+  for (const intent of classification.intents) {
+    if (intent.sourceIndex === undefined || !offending.has(intent.sourceIndex)) continue;
+    if (intent.kind !== "write" || !intent.path) continue;
+    if (scratch.some((dir) => isInside(intent.path!, dir, env))) continue;
+    parents.add(path.posix.dirname(intent.path));
+  }
+  return parents.size === 1 ? [...parents][0] : undefined;
+}
+
 export default function permissionsExtension(pi: ExtensionAPI): void {
   let env: PolicyEnv | undefined;
   let merged: MergedConfig | undefined;
@@ -49,6 +73,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
   const globalFile = (): string => path.join(getAgentDir(), "permissions.json");
   const projectFile = (cwd: string): string => path.join(cwd, ".pi", "permissions.json");
 
+  /**
+   * The `projects[<cwd>]` key. It must be the realpath'd cwd — the same value
+   * `env.cwd` carries — because grants are written under `env.cwd` and read back
+   * under this key: with a symlinked cwd (`/tmp` → `/private/tmp`, a linked
+   * checkout) a raw `ctx.cwd` would write one key and read another, so an
+   * "always allow" would silently never apply.
+   */
+  const canonicalCwd = (cwd: string): string => createPolicyEnv(cwd, []).cwd;
+
   /** (Re)load config and rebuild the policy env. Idempotent. */
   const loadState = (ctx: ExtensionContext): { env: PolicyEnv; merged: MergedConfig } => {
     let trusted = false;
@@ -57,7 +90,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     } catch {
       // Context without trust info → untrusted.
     }
-    const mergedConfig = mergeConfig(globalFile(), projectFile(ctx.cwd), trusted, ctx.cwd);
+    const mergedConfig = mergeConfig(globalFile(), projectFile(ctx.cwd), trusted, canonicalCwd(ctx.cwd));
     const builtEnv = createPolicyEnv(ctx.cwd, mergedConfig.additionalDirectories);
     for (const warning of mergedConfig.warnings) {
       try {
@@ -144,7 +177,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     const shell = shellSettings(ctx.cwd);
     return classifyToolCall(toolName, input, {
       env: policyEnv,
-      pathPolicy: { protectedRead: mergedConfig.protectedRead, protectedWrite: mergedConfig.protectedWrite },
+      pathPolicy: {
+        protectedRead: mergedConfig.protectedRead,
+        protectedWrite: mergedConfig.protectedWrite,
+        protectedReadExclude: mergedConfig.protectedReadExclude,
+      },
       shellDialect: shell.dialect,
       commandPrefix: shell.commandPrefix,
     });
@@ -232,6 +269,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
       // ask — but children can never be asked (§6.3).
       const canAsk = ctx.hasUI && !isChild();
+      const grantDirectory = decision.tier === "dangerous" && env ? grantableDirectory(classification, env) : undefined;
+      if (grantDirectory) {
+        reason = `${reason} — add ${grantDirectory} to additionalDirectories to allow this permanently`;
+      }
       if (!canAsk) {
         return {
           block: true,
@@ -247,6 +288,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
         reason,
         summary: summarizeInput(event.toolName, event.input as Record<string, unknown>),
         allowRules,
+        ...(grantDirectory ? { grantDirectory } : {}),
         deps: { select: (t, o, d) => ctx.ui.select(t, o, d), input: (t, p, d) => ctx.ui.input(t, p, d), signal: ctx.signal },
       });
 
@@ -266,6 +308,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
             } catch (error) {
               try {
                 ctx.ui.notify(`pi-permissions: could not persist the rule (${String(error)}); allowed once.`, "warning");
+              } catch {
+                // ignore
+              }
+            }
+          }
+          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
+          return undefined;
+        }
+        case "allow-directory": {
+          if (outcome.directory) {
+            try {
+              appendAdditionalDirectory(globalFile(), env!.cwd, outcome.directory);
+              loadState(ctx); // pick the new directory up for the next call
+            } catch (error) {
+              try {
+                ctx.ui.notify(
+                  `pi-permissions: could not persist ${outcome.directory} (${String(error)}); allowed once.`,
+                  "warning",
+                );
               } catch {
                 // ignore
               }

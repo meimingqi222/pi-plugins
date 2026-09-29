@@ -5,7 +5,7 @@
  */
 
 import { isCredentialPath, classifyPath, type PathPolicyConfig, EMPTY_PATH_POLICY } from "../path-policy.ts";
-import { isFilesystemRoot, isInside, normalizePath } from "../paths.ts";
+import { isFilesystemRoot, isInside, isStrictlyInside, normalizePath } from "../paths.ts";
 import { extractPathIntents } from "./intents.ts";
 import type { GradedIntent, PolicyEnv, ShellAnalysis, ShellCommand, Tier } from "../types.ts";
 import { tierRank } from "../types.ts";
@@ -29,6 +29,16 @@ const SYSTEM_DIRS = [
 ];
 
 const HOME_LITERALS = new Set(["~", "~/", "$HOME", "${HOME}"]);
+
+/**
+ * True when `target` sits strictly below a temp dir. macOS realpaths `/tmp` and
+ * `/var/folders` into `/private`, so the blanket `/private` SYSTEM_DIRS entry
+ * otherwise reads every scratch path as a filesystem boundary. The temp dir
+ * itself is still a boundary — deleting `/tmp` is not a scratch cleanup.
+ */
+function insideTempDir(target: string, env: PolicyEnv): boolean {
+  return env.tempDirs.some((dir) => isStrictlyInside(target, dir, env));
+}
 
 function flagScan(command: ShellCommand): { recursive: boolean; force: boolean } {
   let recursive = false;
@@ -80,7 +90,7 @@ function hitRmRoot(command: ShellCommand, env: PolicyEnv): boolean {
     const target = normalizePath(value, env);
     if (isFilesystemRoot(target)) return true;
     if (target === env.home || isInside(env.home, target, env)) return true;
-    if (SYSTEM_DIRS.some((dir) => isInside(target, dir, env))) return true;
+    if (SYSTEM_DIRS.some((dir) => isInside(target, dir, env)) && !insideTempDir(target, env)) return true;
   }
   return false;
 }
@@ -130,6 +140,31 @@ function hitReverseShell(command: ShellCommand): boolean {
 const EXFIL_COMMANDS = new Set(["curl", "wget", "nc", "ncat", "netcat", "scp", "ssh", "http", "https", "ftp", "sftp"]);
 const SHELL_SINKS = new Set(["sh", "bash", "zsh", "dash", "ksh", "python", "python2", "python3", "node", "perl", "ruby", "iex"]);
 const FETCH_COMMANDS = new Set(["curl", "wget", "iwr", "irm", "invoke-webrequest", "invoke-restmethod"]);
+
+/**
+ * Interpreter flags whose next operand IS the program. A pipe into one of these
+ * delivers data, not code: `curl … | node -e 'JSON.parse(…)'` parses stdin,
+ * while `curl … | node` reads the program from stdin and stays dangerous.
+ * `-s`/`-`/`-i` are deliberately absent — they put the program back on stdin.
+ */
+const INLINE_PROGRAM_FLAGS = new Set(["-c", "-e", "--eval", "-p", "--print", "-m", "--module"]);
+
+/**
+ * True when the command runs a program given as a literal argv operand. A
+ * dynamic operand parses as `undefined`, so `node -e "$(curl …)"` and
+ * `python3 -c "$PROG"` never qualify, and neither does a flag-shaped operand
+ * (`bash -e -s` reads the program from stdin).
+ */
+function hasInlineProgram(command: ShellCommand): boolean {
+  for (let index = 0; index < command.args.length; index += 1) {
+    const arg = command.args[index];
+    if (arg === "--") break;
+    if (typeof arg !== "string" || !INLINE_PROGRAM_FLAGS.has(arg)) continue;
+    const program = command.args[index + 1];
+    return typeof program === "string" && !program.startsWith("-");
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // dangerous rules
@@ -182,22 +217,42 @@ function hitPrivilegeEscalation(command: ShellCommand): boolean {
   return command.via.some((wrapper) => wrapper === "sudo" || wrapper === "doas");
 }
 
-function hitPermissionBroad(command: ShellCommand): boolean {
+function hitPermissionBroad(command: ShellCommand, env: PolicyEnv): boolean {
   if (command.name === "chmod") {
-    return command.args.some(
-      (arg) =>
-        arg !== undefined &&
-        (/777|a\+rwx|a=rwx|o\+w/u.test(arg) || /^-[^-]*R/u.test(arg) || arg === "--recursive"),
-    );
+    const broadMode = command.args.some((arg) => arg !== undefined && /777|a\+rwx|a=rwx|o\+w/u.test(arg));
+    if (broadMode) return true;
+    return isRecursive(command) && !recursiveTargetsAreScratch(command, env);
   }
   if (command.name === "chown") {
-    return command.args.some((arg) => arg !== undefined && (/^-[^-]*R/u.test(arg) || arg === "--recursive"));
+    return isRecursive(command) && !recursiveTargetsAreScratch(command, env);
   }
   if (command.name === "takeown") return true;
   if (command.name === "icacls") {
     return command.args.some((arg) => typeof arg === "string" && /^\/grant/iu.test(arg));
   }
   return false;
+}
+
+function isRecursive(command: ShellCommand): boolean {
+  return command.args.some((arg) => arg !== undefined && (/^-[^-]*R/u.test(arg) || arg === "--recursive"));
+}
+
+/**
+ * True when every operand of a recursive chmod/chown resolves strictly inside
+ * the workspace, an extra dir, or a temp dir — scratch the caller already owns,
+ * where `chmod -R 755 ./dist` is routine rather than a broad permission change.
+ * The roots themselves stay out: `chmod -R 755 .` still asks, as does any
+ * dynamic operand, because neither can be proven to stay inside scratch.
+ */
+function recursiveTargetsAreScratch(command: ShellCommand, env: PolicyEnv): boolean {
+  const scratch = [env.cwd, ...env.additionalDirs, ...env.tempDirs];
+  const { values } = operands(command);
+  if (values.length === 0) return false;
+  return values.every((value) => {
+    if (value === undefined) return false;
+    const target = normalizePath(value, env);
+    return scratch.some((dir) => isStrictlyInside(target, dir, env));
+  });
 }
 
 const LIFECYCLE_NAMES = new Set(["shutdown", "reboot", "halt", "poweroff"]);
@@ -317,7 +372,7 @@ function dangerousHit(command: ShellCommand, env: PolicyEnv): Hit | undefined {
   if (hitRmRecursiveForce(command, env)) return { id: "rm-recursive-force", tier: "dangerous", reason: "rm -rf on the workspace root, .git, or outside the workspace" };
   if (hitGitDestructive(command)) return { id: "git-destructive", tier: "dangerous", reason: "destructive git operation (force push / reset --hard / clean -f / ...)" };
   if (hitPrivilegeEscalation(command)) return { id: "privilege-escalation", tier: "dangerous", reason: "privilege escalation (sudo/doas/su/runas)" };
-  if (hitPermissionBroad(command)) return { id: "permission-broad", tier: "dangerous", reason: "broad permission change (chmod 777/-R, chown -R, icacls /grant)" };
+  if (hitPermissionBroad(command, env)) return { id: "permission-broad", tier: "dangerous", reason: "broad permission change (chmod 777/-R, chown -R, icacls /grant)" };
   if (hitSystemLifecycle(command)) return { id: "system-lifecycle", tier: "dangerous", reason: "system power/lifecycle command" };
   if (hitPublish(command)) return { id: "publish", tier: "dangerous", reason: "package/image publish" };
   if (hitWindowsDestructive(command)) return { id: "windows-destructive", tier: "dangerous", reason: "destructive Windows command" };
@@ -447,14 +502,21 @@ export function evaluateShell(analysis: ShellAnalysis, raw: string, env: PolicyE
       continue;
     }
     if (fetchIndex >= 0 && sinkIndex > fetchIndex) {
-      const commandIndex = pipeline[sinkIndex]!;
-      const intent = intents[execIndex[commandIndex]!]!;
-      if (intent.tier !== "forbidden") {
-        intent.tier = "dangerous";
-        intent.ruleId = "pipe-to-shell";
-        intent.reason = "remote download piped into a shell/interpreter";
+      // Every interpreter after the fetch must be an inline-program form, or the
+      // pipeline stays dangerous: `curl … | node -e '<literal>' | sh` is not
+      // covered by relaxing the first sink alone.
+      const sinksAfterFetch = pipeline.filter(
+        (commandIndex, position) => position > fetchIndex && SHELL_SINKS.has(execNameAt(commandIndex)),
+      );
+      if (!sinksAfterFetch.every((commandIndex) => hasInlineProgram(analysis.commands[commandIndex]!))) {
+        const intent = intents[execIndex[pipeline[sinkIndex]!]!]!;
+        if (intent.tier !== "forbidden") {
+          intent.tier = "dangerous";
+          intent.ruleId = "pipe-to-shell";
+          intent.reason = "remote download piped into a shell/interpreter";
+        }
+        bump("dangerous", "pipe-to-shell", "remote download piped into a shell/interpreter");
       }
-      bump("dangerous", "pipe-to-shell", "remote download piped into a shell/interpreter");
     }
   }
 

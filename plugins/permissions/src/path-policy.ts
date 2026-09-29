@@ -97,9 +97,15 @@ export interface PathPolicyConfig {
   /** Extra patterns appended from config; they can only tighten. */
   protectedRead: readonly string[];
   protectedWrite: readonly string[];
+  /**
+   * `!`-prefixed patterns from the **global** config: a READ matching one of
+   * these is not a credential read. Writes are never excluded, and neither is
+   * the exfiltration rule, which keeps using {@link isCredentialPath}.
+   */
+  protectedReadExclude: readonly string[];
 }
 
-export const EMPTY_PATH_POLICY: PathPolicyConfig = { protectedRead: [], protectedWrite: [] };
+export const EMPTY_PATH_POLICY: PathPolicyConfig = { protectedRead: [], protectedWrite: [], protectedReadExclude: [] };
 
 /** True when `absPath` hits the credential list (used by rules and the sandbox plan). */
 export function isCredentialPath(absPath: string, env: PolicyEnv, config: PathPolicyConfig = EMPTY_PATH_POLICY): boolean {
@@ -115,6 +121,15 @@ export function isCredentialPath(absPath: string, env: PolicyEnv, config: PathPo
   return false;
 }
 
+/** True when the user excluded this path from the credential list for reads. */
+export function isCredentialReadExcluded(
+  absPath: string,
+  env: PolicyEnv,
+  config: PathPolicyConfig = EMPTY_PATH_POLICY,
+): boolean {
+  return config.protectedReadExclude.some((pattern) => matchGlob(expandPattern(pattern, env), absPath, env));
+}
+
 /**
  * Classify a path intent. `absPath` must already be normalized.
  * The order of checks is part of the contract — do not reorder.
@@ -126,8 +141,10 @@ export function classifyPath(
   env: PolicyEnv,
   config: PathPolicyConfig = EMPTY_PATH_POLICY,
 ): PathVerdict {
-  // 1. Credentials: read or write.
-  if (isCredentialPath(absPath, env, config)) {
+  // 1. Credentials: read or write. A user exclusion lifts the read side only:
+  // writing a credential file stays dangerous, and the exfil rule still sees it.
+  const excludedRead = kind === "read" && isCredentialReadExcluded(absPath, env, config);
+  if (!excludedRead && isCredentialPath(absPath, env, config)) {
     return { tier: "dangerous", reason: `${kind} hits a credential path (${absPath})`, ruleId: "sensitive-path" };
   }
 

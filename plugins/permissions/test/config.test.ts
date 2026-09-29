@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { appendProjectAllowRule, mergeConfig, parsePermFile, saveGlobalMode } from "../src/config.ts";
+import { appendAdditionalDirectory, appendProjectAllowRule, mergeConfig, parsePermFile, saveGlobalMode } from "../src/config.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-test-"));
@@ -22,6 +22,40 @@ describe("parsePermFile", () => {
 });
 
 describe("mergeConfig trust rules", () => {
+  test("global protectedPaths exclusions are split out; project ones are ignored with a warning", () => {
+    const dir = tempDir();
+    const global = path.join(dir, "agent", "permissions.json");
+    const project = path.join(dir, "proj", ".pi", "permissions.json");
+    write(global, { protectedPaths: { read: ["**/secrets/**", "!**/.env"], write: ["~/keep/**"] } });
+    write(project, { protectedPaths: { read: ["!**/.env.local"], write: [] } });
+    const merged = mergeConfig(global, project, true, path.join(dir, "proj"));
+    expect(merged.protectedRead).toEqual(["**/secrets/**"]);
+    expect(merged.protectedReadExclude).toEqual(["**/.env"]);
+    expect(merged.warnings.some((w) => w.includes("exclusions are ignored"))).toBe(true);
+  });
+
+  test("protectedPaths.write exclusions are refused with a warning", () => {
+    const dir = tempDir();
+    const global = path.join(dir, "agent", "permissions.json");
+    write(global, { protectedPaths: { read: [], write: ["!~/.zshrc"] } });
+    const merged = mergeConfig(global, path.join(dir, "proj", ".pi", "permissions.json"), true, path.join(dir, "proj"));
+    expect(merged.protectedWrite).toEqual([]);
+    expect(merged.warnings.some((w) => w.includes("write does not support"))).toBe(true);
+  });
+
+  test("appendAdditionalDirectory adds one entry per directory and preserves other fields", () => {
+    const dir = tempDir();
+    const global = path.join(dir, "agent", "permissions.json");
+    write(global, { mode: "yolo", projects: { "/work/app": { allow: ["bash(a:*)"] } } });
+    appendAdditionalDirectory(global, "/work/app", "/Users/me/.acemcp");
+    appendAdditionalDirectory(global, "/work/app", "/Users/me/.acemcp");
+    appendAdditionalDirectory(global, "/work/app", "/Users/me/.cache/tool");
+    const saved = JSON.parse(fs.readFileSync(global, "utf8"));
+    expect(saved.projects["/work/app"].additionalDirectories).toEqual(["/Users/me/.acemcp", "/Users/me/.cache/tool"]);
+    expect(saved.projects["/work/app"].allow).toEqual(["bash(a:*)"]);
+    expect(saved.mode).toBe("yolo");
+  });
+
   test("untrusted project: allow ignored, deny applies", () => {
     const dir = tempDir();
     const global = path.join(dir, "agent", "permissions.json");

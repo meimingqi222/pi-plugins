@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import permissionsExtension from "../src/index.ts";
+import { optionAllowDirectory } from "../src/prompt.ts";
 import { setSandboxDepsForTest } from "../src/sandbox/index.ts";
 
 interface FakeUi {
@@ -109,10 +110,14 @@ describe("pi-permissions extension wiring", () => {
     fs.writeFileSync(file, JSON.stringify(config));
   }
 
-  function setup(ui: FakeUi, ctxOpts?: { hasUI?: boolean; trusted?: boolean; registry?: Partial<FakeRegistry> }) {
+  function setup(
+    ui: FakeUi,
+    ctxOpts?: { hasUI?: boolean; trusted?: boolean; registry?: Partial<FakeRegistry> },
+    cwd = dir,
+  ) {
     const pi = makePi();
     permissionsExtension(pi as never);
-    const ctx = makeCtx(dir, ui, ctxOpts);
+    const ctx = makeCtx(cwd, ui, ctxOpts);
     for (const handler of pi.handlers.get("session_start") ?? []) handler({}, ctx);
     const toolCall = (pi.handlers.get("tool_call") ?? [])[0]!;
     return { pi, ctx, toolCall: (event: unknown) => toolCall(event, ctx) as Promise<unknown> };
@@ -188,6 +193,68 @@ describe("pi-permissions extension wiring", () => {
     expect(options).toContain("Allow once");
     expect(options).not.toContain("Allow for this session");
     expect(options).not.toContain("Always allow in this project");
+  });
+
+  test("an always-allow rule persists under the realpath'd cwd and is read back", async () => {
+    const real = fs.mkdtempSync(path.join(dir, "real-"));
+    const link = path.join(dir, "link");
+    fs.symlinkSync(real, link);
+    process.env.PI_PERMISSIONS_MODE = "ask";
+
+    const first = freshUi(async () => "Always allow in this project");
+    const a = setup(first, { trusted: true }, link);
+    await a.toolCall({ toolName: "bash", input: { command: "npm test" } });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, "agent", "permissions.json"), "utf8"));
+    expect(Object.keys(saved.projects)).toEqual([fs.realpathSync(real)]);
+
+    // A fresh session at the same (linked) cwd finds the rule: no second dialog.
+    const second = freshUi();
+    const b = setup(second, { trusted: true }, link);
+    expect(await b.toolCall({ toolName: "bash", input: { command: "npm test" } })).toBeUndefined();
+    expect(second.selectCalls.length).toBe(0);
+  });
+
+  test("dangerous rm outside scratch: granting the directory persists it and silences the next call", async () => {
+    const target = path.join(os.homedir(), "Library", "Caches", "pi-perm-grant", "data-old");
+    const sibling = path.join(os.homedir(), "Library", "Caches", "pi-perm-grant", "data-new");
+    let granted: string | undefined;
+    const ui = freshUi(async (_title, options) => {
+      granted = options.find((option) => option.startsWith("Always allow this directory: "));
+      return granted;
+    });
+    const { toolCall } = setup(ui);
+
+    expect(await toolCall({ toolName: "bash", input: { command: `rm -rf ${target}` } })).toBeUndefined();
+    expect(granted).toBe(optionAllowDirectory(path.join(os.homedir(), "Library", "Caches", "pi-perm-grant")));
+    expect(ui.selectCalls[0]!.title).toContain("additionalDirectories");
+
+    const directory = granted!.slice("Always allow this directory: ".length);
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, "agent", "permissions.json"), "utf8"));
+    expect(saved.projects[fs.realpathSync(dir)].additionalDirectories).toEqual([directory]);
+
+    // The grant applies to the next call without a reload or a second dialog.
+    expect(await toolCall({ toolName: "bash", input: { command: `rm -rf ${sibling}` } })).toBeUndefined();
+    expect(ui.selectCalls.length).toBe(1);
+  });
+
+  test("a dangerous call with nothing coherent to grant keeps the plain prompt", async () => {
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "git push -f" } });
+    expect(ui.selectCalls[0]!.options.some((option) => option.startsWith("Always allow this directory: "))).toBe(false);
+  });
+
+  test("global protectedPaths exclusion silences a .env read only", async () => {
+    writeGlobalConfig({ protectedPaths: { read: ["!**/.env"], write: [] } });
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    expect(await toolCall({ toolName: "read", input: { path: ".env" } })).toBeUndefined();
+    expect(ui.selectCalls.length).toBe(0);
+
+    // Writing the same file is still dangerous, and so is the exfiltration rule.
+    await toolCall({ toolName: "write", input: { path: ".env", content: "x" } });
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ui.selectCalls[0]!.options).toContain("Allow once");
   });
 
   test("grey prompt in ask mode offers session+always; Allow for this session silences repeats", async () => {
