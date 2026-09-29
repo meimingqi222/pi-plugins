@@ -102,6 +102,18 @@
         "@earendil-works/pi-coding-agent": ">=0.85.1",
       },
     },
+    "plugins/paste-image": {
+      "name": "pi-paste-image",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/node": "^22.0.0",
+        "bun-types": "^1.4.2",
+        "typescript": "^5.6.0",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": ">=0.85.1",
+      },
+    },
     "plugins/permissions": {
       "name": "pi-permissions",
       "version": "0.1.0",
@@ -820,6 +832,8 @@
     "pi-jev-compact": ["pi-jev-compact@workspace:plugins/jev-compact"],
 
     "pi-morph-search": ["pi-morph-search@workspace:plugins/morph-search"],
+
+    "pi-paste-image": ["pi-paste-image@workspace:plugins/paste-image"],
 
     "pi-permissions": ["pi-permissions@workspace:plugins/permissions"],
 

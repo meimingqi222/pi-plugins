@@ -17,6 +17,7 @@ can be installed without pulling in its siblings.
 | [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
 | [morph-search](plugins/morph-search) | `pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
 | [permissions](plugins/permissions) | `pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized prompts, an auto-mode reviewer model, and an optional `sandbox-exec`/`bwrap` sandbox. |
+| [paste-image](plugins/paste-image) | `pi-paste-image` | A pasted or drag-dropped image path is read, attached as image content and replaced with `[#image N]`, so no path- or URL-shaped reference ever reaches the provider. |
 
 ### Not a plugin: `pi-run-core`
 
