@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import * as path from "node:path";
 import type { AttachEnv, LoadedImage } from "../src/attach.ts";
 
 export const PNG_1X1 = Uint8Array.from([
@@ -35,12 +36,19 @@ export interface StubImage {
  * An `AttachEnv` over a fixed map of files. Paths are matched exactly as the
  * loader would receive them, so a test that asserts candidate order has to
  * spell out the candidates.
+ *
+ * Both sides go through `path.normalize` first. `candidatePaths` speaks the
+ * platform's path dialect — it resolves through `path.resolve`/`path.normalize`,
+ * so a virtual `/var/folders/tmp/a.png` arrives here as `\var\folders\tmp\a.png`
+ * on Windows. Folding both sides keeps a test about candidate order and dedupe
+ * from also being a test of `path.normalize` on one platform.
  */
 export function stubEnv(
 	files: Record<string, StubImage>,
 	overrides: Partial<Pick<AttachEnv, "cwd" | "home" | "tmpdir">> = {},
 ): AttachEnv & { readonly loaded: string[] } {
 	const loaded: string[] = [];
+	const normal = new Map(Object.entries(files).map(([key, image]) => [path.normalize(key), image]));
 	return {
 		cwd: overrides.cwd ?? "/work/project",
 		home: overrides.home ?? "/Users/me",
@@ -48,7 +56,7 @@ export function stubEnv(
 		loaded,
 		load: async (filePath: string): Promise<LoadedImage | undefined> => {
 			loaded.push(filePath);
-			return files[filePath];
+			return normal.get(path.normalize(filePath));
 		},
 	};
 }

@@ -36,6 +36,7 @@ with the PNG attached as `ImageContent`. Recognised references:
 | bare clipboard name | `pi-clipboard-ca49e04e.png` (also tried in the temp dir) |
 | pi's file-mention syntax | `@img/logo.png` |
 | quoted or shell-escaped spaces | `"My Shot.png"`, `My\ Shot.png` |
+| Windows path, separators and all | `C:\Users\me\Shot.png`, `\\server\share\Shot.png` |
 
 ## Why
 
@@ -68,6 +69,10 @@ the path from the text means no reference ever leaves the machine.
 - **A path with an unescaped space is not guessed at.** `Shot (1).png` splits on
   the space and the `(1).png` fragment is discarded; terminals escape or quote
   those paths, and hand-typed spaces can be quoted (`"Shot (1).png"`).
+- **Only a space or a quote is escaped.** Everywhere else a backslash is a path
+  character, not an escape, because that is what it is in a Windows path
+  (`C:\Users\me\Shot.png`) and in a `\\server\share` prefix. The cost is that a
+  POSIX path written with a literal backslash (`a\\b.png`) keeps both characters.
 - **Large sources are skipped** (over 32 MiB) and pi's own `inputLimits.images`
   resize profile still applies downstream, so request size stays where pi's
   limits put it.
