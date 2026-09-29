@@ -82,6 +82,40 @@ function makePi() {
 
 const ENV_KEYS = ["PI_AGENT_CHILD", "PI_PERMISSIONS_MODE", "PI_PERMISSIONS_INHERITED_MODE", "PI_CODING_AGENT_DIR"] as const;
 
+/**
+ * A realpath'd directory the way `projects[<cwd>]` is keyed: `normalizePath`
+ * emits `/`-separated paths on every platform, so a raw `fs.realpathSync` on
+ * Windows (`C:\Users\…`) names a key the plugin never writes.
+ */
+function projectKey(directory: string): string {
+  return fs.realpathSync(directory).replaceAll(path.sep, "/");
+}
+
+/**
+ * An outside-the-workspace directory to be asked about, named the way this
+ * platform spells a cache. It only has to be outside the workspace (so a
+ * recursive delete of it is `dangerous` rather than scratch); the macOS path
+ * would not exist on Windows, where the equivalent lives under `%LOCALAPPDATA%`.
+ */
+function cacheDirectory(name: string): string {
+  const root =
+    process.platform === "win32"
+      ? path.join(os.homedir(), "AppData", "Local")
+      : process.platform === "darwin"
+        ? path.join(os.homedir(), "Library", "Caches")
+        : path.join(os.homedir(), ".cache");
+  return path.join(root, name);
+}
+
+/**
+ * The OS sandbox exists on darwin (`sandbox-exec`) and linux (`bwrap`) only.
+ * `detectSandbox` reports win32 as unsupported, policy only, and `wrapSandboxed`
+ * then leaves the command as written — the contract its own unit case
+ * (`sandbox.test.ts::unavailable or unsupported → no rewrite`) pins, which is why
+ * the two integration cases below are skipped rather than reworded here.
+ */
+const noOsSandbox = process.platform === "win32";
+
 describe("pi-permissions extension wiring", () => {
   let dir: string;
   let saved: Record<string, string | undefined>;
@@ -198,14 +232,17 @@ describe("pi-permissions extension wiring", () => {
   test("an always-allow rule persists under the realpath'd cwd and is read back", async () => {
     const real = fs.mkdtempSync(path.join(dir, "real-"));
     const link = path.join(dir, "link");
-    fs.symlinkSync(real, link);
+    // `junction` on Windows: a directory reparse point needs no privilege there,
+    // where `symlink` is refused with EPERM unless the process is elevated or
+    // Developer Mode is on. The type is ignored on POSIX.
+    fs.symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
     process.env.PI_PERMISSIONS_MODE = "ask";
 
     const first = freshUi(async () => "Always allow in this project");
     const a = setup(first, { trusted: true }, link);
     await a.toolCall({ toolName: "bash", input: { command: "npm test" } });
     const saved = JSON.parse(fs.readFileSync(path.join(dir, "agent", "permissions.json"), "utf8"));
-    expect(Object.keys(saved.projects)).toEqual([fs.realpathSync(real)]);
+    expect(Object.keys(saved.projects)).toEqual([projectKey(real)]);
 
     // A fresh session at the same (linked) cwd finds the rule: no second dialog.
     const second = freshUi();
@@ -215,8 +252,13 @@ describe("pi-permissions extension wiring", () => {
   });
 
   test("dangerous rm outside scratch: granting the directory persists it and silences the next call", async () => {
-    const target = path.join(os.homedir(), "Library", "Caches", "pi-perm-grant", "data-old");
-    const sibling = path.join(os.homedir(), "Library", "Caches", "pi-perm-grant", "data-new");
+    const grant = cacheDirectory("pi-perm-grant");
+    const target = path.join(grant, "data-old");
+    const sibling = path.join(grant, "data-new");
+    // Quoted, because an unquoted Windows path is a different command in a bash
+    // dialect — `\U` is an escape there, so the shell really deletes `C:Users…`.
+    // Quoting is also the spelling a paste into the editor produces.
+    const remove = (operand: string) => ({ toolName: "bash", input: { command: `rm -rf "${operand}"` } });
     let granted: string | undefined;
     const ui = freshUi(async (_title, options) => {
       granted = options.find((option) => option.startsWith("Always allow this directory: "));
@@ -224,16 +266,17 @@ describe("pi-permissions extension wiring", () => {
     });
     const { toolCall } = setup(ui);
 
-    expect(await toolCall({ toolName: "bash", input: { command: `rm -rf ${target}` } })).toBeUndefined();
-    expect(granted).toBe(optionAllowDirectory(path.join(os.homedir(), "Library", "Caches", "pi-perm-grant")));
+    expect(await toolCall(remove(target))).toBeUndefined();
+    // The option names the directory in the plugin's own normal form.
+    expect(granted).toBe(optionAllowDirectory(grant.replaceAll(path.sep, "/")));
     expect(ui.selectCalls[0]!.title).toContain("additionalDirectories");
 
     const directory = granted!.slice("Always allow this directory: ".length);
     const saved = JSON.parse(fs.readFileSync(path.join(dir, "agent", "permissions.json"), "utf8"));
-    expect(saved.projects[fs.realpathSync(dir)].additionalDirectories).toEqual([directory]);
+    expect(saved.projects[projectKey(dir)].additionalDirectories).toEqual([directory]);
 
     // The grant applies to the next call without a reload or a second dialog.
-    expect(await toolCall({ toolName: "bash", input: { command: `rm -rf ${sibling}` } })).toBeUndefined();
+    expect(await toolCall(remove(sibling))).toBeUndefined();
     expect(ui.selectCalls.length).toBe(1);
   });
 
@@ -388,7 +431,7 @@ describe("pi-permissions extension wiring", () => {
     expect(blocked.reason).toContain("headless");
   });
 
-  test("sandbox: allowed grey bash is rewritten to run inside it", async () => {
+  test.skipIf(noOsSandbox)("sandbox: allowed grey bash is rewritten to run inside it", async () => {
     process.env.PI_PERMISSIONS_MODE = "auto";
     writeGlobalConfig({ sandbox: { enabled: true } });
     setSandboxDepsForTest({ exists: () => true, probe: () => true, onPath: () => true });
@@ -401,7 +444,7 @@ describe("pi-permissions extension wiring", () => {
     expect(ui.selectCalls.length).toBe(0);
   });
 
-  test("sandbox: exfil-shaped grey bash still asks instead of bypassing", async () => {
+  test.skipIf(noOsSandbox)("sandbox: exfil-shaped grey bash still asks instead of bypassing", async () => {
     process.env.PI_PERMISSIONS_MODE = "auto";
     writeGlobalConfig({ sandbox: { enabled: true } });
     setSandboxDepsForTest({ exists: () => true, probe: () => true, onPath: () => true });
