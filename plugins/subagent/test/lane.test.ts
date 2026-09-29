@@ -133,4 +133,37 @@ describe("the lane registry", () => {
 		expect(deriveAlias("first\nsecond")).toBe("first");
 		expect(deriveAlias("\x07ring bell")).toBe("ring bell");
 	});
+
+	test("the wait deadline's timer keeps the event loop alive", async () => {
+		// A wait is ended by its deadline timer, and that timer must not be unref'd.
+		// When it was, Bun saw a loop with nothing to keep it alive and neither ran
+		// the timer nor exited: it spun at 100% CPU, so
+		// `plugins/subagent/test/plugin.test.ts` never finished on Windows. The test
+		// reads the handle's ref state instead of waiting for the deadline, because a
+		// ref'd timer anywhere else in the test would schedule the loop and mask the
+		// bug — that is exactly how it stayed hidden.
+		const registry = new LaneRegistry(() => {});
+		const pending = pendingWork();
+		const launched = registry.launch("explore", "bg", SESSION, pending.work);
+		const globals = globalThis as unknown as { setTimeout: (handler: any, timeout?: number, ...args: any[]) => any };
+		const realSetTimeout = globals.setTimeout;
+		const handles: Array<{ hasRef?: () => boolean }> = [];
+		globals.setTimeout = (handler: any, timeout?: number, ...args: any[]) => {
+			const handle = realSetTimeout(handler, timeout, ...args) as { hasRef?: () => boolean };
+			handles.push(handle);
+			return handle;
+		};
+		try {
+			const waiting = registry.waitFor(SESSION, launched.record.id, 60_000);
+			// The deadline timer is the only timer this path creates.
+			expect(handles).toHaveLength(1);
+			expect(handles[0]?.hasRef?.()).not.toBe(false);
+			// Settle the lane rather than waiting out the deadline: this test pins the
+			// handle, not the clock.
+			pending.finish();
+			expect((await waiting).outcome).toBe("settled");
+		} finally {
+			globals.setTimeout = realSetTimeout;
+		}
+	});
 });

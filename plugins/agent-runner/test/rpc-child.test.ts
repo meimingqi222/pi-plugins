@@ -49,6 +49,18 @@ const doneUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, t
  */
 const FAST = { terminationGraceMs: 20, stdioGraceMs: 20 };
 
+/**
+ * Windows has no graceful SIGTERM to send: `requestTerminate` there goes straight
+ * to the tree kill on the child's pid, so a fake with no pid — which this file's
+ * fakes deliberately have — observes no signal at all. POSIX sends SIGTERM first
+ * and escalates to the tree kill after the grace window. The real kill on both
+ * platforms is covered by `kill-tree.test.ts`; a fake cannot observe a taskkill.
+ */
+function expectChildKilled(child: FakeChild): void {
+	if (process.platform === "win32") expect(child.killedSignal).toBeUndefined();
+	else expect(child.killedSignal).toBe("SIGTERM");
+}
+
 describe("rpcRunArgs", () => {
 	test("selects the RPC protocol without a session store", () => {
 		expect(rpcRunArgs()).toEqual(["--mode", "rpc", "--no-session"]);
@@ -56,6 +68,45 @@ describe("rpcRunArgs", () => {
 });
 
 describe("spawnRpcChild", () => {
+	test("the run's deadline and silence bound keep the event loop alive", async () => {
+		// Both bounds are the only thing that can end a run the caller awaits, so
+		// neither may be unref'd: Bun treats a loop whose only pending handle is an
+		// unref'd timer as empty, then neither fires it nor exits — it spins at 100%
+		// CPU, which is how this file used to stop finishing on Windows. Reading the
+		// handles' ref state fails in milliseconds, where the behavioural tests below
+		// could only hang.
+		const child = new FakeChild();
+		const globals = globalThis as unknown as {
+			setTimeout: (handler: any, timeout?: number, ...args: any[]) => any;
+			setInterval: (handler: any, timeout?: number, ...args: any[]) => any;
+		};
+		const realSetTimeout = globals.setTimeout;
+		const realSetInterval = globals.setInterval;
+		const handles: Array<{ hasRef?: () => boolean }> = [];
+		const wrap = (real: (handler: any, timeout?: number, ...args: any[]) => any) => (handler: any, timeout?: number, ...args: any[]) => {
+			const handle = real(handler, timeout, ...args) as { hasRef?: () => boolean };
+			handles.push(handle);
+			return handle;
+		};
+		globals.setTimeout = wrap(realSetTimeout);
+		globals.setInterval = wrap(realSetInterval);
+		let handle: Awaited<ReturnType<typeof spawnRpcChild>>;
+		try {
+			handle = await spawnRpcChild(
+				{ prompt: "Task: hi", cwd: "/tmp", stallMs: 100 },
+				{ spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST },
+			);
+		} finally {
+			globals.setTimeout = realSetTimeout;
+			globals.setInterval = realSetInterval;
+		}
+		// The wall clock and the silence bound are the only timers this path creates.
+		expect(handles).toHaveLength(2);
+		for (const created of handles) expect(created.hasRef?.()).not.toBe(false);
+		handle.terminate();
+		await handle.done;
+	});
+
 	test("writes the initial prompt as a stdin command, not argv", async () => {
 		const child = new FakeChild();
 		const spawnArgs: string[][] = [];
@@ -128,7 +179,7 @@ describe("spawnRpcChild", () => {
 		handle.terminate();
 		const result = await handle.done;
 		expect(result.status).toBe("aborted");
-		expect(child.killedSignal).toBe("SIGTERM");
+		expectChildKilled(child);
 	});
 
 	test("idle change fires on turn boundaries, and send() follows the protocol shapes", async () => {
@@ -178,7 +229,7 @@ describe("spawnRpcChild", () => {
 		expect(result.status).toBe("failed");
 		expect(result.errorMessage).toContain("produced no output");
 		expect(result.errorMessage).toContain("tool_start find");
-		expect(child.killedSignal).toBe("SIGTERM");
+		expectChildKilled(child);
 	}, 10_000);
 
 	test("a parallel sibling finishing does not strip a long call's declared budget", async () => {

@@ -220,6 +220,17 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		// without the guard the wall clock relabels a run the silence bound (or a
 		// caller's abort) already ended, because termination has a grace period
 		// and the deadline can expire inside it.
+		//
+		// The armed turn timer is deliberately **not** unref'd, and neither is the
+		// silence bound below. While a turn is in flight the turn's wall clock is
+		// the only thing that can end a run whose caller is awaiting `done`, and a
+		// timer the process is allowed to ignore cannot resolve that await: with
+		// Bun the loop looks empty, so it neither fires the timer nor exits — it
+		// spins at 100% CPU, which is how `test/rpc-child.test.ts` stopped
+		// finishing on Windows. `clearTurnTimer()` (on `agent_settled` and on
+		// `exit`) and `finish()` both clear it, so an idle lane and a settled run
+		// hold nothing open. The unref'd timer in this plugin is the idle
+		// keepalive in `plugins/subagent/src/index.ts`, because nobody awaits it.
 		let turnTimer: ReturnType<typeof setTimeout> | undefined;
 		const armTurnTimer = (): void => {
 			if (turnTimer || settled) return;
@@ -229,7 +240,6 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				killedBy = "timeout";
 				requestTerminate();
 			}, timeoutMs);
-			turnTimer.unref?.();
 		};
 		const clearTurnTimer = (): void => {
 			if (turnTimer) { clearTimeout(turnTimer); turnTimer = undefined; }
@@ -249,7 +259,6 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				requestTerminate();
 			}, stallCheckIntervalMs(stallMs))
 			: undefined;
-		stallTimer?.unref?.();
 
 		const onAbort = (): void => {
 			if (!killedBy) killedBy = "abort";

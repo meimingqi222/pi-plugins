@@ -349,6 +349,14 @@ export class LaneRegistry {
 	 * `signal` ends the wait without ending the lane: a tool call that has been
 	 * interrupted must return, or the caller waits out a deadline nobody is
 	 * watching any more.
+	 *
+	 * The deadline timer is deliberately **not** unref'd. It is the only thing that
+	 * can end a wait on a lane that never settles, so unref'ing it let the process
+	 * decide the loop had nothing left to do — and Bun then neither ran the timer
+	 * nor exited: it spun at 100% CPU, which is how `plugins/subagent/test/plugin.test.ts`
+	 * stopped finishing on Windows. A caller blocked on this promise is a reason to
+	 * stay alive; a wait nobody is watching is already bounded by the tool call's
+	 * own signal, and `cleanup` clears the timer either way.
 	 */
 	waitFor(sessionId: string, id: string, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
 		const existing = this.get(sessionId, id);
@@ -385,7 +393,6 @@ export class LaneRegistry {
 				cleanup();
 				done("timeout");
 			}, Math.max(0, timeoutMs));
-			(timer as { unref?: () => void }).unref?.();
 			signal?.addEventListener("abort", onAbort, { once: true });
 			this.waiters.add(onSettled);
 		});

@@ -48,7 +48,10 @@ are per-spawn overridable (`SpawnRpcChildOptions.terminationGraceMs` and
 `stdioGraceMs`), because a test that drives a kill path against a child which
 does not exit on SIGTERM waits the window out in full without observing it: the
 RPC transport's unit tests shorten it, and `process-tree.test.ts` is what
-measures the production values against real children. Cleanup is best
+measures the production values against real children. `process-tree.test.ts`
+skips Windows — its cases are about process groups and inherited descriptors —
+so `kill-tree.test.ts` is the one that kills a real child on either platform,
+including the `taskkill` branch that a pid-less fake cannot observe. Cleanup is best
 effort: descendants that escape the process group, or Windows descendants whose
 parent has already exited, may need separate cleanup.
 
