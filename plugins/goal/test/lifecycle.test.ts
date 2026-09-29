@@ -125,7 +125,17 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 		appendEntry(type: string, data: any) { appended.push({ type, data }); entries.push({ type: "custom", customType: type, data }); },
 		sendMessage(message: any, options: any) { sent.push({ message, options }); },
 	};
-	goalPlugin(pi);
+	// Track the actual deferred settlement, including plan I/O and verification.
+	// Use the same next-turn timer as production; only its completion is observed.
+	const settlements: Promise<void>[] = [];
+	goalPlugin(pi, (settle) => {
+		settlements.push(new Promise<void>((resolve, reject) => {
+			setTimeout(() => { void settle().then(resolve, reject); }, 0);
+		}));
+	});
+	const awaitSettlement = async () => {
+		await Promise.all(settlements.splice(0));
+	};
 	const emitRaw = async (name: string, event: any = {}) => {
 		let result: any;
 		for (const handler of handlers.get(name) ?? []) result = await handler({ type: name, messages: [], ...event }, ctx);
@@ -133,13 +143,12 @@ function setup(entries: any[] = [], complete?: (...args: any[]) => any, planner?
 	};
 	const emit = async (name: string, event: any = {}) => {
 		const result = await emitRaw(name, event);
-		// Production settlement runs on the next event-loop turn. Most lifecycle
-		// tests assert its completed effect; emitRaw keeps the ordering window
-		// available to tests that exercise another extension's settled handler.
-		if (name === "agent_settled") await new Promise((resolve) => setTimeout(resolve, 10));
+		// `emitRaw` leaves the ordering window open for tests of a later handler.
+		// Regular emits wait for this run's deferred settlement, not a 10ms guess.
+		if (name === "agent_settled") await awaitSettlement();
 		return result;
 	};
-	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit, emitRaw };
+	return { pi, ctx, commands, tools, sent, appended, sessionDir, statuses, notices, catalogue, authless, judgedBy, emit, emitRaw, awaitSettlement };
 }
 
 function goalSpend(env: ReturnType<typeof setup>): GoalSpendService {
@@ -216,6 +225,17 @@ describe("goal safety boundaries", () => {
   expect(result.messages[0].content).toBe("summary");
   expect(result.messages[1].content).toContain("current objective");
   expect(result.messages[1].content).toContain("not active");
+ });
+ test("agent_settled waits for a slow verifier instead of a fixed timer", async () => {
+  const env = setup([], async () => {
+   // A provider may take longer than the old 10ms fixture delay. This is
+   // simulated latency, not a sleep used to synchronize the assertion.
+   await new Promise((resolve) => setTimeout(resolve, 50));
+   return verdict(true);
+  });
+  await run(env.commands.get("goal"), "task", env.ctx);
+  await endWork(env);
+  expect((await state(env)).status).toBe("complete");
  });
  test("failed verdict schedules once and duplicate settled does not verify again", async () => {
   let calls = 0;
@@ -946,9 +966,9 @@ describe("goal candidate verification status", () => {
     await env.emitRaw("agent_settled");
     // A later agent_settled handler in another plugin starts a follow-up.
     await env.emit("agent_start");
-    // Even if the old settlement timer fires during the new work run, its
-    // candidate must not be judged against a transcript still in progress.
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    // Await the old settlement itself, not a duration guessed to cover its
+    // timer: it must not judge a transcript while follow-up work is in progress.
+    await env.awaitSettlement();
     expect(calls).toBe(0);
     await env.emit("agent_end", { messages: [verdict()] });
     await env.emit("agent_settled");

@@ -48,7 +48,14 @@ interface WorkRun {
   stopReason?: string;
 }
 
-export default function goalPlugin(pi: ExtensionAPI): void {
+/** A next-turn scheduler; tests observe completion without changing handler order. */
+type SettlementScheduler = (settle: () => Promise<void>) => void;
+
+const scheduleSettlement: SettlementScheduler = (settle) => {
+  setTimeout(() => { void settle(); }, 0);
+};
+
+export default function goalPlugin(pi: ExtensionAPI, deferSettlement: SettlementScheduler = scheduleSettlement): void {
   // A child process spawned for one delegated job has no user and no goal of its
   // own; registering here would inject the parent's objective into a context
   // that cannot act on it. The spawner sets the flag — see `goalDisabled`.
@@ -642,10 +649,13 @@ export default function goalPlugin(pi: ExtensionAPI): void {
     endedRun = undefined;
     // Pi awaits extension handlers in registration order. Yield so later
     // synchronous handlers can deliver follow-ups before we verify.
-    if (owner) setTimeout(() => { void settleGoalRun(owner, ctx).catch((error) => {
-      try { ctx.ui.notify(`Goal settlement failed: ${String(error)}`, "error"); }
-      catch { /* The originating UI may already be gone. */ }
-    }); }, 0);
+    if (owner) deferSettlement(async () => {
+      try { await settleGoalRun(owner, ctx); }
+      catch (error) {
+        try { ctx.ui.notify(`Goal settlement failed: ${String(error)}`, "error"); }
+        catch { /* The originating UI may already be gone. */ }
+      }
+    });
   });
 
   pi.registerCommand("goal", {
