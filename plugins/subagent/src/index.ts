@@ -700,8 +700,10 @@ export {
   formatAgentNames,
   parseToolList,
   readAgentFile,
+  readAgentFields,
   userAgentsDir,
   type SubagentDefinition,
+  type UserAgentFields,
 } from "./agents.ts";
 export {
   MAX_RESULT_BYTES,

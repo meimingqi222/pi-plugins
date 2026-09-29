@@ -11,7 +11,7 @@
 
 import type { SubagentDefinition } from "./agents.ts";
 
-/** Built-ins make the feature useful on a fresh install; a user file with the same name overrides them. */
+/** Built-ins make the feature useful on a fresh install; a user file with the same name overrides them field by field. */
 export const BUILTIN_AGENTS: readonly SubagentDefinition[] = [
 	{
 		name: "explore",

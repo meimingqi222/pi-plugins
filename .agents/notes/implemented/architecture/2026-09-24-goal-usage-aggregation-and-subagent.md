@@ -16,7 +16,9 @@ were too much ceremony for one isolated task.
 optional background launch. Definitions come only
 from the user's `~/.pi/agent/agents/*.md`; a built-in `explore` works without a
 file and is limited to Pi's read-only inspection tools. A same-name user file
-overrides it. Foreground answers and usage return in the invoking tool call;
+overrides it field by field, so a file that sets only a model retargets the
+model and inherits the prompt and tool list (see
+`2026-09-27-subagent-builtin-agent-overlay.md`). Foreground answers and usage return in the invoking tool call;
 background answers arrive as completion messages and usage settles against the
 launching goal's lease. `pi-agent-runner` owns the shared process path and disables
 goal, workflow and subagent registration in children, keeping fan-out one level
