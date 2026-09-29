@@ -190,13 +190,13 @@ fan-out guard.
   announces itself once per child via a warning notification — the same
   threshold `subagent_tasks` reports as "possible stall".
 
-## Built-in agent
+## Built-in agents
 
-`explore` is available immediately after installation. It uses Pi's `read`,
-`grep`, `find`, and `ls` tools to inspect the codebase and return concise findings
-with file references. It has no write or shell tool. With no model override, the
-child uses the parent session's currently selected model. Use it for a bounded
-investigation; a direct `grep` or `read` is still cheaper for a simple lookup.
+Three agents are available immediately after installation — `explore` (read,
+grep, find, ls), `review` (the same plus `bash`), and `general` (the only one
+that can modify files). With no model override, each child uses the parent
+session's currently selected model. Use `explore` for a bounded investigation; a
+direct `grep` or `read` is still cheaper for a simple lookup.
 
 ## Custom agents
 
@@ -217,10 +217,48 @@ You are a scout. Find what was asked for and return only what the caller needs.
 | Field | Meaning |
 |---|---|
 | `name` | the value the model passes as `agent` (required) |
-| `description` | one line shown when the model needs the list (required) |
-| `tools` | comma-separated or YAML list; omit to give pi's default set |
+| `description` | one line shown when the model needs the list (required, unless the name matches a built-in) |
+| `tools` | comma-separated or YAML list; omit to give pi's default set, or, when the name matches a built-in, to inherit that built-in's list |
 | `model` | persistent override for this agent; omit to inherit the parent session's current model |
 | body | the delegated system prompt |
+
+### Overriding a built-in's model
+
+A file whose `name` matches a built-in is a **partial** definition: whatever it
+leaves out is inherited from that built-in. To pin a model per built-in, write
+one three-line file per agent and nothing else:
+
+```markdown
+---
+name: explore
+model: provider/small-model
+---
+```
+
+```markdown
+---
+name: review
+model: provider/frontier
+---
+```
+
+`explore.md` now uses `provider/small-model`, and still has the built-in's
+description, prompt and read-only tool list. Fields fill in one at a time, so
+the same file can also set just `description`, just `tools`, or a full
+replacement — anything present wins, anything absent inherits.
+
+Two rules are worth knowing, because they are the fail-closed half:
+
+- **An omitted `tools` inherits the built-in's allowlist, never pi's default
+  set.** `tools` omitted in a file that names its own agent still means "pi's
+  default set"; for a built-in override it does not, or a model-only
+  `explore.md` would silently hand a read-only agent write and shell access.
+- **An explicit but unusable `tools` still skips the whole file** (`tools: []`,
+  `tools: 3`), leaving the built-in untouched rather than half-applied.
+
+One consequence of pinning a model: the parent's thinking level is inherited
+only when *no* override applies, so an agent with its own `model` (file or call)
+runs at that model's default effort instead of the session's level.
 
 **Only user scope is read.** A project-local `.pi/agents/*.md` would be a
 repository-controlled system prompt — installing a plugin is not consent to run
@@ -228,9 +266,11 @@ whatever a repository's author wrote — so this first cut does not load project
 agents at all. Project scope can be added behind a trust check later.
 
 Discovery runs on every call, so editing an agent file takes effect without a
-restart. A user file named `explore.md` with `name: explore` replaces the
-built-in definition, including its tool list and prompt. An unknown agent name
-returns the available names without launching a child.
+restart. Inheritance always comes from the built-in, never from another user
+file, so two files claiming one name cannot leak fields into each other. A file
+naming a new agent must stand alone: it needs its own `description`, because
+nothing else supplies one. An unknown agent name returns the available names
+without launching a child.
 
 Model priority is: `model` on this tool call, then `model` in the agent file,
 then the parent session's currently selected model. When neither override is

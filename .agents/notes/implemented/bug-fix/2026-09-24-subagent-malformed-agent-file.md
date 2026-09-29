@@ -21,8 +21,15 @@ module's own comment claims a bad file must not take the others down; the
 
 Wrap the `parseFrontmatter` call in a `readFrontmatter` helper that returns no
 frontmatter on a parse failure. An unusable file is then skipped by the existing
-`typeof frontmatter.name !== "string"` check, exactly like a file that has no
-name or description — one bad file costs only that file.
+`typeof frontmatter.name !== "string"` check, exactly like any other unusable
+file — one bad file costs only that file.
+
+A file that does carry a name is still read when it has no description of its
+own, provided the name matches a built-in: that case is now a partial override,
+not a broken definition, and the description is inherited. What stays strict is
+what the merge in `agents.ts` must not relax — a malformed explicit `tools`
+allowlist still skips the file whole
+(`2026-09-27-subagent-builtin-agent-overlay.md`).
 
 ## Alternatives considered
 

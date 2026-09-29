@@ -119,4 +119,75 @@ describe("discoverAgents", () => {
       await cleanup();
     }
   });
+
+  test("a model-only file retargets a built-in and inherits the rest", async () => {
+    // The whole point of a partial override: retargeting a built-in's model must
+    // not require copying its prompt and tool list into the user's file, where
+    // they would drift from the catalog.
+    const { dir, cleanup } = await withTemp();
+    try {
+      const builtin = discoverAgents("/nonexistent/pi-subagent/agents");
+      const before = builtin.find((agent) => agent.name === "explore")!;
+      await writeFile(join(dir, "explore.md"), "---\nname: explore\nmodel: provider/small\n---\n");
+      const agents = discoverAgents(dir);
+      const explore = agents.find((agent) => agent.name === "explore")!;
+      expect(agents).toHaveLength(3);
+      expect(explore.model).toBe("provider/small");
+      expect(explore.description).toBe(before.description);
+      expect(explore.tools).toEqual(before.tools);
+      expect(explore.systemPrompt).toBe(before.systemPrompt);
+      expect(agents.find((agent) => agent.name === "review")?.model).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("an override that omits tools keeps the built-in allowlist instead of pi's default", async () => {
+    // Omitting `tools` means "pi's default set" for a standalone definition, and
+    // that default includes write and shell access. A model-only override must
+    // not be able to widen `explore` into a writing agent by leaving the field
+    // out — the failure would be silent, and it would be a capability change
+    // nobody asked for.
+    const { dir, cleanup } = await withTemp();
+    try {
+      await writeFile(join(dir, "explore.md"), "---\nname: explore\nmodel: provider/small\n---\n");
+      await writeFile(join(dir, "worker.md"), "---\nname: worker\ndescription: writes\n---\nwork");
+      const agents = discoverAgents(dir);
+      const explore = agents.find((agent) => agent.name === "explore")!;
+      expect(explore.tools).toEqual(["read", "grep", "find", "ls"]);
+      // A name with no built-in is a standalone definition, so an omitted
+      // `tools` keeps its existing meaning of pi's default set.
+      expect(agents.find((agent) => agent.name === "worker")?.tools).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("a malformed allowlist still skips the file rather than inheriting", async () => {
+    const { dir, cleanup } = await withTemp();
+    try {
+      await writeFile(join(dir, "explore.md"), "---\nname: explore\ntools: []\n---\n");
+      const agents = discoverAgents(dir);
+      const explore = agents.find((agent) => agent.name === "explore")!;
+      expect(agents).toHaveLength(3);
+      expect(explore.tools).toEqual(["read", "grep", "find", "ls"]);
+      expect(explore.model).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("an override may name a new agent only with a description of its own", async () => {
+    const { dir, cleanup } = await withTemp();
+    try {
+      await writeFile(join(dir, "scout.md"), "---\nname: scout\nmodel: provider/small\n---\nScout.");
+      expect(discoverAgents(dir).map((agent) => agent.name)).toEqual(["explore", "general", "review"]);
+      await writeFile(join(dir, "scout.md"), "---\nname: scout\ndescription: recon\nmodel: provider/small\n---\nScout.");
+      const scout = discoverAgents(dir).find((agent) => agent.name === "scout")!;
+      expect(scout.model).toBe("provider/small");
+      expect(scout.tools).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
 });
