@@ -6,7 +6,8 @@
  * drag-and-drop inserts a path too. This module finds those references without
  * touching the filesystem, so the cases that actually break in practice —
  * `file://` URLs, macOS screenshot names with spaces, quoted or shell-escaped
- * paths, several references in one line — are unit-testable from strings alone.
+ * paths, Windows paths whose separators are backslashes, several references in
+ * one line — are unit-testable from strings alone.
  * Whether a candidate really is an image is decided later, in `attach.ts`.
  *
  * Deliberately not supported: prose that names a path inside a code fence or an
@@ -48,8 +49,23 @@ function isWhitespace(character: string): boolean {
 }
 
 /**
+ * Whether a backslash before `next` is an escape rather than a path character.
+ *
+ * Only the two things a shell needs an escape *for* count: writing a space or a
+ * quote inside one bare word. Everything else keeps the backslash, because the
+ * paste that puts a path in the editor writes a Windows path —
+ * `C:\Users\me\shot.png`, or a `\\server\share` UNC prefix — and consuming those
+ * separators would name a file that does not exist. A quoted path (`"C:\a b.png"`)
+ * never reaches this decision: quotes are handled as their own span.
+ */
+function isEscape(next: string): boolean {
+	return isWhitespace(next) || next === '"' || next === "'";
+}
+
+/**
  * Split text into whitespace-delimited tokens while honouring the two ways a
- * path with spaces is written: `"My Shot.png"` and `My\ Shot.png`. The token
+ * path with spaces is written: `"My Shot.png"` and `My\ Shot.png`. A backslash
+ * elsewhere is a path character, not an escape — see `isEscape`. The token
  * keeps the offsets of what it occupies in the original text, so a rewrite can
  * replace the whole thing — quotes included — instead of leaving `"` behind.
  */
@@ -78,8 +94,8 @@ export function tokenize(text: string): Token[] {
 			value = character;
 			continue;
 		}
-		if (character === "\\" && index + 1 < text.length) {
-			// A backslash escape inside an unquoted token: `My\ Shot.png`.
+		if (character === "\\" && index + 1 < text.length && isEscape(text[index + 1]!)) {
+			// A backslash escape where a shell needs one: `My\ Shot.png`.
 			value += text[index + 1]!;
 			index += 1;
 			continue;

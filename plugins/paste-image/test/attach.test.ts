@@ -1,23 +1,39 @@
 import { describe, expect, test } from "bun:test";
+import * as path from "node:path";
 import { attachImageReferences, candidatePaths, placeholder } from "../src/attach.ts";
 import { PNG_1X1_BASE64, stubEnv } from "./fixtures.ts";
 
 const IMAGE = { mimeType: "image/png", base64: PNG_1X1_BASE64 };
 
+/**
+ * The virtual POSIX paths below are spelled the way the platform's `path` module
+ * would hand them to a loader. `candidatePaths` absolutizes against its own
+ * primitives, so on Windows the same input becomes `\var\folders\tmp\a.png` and a
+ * relative name picks up the drive of `process.cwd()`; `joined` is the shape
+ * `path.join` produces (no drive), `resolved` the shape `path.resolve` produces.
+ * On POSIX the two are the same string, which is why the distinction was easy to
+ * miss.
+ */
+const joined = (...parts: string[]): string => path.normalize(path.join(...parts));
+const resolved = (...parts: string[]): string => path.resolve(...parts);
+
 describe("candidatePaths", () => {
 	const env = { cwd: "/work/project", home: "/Users/me", tmpdir: "/var/folders/tmp" };
 
 	test("an absolute path is the only candidate", () => {
-		expect(candidatePaths("/var/folders/tmp/a.png", env)).toEqual(["/var/folders/tmp/a.png"]);
+		expect(candidatePaths("/var/folders/tmp/a.png", env)).toEqual([joined("/var/folders/tmp/a.png")]);
 	});
 
 	test("~ resolves against home", () => {
-		expect(candidatePaths("~/Pictures/a.png", env)).toEqual(["/Users/me/Pictures/a.png"]);
+		expect(candidatePaths("~/Pictures/a.png", env)).toEqual([joined(env.home, "Pictures", "a.png")]);
 	});
 
 	test("a relative path tries the cwd first, a bare name also the temp dir", () => {
-		expect(candidatePaths("img/a.png", env)).toEqual(["/work/project/img/a.png"]);
-		expect(candidatePaths("a.png", env)).toEqual(["/work/project/a.png", "/var/folders/tmp/a.png"]);
+		expect(candidatePaths("img/a.png", env)).toEqual([resolved(env.cwd, "img", "a.png")]);
+		expect(candidatePaths("a.png", env)).toEqual([
+			resolved(env.cwd, "a.png"),
+			joined(env.tmpdir, "a.png"),
+		]);
 	});
 });
 
@@ -39,8 +55,8 @@ describe("attachImageReferences", () => {
 		expect(result.text).toBe("have a look at [#image 1]");
 		// The cwd candidate is tried first: only the second one exists.
 		expect(env.loaded).toEqual([
-			"/work/project/pi-clipboard-ca49e04e.png",
-			"/var/folders/tmp/pi-clipboard-ca49e04e.png",
+			resolved(env.cwd, "pi-clipboard-ca49e04e.png"),
+			joined(env.tmpdir, "pi-clipboard-ca49e04e.png"),
 		]);
 	});
 

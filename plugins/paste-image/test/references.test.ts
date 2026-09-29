@@ -14,6 +14,18 @@ describe("tokenize", () => {
 		expect(tokens[1]).toEqual({ start: 2, end: 15, value: "My Shot.png" });
 		expect(text.slice(tokens[1]!.start, tokens[1]!.end)).toBe("\"My Shot.png\"");
 	});
+
+	test("only a space or a quote is escaped; a Windows separator is kept", () => {
+		// A backslash is an escape only where a shell would need one: a path on
+		// Windows is spelled with the same character as its separator, so
+		// consuming it produced `C:Usersmeshot.png` — a file that does not exist.
+		const absolute = "C:\\Users\\me\\AppData\\Local\\Temp\\shot.png";
+		expect(tokenize(absolute)[0]!.value).toBe(absolute);
+		// A UNC prefix is two separators, not an escaped backslash.
+		const unc = "\\\\server\\share\\shots\\shot.png";
+		expect(tokenize(unc)[0]!.value).toBe(unc);
+		expect(tokenize("My\\ Shot.png")[0]!.value).toBe("My Shot.png");
+	});
 });
 
 describe("scanImageReferences", () => {
@@ -36,6 +48,16 @@ describe("scanImageReferences", () => {
 		expect(expressions("/tmp/shot (1).png")).toEqual([]);
 		expect(expressions("\"/tmp/shot (1).png\"")).toEqual(["/tmp/shot (1).png"]);
 		expect(expressions("/tmp/My\\ Shot.png")).toEqual(["/tmp/My Shot.png"]);
+	});
+
+	test("finds a Windows path whole, separators and all", () => {
+		const absolute = "C:\\Users\\me\\AppData\\Local\\Temp\\shot.png";
+		expect(expressions(`${absolute} 这个 auto 是什么？`)).toEqual([absolute]);
+		// Quoted, where the path itself has a space in it.
+		expect(expressions('"C:\\My Dir\\My Shot.png"')).toEqual(["C:\\My Dir\\My Shot.png"]);
+		// A UNC share keeps both leading separators.
+		expect(expressions("\\\\server\\share\\shots\\shot.png")).toEqual(["\\\\server\\share\\shots\\shot.png"]);
+		expect(expressions("C:\\Users\\me\\shot.png")).toEqual(["C:\\Users\\me\\shot.png"]);
 	});
 
 	test("reads file:// URLs, including percent-encoding", () => {
