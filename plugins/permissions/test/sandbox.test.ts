@@ -45,7 +45,7 @@ describe("resolveSandboxPolicy", () => {
   test("workspace, temp dirs and cache dirs are writable; credential dirs are deny-read", () => {
     const policy = resolveSandboxPolicy(envMac(), OFF, () => true);
     expect(policy.writable).toContain("/work/app");
-    expect(policy.writable).toContain("/tmp");
+    expect(policy.writable).toContain("/private/tmp"); // /tmp realpaths to /private/tmp on darwin
     expect(policy.writable).toContain("/Users/me/.npm");
     expect(policy.denyRead).toContain("/Users/me/.ssh");
     expect(policy.denyRead).toContain("/Users/me/.pi/agent/auth.json");

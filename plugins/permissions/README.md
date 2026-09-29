@@ -92,7 +92,7 @@ Writing these is dangerous (`protected-write`); reading them is ordinary:
   "ask": ["bash(docker:*)"],
   "deny": ["read(**/secrets/**)"],
   "additionalDirectories": ["~/work/shared-lib"],
-  "protectedPaths": { "read": [], "write": [] },
+  "protectedPaths": { "read": ["**/secrets/**", "!**/.env"], "write": [] },
   "reviewer": { "model": "jev", "timeoutMs": 15000, "maxPerSession": 100 },
   "sandbox": { "enabled": false, "network": "on", "allowWrite": [], "denyRead": [] },
   "projects": {
@@ -106,6 +106,28 @@ Writing these is dangerous (`protected-write`); reading them is ordinary:
 than the global one. A *trusted* project may also loosen. `deny`, `ask`, and
 `protectedPaths` always apply. Nothing can downgrade the dangerous/forbidden
 floors, and `allow` never covers the protected-path lists.
+
+**Credential reads you have decided are fine.** A `protectedPaths.read` entry
+starting with `!` is an exception, like the built-in `**/.env.example`:
+
+```jsonc
+{ "protectedPaths": { "read": ["!**/.env"] } }   // my own projects' .env is not a leak
+```
+
+Exceptions are honored **from the global file only** — a repository's
+`.pi/permissions.json` may add protected paths but never remove them — and they
+apply to **reads only**. Writing a credential file stays dangerous, and
+`cat .env | curl …` is still forbidden: the exfiltration rule keeps the full
+credential list. Excluding `~/.pi/agent/auth.json` unprotects the agent's own
+credentials; do that deliberately or not at all.
+
+**Deletes outside the workspace.** `rm -rf ~/cache-tool/data-1` is dangerous
+because the target is outside the workspace. Two ways out: add the directory to
+`additionalDirectories` (it is then treated as scratch, like the workspace), or
+pick **Always allow this directory** in the prompt, which writes
+`projects[<cwd>].additionalDirectories` for you. The option appears only when
+every offending target of the call sits in one directory, so the grant cannot be
+broader than the deletion you are looking at.
 
 Mode precedence: inherited (children) → `PI_PERMISSIONS_MODE` → session
 (`/permissions mode`) → project → global → `yolo`.

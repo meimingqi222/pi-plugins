@@ -149,9 +149,30 @@ export interface MergedConfig {
   additionalDirectories: string[];
   protectedRead: string[];
   protectedWrite: string[];
+  /** `!`-prefixed exclusions from the global file; honored for reads only. */
+  protectedReadExclude: string[];
   reviewer?: ReviewerConfig;
   sandbox: SandboxSettings;
   warnings: string[];
+}
+
+const EXCLUDE_PREFIX = "!";
+
+/** Split `protectedPaths` entries into includes and `!`-prefixed exclusions. */
+function splitProtected(entries: string[]): { include: string[]; exclude: string[] } {
+  const include: string[] = [];
+  const exclude: string[] = [];
+  for (const entry of entries) {
+    const text = entry.trim();
+    if (!text) continue;
+    if (!text.startsWith(EXCLUDE_PREFIX)) {
+      include.push(text);
+      continue;
+    }
+    const pattern = text.slice(EXCLUDE_PREFIX.length).trim();
+    if (pattern) exclude.push(pattern);
+  }
+  return { include, exclude };
 }
 
 /**
@@ -212,14 +233,29 @@ export function mergeConfig(globalFile: string, projectFile: string, trusted: bo
     denyRead: [...(gs.denyRead ?? []), ...(ps.denyRead ?? []), ...(prs.denyRead ?? [])],
   };
 
+  const globalRead = splitProtected(global.config.protectedPaths.read);
+  const globalWrite = splitProtected(global.config.protectedPaths.write);
+  const projectRead = splitProtected(project.config.protectedPaths.read);
+  const projectWrite = splitProtected(project.config.protectedPaths.write);
+  // Exclusions loosen, so only the user's own global file may carry them: a
+  // repository cannot unprotect its `.env`, and write protection is never
+  // liftable at all (the model must not grant itself writes to pi's config).
+  if (projectRead.exclude.length > 0 || projectWrite.exclude.length > 0) {
+    warnings.push(`${projectFile}: protectedPaths "!" exclusions are ignored outside the global config`);
+  }
+  if (globalWrite.exclude.length > 0) {
+    warnings.push(`${globalFile}: protectedPaths.write does not support "!" exclusions (write protection cannot be lifted)`);
+  }
+
   return {
     globalMode: perProject?.mode ?? global.config.mode,
     projectMode,
     projectTrusted: trusted,
     rules,
     additionalDirectories,
-    protectedRead: [...global.config.protectedPaths.read, ...project.config.protectedPaths.read],
-    protectedWrite: [...global.config.protectedPaths.write, ...project.config.protectedPaths.write],
+    protectedRead: [...globalRead.include, ...projectRead.include],
+    protectedReadExclude: globalRead.exclude,
+    protectedWrite: [...globalWrite.include, ...projectWrite.include],
     reviewer,
     sandbox,
     warnings,
@@ -248,6 +284,25 @@ export function appendProjectAllowRule(globalFile: string, cwdKey: string, rule:
   const allow = asStringList(entry.allow);
   if (!allow.includes(rule)) allow.push(rule);
   entry.allow = allow;
+  projects[cwdKey] = entry;
+  raw.projects = projects;
+  writeJsonAtomic(globalFile, raw);
+}
+
+/** Merge a directory into `projects[<cwdKey>].additionalDirectories` of the global file. */
+export function appendAdditionalDirectory(globalFile: string, cwdKey: string, directory: string): void {
+  let raw: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(globalFile, "utf8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) raw = parsed as Record<string, unknown>;
+  } catch {
+    // Missing or broken file: start fresh rather than preserving garbage.
+  }
+  const projects = (typeof raw.projects === "object" && raw.projects !== null ? raw.projects : {}) as Record<string, unknown>;
+  const entry = (typeof projects[cwdKey] === "object" && projects[cwdKey] !== null ? projects[cwdKey] : {}) as Record<string, unknown>;
+  const directories = asStringList(entry.additionalDirectories);
+  if (!directories.includes(directory)) directories.push(directory);
+  entry.additionalDirectories = directories;
   projects[cwdKey] = entry;
   raw.projects = projects;
   writeJsonAtomic(globalFile, raw);

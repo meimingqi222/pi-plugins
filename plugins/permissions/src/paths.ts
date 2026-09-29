@@ -32,6 +32,17 @@ export function isInside(child: string, parent: string, env: PolicyEnv): boolean
   return c.startsWith(prefix);
 }
 
+/**
+ * child is strictly below parent (never equal). Both must already be normalized.
+ * Separate from `isInside` because callers that ask "a boundary, or something
+ * under it?" need the second answer, and the case folding must stay in one place.
+ */
+export function isStrictlyInside(child: string, parent: string, env: PolicyEnv): boolean {
+  const c = caseInsensitive(env) ? child.toLowerCase() : child;
+  const p = caseInsensitive(env) ? parent.toLowerCase() : parent;
+  return c !== p && isInside(child, parent, env);
+}
+
 function isAbsolutePath(p: string, env: PolicyEnv): boolean {
   if (env.platform === "win32") {
     // After slash conversion: "C:/x" or "//server/share/x" or "/x" (git-bash abs).

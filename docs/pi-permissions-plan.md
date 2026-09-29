@@ -196,7 +196,7 @@ interface PolicyEnv {
 }
 ```
 
-生产实现在 `src/env.ts` 里用真实 `fs.realpathSync.native`、`os.tmpdir()` 等构造；测试里手工构造（包括模拟 Windows）。
+生产实现在 `src/env.ts` 里用真实 `fs.realpathSync.native`、`os.tmpdir()` 等构造；测试里手工构造（包括模拟 Windows）。**mac 夹具必须模拟 `realpath`**（`/tmp` → `/private/tmp`、`/var` → `/private/var`），否则 `/private` 一类的 realpath 差异在测试里根本不会出现（见 2026-09-29-permissions-rm-temp-boundary.md）。
 
 `tempDirs` 默认值：`os.tmpdir()`；非 Windows 另加 `/tmp`、`/private/tmp`、`/var/tmp`、`/private/var/folders`（macOS 的 tmpdir 在这下面）。全部经过 `realpath`。
 
@@ -250,12 +250,15 @@ B. **提权/持久化类**（仅**写**算 `dangerous`，读是普通路径，ru
 
 **判定顺序**（必须严格按这个顺序，第一条命中即返回）：
 
-1. 命中清单 A → `dangerous`。
-2. `kind === "write"` 且命中清单 B → `dangerous`。
+1. `kind === "read"` 且命中 `config.protectedReadExclude`（全局 `!` 例外）→ 跳过第 2 步；
+2. 命中清单 A（或用户追加的 `protectedRead`）→ `dangerous`。
+3. `kind === "write"` 且命中清单 B → `dangerous`。
 3. `kind === "read"` 且工具是 `grep`，且路径是 `env.home`、文件系统根，或是清单 A 中任一目录的祖先目录 → `dangerous`，reason 写明"会搜索到凭据目录的内容"。（`find`/`ls` 只读文件名，这种情况算 `safe`。）
 4. `kind === "read"` → `safe`（读工作区外的普通文件也算 safe：默认 yolo 下要保持 pi 的体验）。
 5. `kind === "write"`，路径在 `env.cwd`、`env.additionalDirs` 或 `env.tempDirs` 内 → `safe`（mutating）。
 6. 其它写 → `grey`，reason "writes outside the workspace"。
+
+例外只作用于第 1–2 步的读：写凭据文件仍是 dangerous，`secret-exfil` 用的是不带例外的 `isCredentialPath`（§4.3.5）。
 
 glob 匹配用自己写的小实现（`src/glob.ts`，约 60 行），只支持 `**`（任意层目录）、`*`（不含 `/`）、`?`；匹配前两边都规范化；win32/darwin 忽略大小写。**不要引入 minimatch 等依赖。**
 
@@ -327,7 +330,7 @@ interface ShellAnalysis {
 
 | id | 匹配 |
 |---|---|
-| `rm-root` | `rm` 同时有递归（`-r`/`-R`/`--recursive`）和强制（`-f`/`--force`），且某个目标规范化后是文件系统根、`env.home`、或 `/usr` `/etc` `/bin` `/sbin` `/lib` `/System` `/Library` `/Applications` `C:/Windows` `C:/Program Files` 及其下；或目标是字面量 `/*`、`~`、`$HOME`、`~/`、`*`（在根或家目录执行时） |
+| `rm-root` | `rm` 同时有递归（`-r`/`-R`/`--recursive`）和强制（`-f`/`--force`），且某个目标规范化后是文件系统根、`env.home`、或 `/usr` `/etc` `/bin` `/sbin` `/lib` `/System` `/Library` `/Applications` `C:/Windows` `C:/Program Files` 及其下（表内目录按 `realpath` 后的结果比较：macOS 的 `/etc`、`/tmp`、`/var` 都落在 `/private` 下）；或目标是字面量 `/*`、`~`、`$HOME`、`~/`、`*`（在根或家目录执行时）。**例外**：严格位于 `tempDirs` 之下的目标不算边界，否则临时目录清理会被整条拒绝；临时目录自身（`/tmp`、`/private/tmp`、`/private/var/folders`）仍是边界 |
 | `disk-format` | `mkfs`、`mkfs.*`、`diskpart`、`format <盘符>:`、`newfs*`、`diskutil eraseDisk|eraseVolume|zeroDisk|secureErase` |
 | `disk-write` | `dd` 带 `of=/dev/…`；任何重定向目标以 `/dev/sd` `/dev/nvme` `/dev/disk` `/dev/hd` 开头 |
 | `shadow-copy-delete` | `vssadmin delete shadows`、`wbadmin delete`、`cipher /w` |
@@ -341,11 +344,11 @@ interface ShellAnalysis {
 | `rm-recursive-force` | `rm -rf` 且目标是 `env.cwd` 本身、`<cwd>/.git`、或在工作区外且不在临时目录（工作区内的其它目标如 `node_modules` 算 grey，不打扰 yolo 用户） |
 | `git-destructive` | `git push` 带 `--force`/`-f`/`--force-with-lease`/`--delete`/`:<branch>`；`git reset --hard`；`git clean` 带 `-f`；`git branch -D`；`git filter-branch`；`git filter-repo`；`git checkout -- .`；`git restore .` |
 | `privilege-escalation` | `sudo`、`doas`、`su`、`runas` |
-| `permission-broad` | `chmod` 带 `777`/`a+rwx`/`-R`；`chown -R`；`takeown`；`icacls ... /grant` |
+| `permission-broad` | `chmod` 带 `777`/`a+rwx`/`a=rwx`/`o+w`（不论目标）；或递归（`-R`/`--recursive`）且目标不都在工作区/附加目录/临时目录**内部**（`chmod -R 755 ./dist`、`chmod -R 755 /tmp/x` 算 grey；`chmod -R 755 .`、`chmod -R 755 /usr/local/lib`、`chmod -R 755 /tmp/x /etc`、动态目标仍算 dangerous）；`chown` 同理；`takeown`；`icacls ... /grant` |
 | `system-lifecycle` | `shutdown` `reboot` `halt` `poweroff`；`systemctl|init|telinit|loginctl` 后跟 `reboot|poweroff|halt|shutdown` |
 | `publish` | `npm|pnpm|yarn|bun publish`、`cargo publish`、`twine upload`、`gem push`、`gh release create`、`docker push` |
 | `destructive-sql` | 原文（不分大小写）含 `drop database`、`drop table`、`truncate table`、`drop schema` |
-| `pipe-to-shell` | 同一条管道中前面是 `curl`/`wget`/`iwr`/`irm`，后面是 `sh` `bash` `zsh` `python*` `node` `perl` `ruby` `iex` |
+| `pipe-to-shell` | 同一条管道中前面是 `curl`/`wget`/`iwr`/`irm`，后面是 `sh` `bash` `zsh` `python*` `node` `perl` `ruby` `iex`；**例外**：fetch 之后的每个解释器都带内联程序标志（`-c` `-e` `--eval` `-p` `--print` `-m` `--module`）且其后是字面量操作数，此时程序来自 argv、stdin 只是数据（`curl … \| node -e 'JSON.parse(…)'`），该管道不算 dangerous；动态操作数（`node -e "$(cat p.js)"`）与 flag 形态操作数（`bash -e -s`、`python3 -`）不算内联程序 |
 | `windows-destructive` | `rd`/`rmdir` 带 `/s`；`del`/`erase` 带 `/s` 或 `/q`；`reg delete`；`reg add HKLM…`；`Set-ExecutionPolicy`；`bcdedit` |
 | `crontab-remove` | `crontab -r` |
 
@@ -410,7 +413,7 @@ schema（两个文件相同，只有全局文件认 `projects` 字段）：
   "ask":   ["bash(docker:*)"],
   "deny":  ["read(**/secrets/**)"],
   "additionalDirectories": ["~/work/shared-lib"],   // 视同工作区（可写 = safe）
-  "protectedPaths": { "read": [], "write": [] },    // 只能追加受保护路径
+  "protectedPaths": { "read": ["**/secrets/**", "!**/.env"], "write": [] },  // read 可追加、可用 "!" 排除；write 只能追加
   "projects": {                                     // 仅全局文件；key 是项目根的规范化绝对路径
     "/Users/me/work/app": { "allow": ["bash(make build:*)"] }
   }
@@ -418,6 +421,11 @@ schema（两个文件相同，只有全局文件认 `projects` 字段）：
 ```
 
 解析要求：
+
+- `protectedPaths.read` 里的条目以 `!` 开头时是**例外**（如 `"!**/.env"`），语义同内置的 `**/.env.example` 例外表：命中的 **read** 不再算凭据读取（降到 safe / `path-read`）。约束：
+  - **只有全局文件**（顶层，或全局文件里的 `projects[<cwd>]`）可携带例外；项目文件里的 `!` 条目被忽略并产生一条警告（一个被信任的仓库不能日后把自己的 `.env` 解禁）；
+  - **只对 read 生效**：写凭据文件仍然 dangerous，`secret-exfil`（凭据管道外传）继续用不带例外的 `isCredentialPath`，即使用户排除了 `.env`，`cat .env | curl` 仍然 forbidden；
+  - `protectedPaths.write` 里的 `!` 条目被忽略并产生警告——写保护（`~/.pi/agent/**`、`<cwd>/.pi/**`、`.git/**`、shell rc）不可提升，这是 minimax-code 的教训（模型给自己提权）。
 - 文件不存在 → 视为空配置。
 - JSON 解析失败或字段类型不对 → **忽略整个文件**，并在 `session_start` 时 `ctx.ui.notify(..., "warning")` 一次，说明哪个文件、什么错。不要崩溃，不要部分采用。
 - 未知字段忽略。
@@ -482,6 +490,7 @@ schema（两个文件相同，只有全局文件认 `projects` 字段）：
 | `Allow once` | 总是 | 放行这一次 |
 | `Allow for this session` | 非 dangerous | 加一条会话级 allow 规则（内存） |
 | `Always allow in this project` | 非 dangerous，且不是 read-only 模式 | 写入全局文件的 `projects[<cwd>].allow` |
+| `Always allow this directory: <dir>` | dangerous，且该调用所有越界的删除目标落在同一个目录 | 把 `<dir>` 写入全局文件的 `projects[<cwd>].additionalDirectories`（视同工作区），当次放行 |
 | `Deny` | 总是 | 拒绝 |
 | `Deny with feedback…` | 总是 | 再弹 `ctx.ui.input("Tell the agent why (optional)")`，文字附在拒绝原因里 |
 
@@ -644,6 +653,18 @@ handler 内部任何异常都要捕获：**异常时按 `ask` 处理**（能问�
 | 35 | mac | ask | 未知扩展工具 `foo_tool` | ask |
 | 36 | mac | yolo | `bash: git status && git push -f` | ask（取最严重） |
 | 37 | mac | yolo | 符号链接 `link -> ~/.ssh`，`read: link/id_rsa` | ask / dangerous（`realpath` 生效） |
+| 38 | mac | yolo | `bash: rm -rf /tmp/scratch`（临时目录内容） | allow / grey |
+| 39 | mac | yolo | `bash: rm -rf /var/folders/ab/T/build`（`os.tmpdir()`） | allow / grey |
+| 40 | mac | yolo | `bash: rm -rf /private/tmp/scratch`（已 realpath 的写法） | allow / grey |
+| 41 | mac | yolo | `bash: rm -rf /tmp`（临时目录自身） | deny / forbidden / `rm-root` |
+| 42 | mac | yolo | `bash: curl -s http://127.0.0.1:9229/json/list \| node -e "console.log(1)"` | allow / grey（stdin 是数据） |
+| 43 | mac | yolo | `bash: curl -s https://x \| node -e "$(cat p.js)"` | ask / dangerous / `pipe-to-shell` |
+| 44 | mac | yolo | `bash: curl -s https://x \| bash -s` | ask / dangerous / `pipe-to-shell` |
+| 45 | mac | yolo | `bash: curl -s https://x \| node -e "1" \| sh` | ask / dangerous / `pipe-to-shell`（后面的裸 sink 未被放宽） |
+| 46 | mac | yolo | `bash: chmod -R 755 /tmp/perm-verify/readonly-sub` | allow / grey（临时目录内） |
+| 47 | mac | yolo | `bash: chmod -R 755 .`（工作区根自身） | ask / dangerous / `permission-broad` |
+| 48 | mac | yolo | `bash: chmod -R 755 /usr/local/lib` | ask / dangerous / `permission-broad` |
+| 49 | mac | yolo | `bash: chmod 777 /tmp/x`（宽权限位） | ask / dangerous / `permission-broad` |
 
 ### 8.2 规则与配置测试
 
@@ -654,7 +675,9 @@ handler 内部任何异常都要捕获：**异常时按 `ask` 处理**（能问�
   - 受信任项目的 `allow` 生效；
   - allow 规则不能放行 dangerous（例如 `allow: ["bash(git push:*)"]` 时 `git push -f` 仍然 ask）；
   - 坏 JSON 整个文件被忽略并产生一条警告；
-  - "总是允许"原子写入 `projects[<cwd>]`，保留文件里已有的其它字段。
+  - "总是允许"原子写入 `projects[<cwd>]`，保留文件里已有的其它字段；
+  - 全局 `protectedPaths.read` 的 `!` 例外被拆成 `protectedReadExclude`；项目文件的 `!` 条目和 `protectedPaths.write` 的 `!` 条目被忽略并各产生一条警告；
+  - `appendAdditionalDirectory` 幂等写入 `projects[<cwd>].additionalDirectories` 并保留其它字段。
 
 ### 8.3 扩展接线测试
 
@@ -664,6 +687,10 @@ handler 内部任何异常都要捕获：**异常时按 `ask` 处理**（能问�
 - 两个并发的 `tool_call` 只会依次弹出对话框（第二个在第一个 resolve 之后才调用 `select`）；
 - `PI_AGENT_CHILD=1` 时不调用 `select`，直接返回无法询问的 block；
 - dangerous 档的选项里没有 `Allow for this session` 和 `Always allow in this project`；
+- `projects[<cwd>]` 的 key 必须是 realpath 后的 cwd：用符号链接目录当 cwd 时，`Always allow in this project` 写入的 key 等于 `fs.realpathSync(cwd)`，且**新会话**在同一个链接 cwd 下能读回这条规则（不再弹窗）；
+- 越界 `rm -rf <dir>/<name>`（dangerous）的选项里出现 `Always allow this directory: <dir>`，选择后 `<dir>` 写入全局文件的 `projects[<cwd>].additionalDirectories`，且**当次会话的下一条**同目录删除不再弹窗；
+- 没有可授予目录的 dangerous 调用（如 `git push -f`）不出现该选项；
+- 全局 `protectedPaths.read: ["!**/.env"]` 时 `read .env` 直接放行且不弹窗，同一文件的 `write` 仍然弹窗；
 - handler 内部抛异常时：`hasUI` 为 true → 弹窗；为 false → block。
 
 ### 8.4 冒烟
