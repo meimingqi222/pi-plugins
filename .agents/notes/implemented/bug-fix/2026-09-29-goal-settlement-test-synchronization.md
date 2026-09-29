@@ -31,6 +31,15 @@ state: a verifier can intentionally remain pending while a test cancels it or
 starts a follow-up. In those tests, `emit` is started without awaiting it,
 interleaving actions occur, and only then does the test await its completion.
 
+This replaces an earlier fix for the same flake, written before the scheduler
+seam existed and held locally rather than in this history: `waitFor` predicates
+plus a bounded `drainRound` tick drain, applied to all 28 `agent_settled` sites.
+That variant was green (thirteen consecutive 133 pass / 0 fail runs) but paid for
+every negative assertion with eight blind ticks, and it kept the schedule itself
+unobservable. Awaiting the settlement the plugin already scheduled removes the
+guessing instead of bounding it. The superseded note keeps the site-by-site audit
+and the failure counts; this one carries the mechanism.
+
 ## Alternatives considered
 
 - Increase the 10ms sleep: remains timing-dependent, slower and less reliable.
@@ -42,6 +51,9 @@ interleaving actions occur, and only then does the test await its completion.
   their follow-ups before verification, changing the production contract.
 - Globally replace `setTimeout` in the test: interferes with unrelated timers,
   other extensions and test files.
+- Wait on a predicate or a bounded tick drain at each assertion instead of on the
+  settlement (the superseded variant above): a non-event has no state to poll, so
+  the drain stays a tick count, only now spread over every negative assertion.
 
 ## Consequences
 
