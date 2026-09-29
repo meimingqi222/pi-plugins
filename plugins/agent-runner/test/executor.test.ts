@@ -27,7 +27,9 @@ import {
  * they cannot be checked by calling the parser directly.
  *
  * Every test passes a short timeout, because a regression here hangs rather than
- * fails.
+ * fails. The one exception is "the deadline and silence bound keep the event loop
+ * alive", which asserts the handles' ref state and so fails in milliseconds: a
+ * hang is the one failure mode a test suite cannot report.
  */
 const fixture = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/fake-pi.mjs");
 const injection = { command: process.execPath, args: [fixture] };
@@ -363,5 +365,42 @@ describe("agent executor diagnostics", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  }, 15_000);
+
+  test("the deadline and silence bound keep the event loop alive", async () => {
+    // Both bounds are the only thing that can end a run the caller awaits, so
+    // neither may be unref'd: Bun treats a loop whose only pending handle is an
+    // unref'd timer as empty, then neither fires it nor exits — it spins at 100%
+    // CPU. This asserts the handles' ref state instead of running a bound out, so
+    // the regression fails immediately rather than hanging the file.
+    const globals = globalThis as unknown as {
+      setTimeout: (handler: any, timeout?: number, ...args: any[]) => any;
+      setInterval: (handler: any, timeout?: number, ...args: any[]) => any;
+    };
+    const realSetTimeout = globals.setTimeout;
+    const realSetInterval = globals.setInterval;
+    const handles: Array<{ hasRef?: () => boolean }> = [];
+    const wrap = (real: (handler: any, timeout?: number, ...args: any[]) => any) => (handler: any, timeout?: number, ...args: any[]) => {
+      const handle = real(handler, timeout, ...args) as { hasRef?: () => boolean };
+      handles.push(handle);
+      return handle;
+    };
+    globals.setTimeout = wrap(realSetTimeout);
+    globals.setInterval = wrap(realSetInterval);
+    let execution: ReturnType<ReturnType<typeof createAgentExecutor>> | undefined;
+    try {
+      execution = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS })(input("TOOLS"));
+      // The run arms its bounds after its own setup awaits, so wait for them
+      // through the real timers rather than assuming they exist on return.
+      const deadline = Date.now() + 2_000;
+      while (handles.length < 2 && Date.now() < deadline) await new Promise((resolve) => realSetTimeout(resolve, 5));
+    } finally {
+      globals.setTimeout = realSetTimeout;
+      globals.setInterval = realSetInterval;
+    }
+    // The wall clock and the silence bound are the only timers this path creates.
+    expect(handles).toHaveLength(2);
+    for (const created of handles) expect(created.hasRef?.()).not.toBe(false);
+    expect((await execution!).status).toBe("completed");
   }, 15_000);
 });

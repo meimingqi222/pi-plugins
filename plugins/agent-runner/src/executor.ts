@@ -647,6 +647,12 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         // clock relabels a run the silence bound (or a caller's abort) already ended,
         // because termination has a grace period and the deadline can expire inside
         // it — which reported a stalled child as "timed out".
+        // Neither bound below is unref'd: both are the only thing that can end a
+        // run the caller is awaiting. Unref'd, Bun treats the loop as empty while
+        // the promise can never resolve, and it neither fires the timer nor exits —
+        // it spins at 100% CPU, which is how `test/rpc-child.test.ts` stopped
+        // finishing. `finish()` clears both, so a run that ended leaves nothing
+        // behind to hold the process open.
         const timer =
           timeoutMs > 0
             ? setTimeout(() => {
@@ -655,8 +661,6 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
                 terminate();
               }, timeoutMs)
             : undefined;
-        // `unref` so a one-shot run is not held open by a timer nobody can see.
-        timer?.unref?.();
 
         // The silence bound runs alongside the wall clock rather than replacing
         // it: a child that streams nothing for `stallMs` is already wedged, and
@@ -676,7 +680,6 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
                 terminate();
               }, stallCheckIntervalMs(stallMs))
             : undefined;
-        stallTimer?.unref?.();
 
         const onAbort = (): void => {
           if (!killedBy) killedBy = "abort";
