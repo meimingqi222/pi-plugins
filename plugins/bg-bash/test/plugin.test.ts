@@ -539,9 +539,153 @@ describe("session lifecycle", () => {
 		harness.ctx.isIdle = () => false;
 		await harness.emit("agent_start");
 		await bash(harness).execute("steered", { command: "echo steer-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
-		await waitFor(() => harness.messages.length === 1);
+		await waitFor(() => completions(harness).length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(harness.messages).toHaveLength(0);
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(1);
 		expect(harness.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
 		expect(harness.messages[0].message.content).not.toContain("steer-output");
+		await harness.emit("agent_settled");
+		expect(harness.messages).toHaveLength(1);
+	}, 15000);
+
+	for (const action of ["result", "wait"] as const) {
+		test(`a terminal ${action} consumes a pending completion before settlement`, async () => {
+			const harness = setup();
+			harness.ctx.isIdle = () => false;
+			await harness.emit("agent_start");
+			await harness.emit("agent_end");
+			await bash(harness).execute("read", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+			await waitFor(() => completions(harness).length === 1);
+			const result = await tasks(harness).execute("read", { action, id: "bg001", timeout: 0 }, undefined, undefined, harness.ctx);
+			expect(textOf(result)).toContain("failed");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await harness.emit("agent_settled");
+			expect(harness.messages).toHaveLength(0);
+		}, 15000);
+	}
+
+	for (const action of ["status", "log", "output", "list"] as const) {
+		test(`${action} inspection does not consume a completion`, async () => {
+			const harness = setup();
+			harness.ctx.isIdle = () => false;
+			await harness.emit("agent_start");
+			await bash(harness).execute("inspect", { command: "echo done", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+			await waitFor(() => completions(harness).length === 1);
+			await tasks(harness).execute("inspect", { action, id: "bg001" }, undefined, undefined, harness.ctx);
+			await harness.emit("turn_end");
+			expect(harness.messages).toHaveLength(1);
+		}, 15000);
+	}
+
+	test("aborted result queries and parent turns preserve the settled fallback", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		await bash(harness).execute("aborted", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		const controller = new AbortController();
+		controller.abort();
+		await tasks(harness).execute("read", { action: "result", id: "bg001" }, controller.signal, undefined, harness.ctx);
+		harness.ctx.signal = controller.signal;
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(0);
+		await harness.emit("agent_settled");
+		expect(harness.messages).toHaveLength(1);
+		expect(harness.messages[0].options.deliverAs).toBe("followUp");
+	}, 15000);
+
+	test("reading one job leaves only unread jobs in the boundary batch", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		for (const name of ["one", "two"]) await bash(harness).execute(name, { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 2);
+		await tasks(harness).execute("read", { action: "result", id: "bg001" }, undefined, undefined, harness.ctx);
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(1);
+		expect(harness.messages[0].message.content).toContain("bg002");
+		expect(harness.messages[0].message.content).not.toContain("bg001");
+	}, 15000);
+
+	test("a refused boundary submission remains pending for retry", async () => {
+		let attempts = 0;
+		const harness = setup(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("delivery refused");
+		});
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		await bash(harness).execute("retry", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await harness.emit("turn_end");
+		expect(attempts).toBe(1);
+		await harness.emit("agent_settled");
+		expect(attempts).toBe(2);
+		await harness.emit("agent_settled");
+		expect(attempts).toBe(2);
+	}, 15000);
+
+	for (const action of ["result", "wait"] as const) {
+		test(`reading a running job through ${action} does not consume its future completion`, async () => {
+			const harness = setup();
+			harness.ctx.isIdle = () => false;
+			await harness.emit("agent_start");
+			await bash(harness).execute("running", { command: "sleep 0.15; exit 3", background: true }, undefined, undefined, harness.ctx);
+			const result = await tasks(harness).execute("read", { action, id: "bg001", timeout: 0 }, undefined, undefined, harness.ctx);
+			expect(textOf(result)).toContain("running");
+			await waitFor(() => completions(harness).length === 1);
+			await harness.emit("turn_end");
+			expect(harness.messages).toHaveLength(1);
+		}, 15000);
+	}
+
+	test("a partial wait consumes only terminal jobs returned in its result", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		await bash(harness).execute("done", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await bash(harness).execute("running", { command: "sleep 0.15; exit 3", background: true }, undefined, undefined, harness.ctx);
+		const result = await tasks(harness).execute("read", { action: "wait", ids: ["bg001", "bg002"], timeout: 0 }, undefined, undefined, harness.ctx);
+		expect(textOf(result)).toContain("Wait timed out");
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(0);
+		await waitFor(() => completions(harness).length === 2);
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(1);
+		expect(harness.messages[0].message.content).toContain("bg002");
+		expect(harness.messages[0].message.content).not.toContain("bg001");
+	}, 15000);
+
+	test("an aborted wait does not consume terminal results included in its response", async () => {
+		const harness = setup();
+		harness.ctx.isIdle = () => false;
+		await harness.emit("agent_start");
+		await bash(harness).execute("done", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => completions(harness).length === 1);
+		await bash(harness).execute("running", { command: "sleep 0.15; exit 3", background: true }, undefined, undefined, harness.ctx);
+		const controller = new AbortController();
+		controller.abort();
+		const result = await tasks(harness).execute("read", { action: "wait", ids: ["bg001", "bg002"] }, controller.signal, undefined, harness.ctx);
+		expect(textOf(result)).toContain("Wait cancelled");
+		await harness.emit("turn_end");
+		expect(harness.messages).toHaveLength(1);
+		expect(harness.messages[0].message.content).toContain("bg001");
+	}, 15000);
+
+	test("an idle refusal retries without repeating the UI warning", async () => {
+		let attempts = 0;
+		const harness = setup(() => {
+			attempts += 1;
+			if (attempts <= 2) throw new Error("delivery refused");
+		});
+		await bash(harness).execute("retry", { command: "exit 3", background: true }, undefined, undefined, harness.ctx);
+		await waitFor(() => attempts === 3, 1500);
+		expect(harness.notices).toHaveLength(1);
+		await harness.emit("agent_settled");
+		expect(attempts).toBe(3);
 	}, 15000);
 
 	test("a queued completion is discarded when its session leaves before agent_settled", async () => {

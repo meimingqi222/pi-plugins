@@ -4,7 +4,14 @@
 **Scope:** `plugins/subagent`, `plugins/agent-runner`, `plugins/run-core`
 **References:** `2026-09-27-subagent-fleet-surfaces-design.md`, `2026-09-27-shared-background-work-surface.md`, `2026-09-27-subagent-transcript-and-notify.md` (all under `.agents/notes/`)
 
-## Goal command (run this to execute)
+## Historical execution command
+
+This is the historical catalog/lifecycle plan, not the current delivery
+contract. The phases have already shipped. For the result-consumption and
+parent-boundary behavior revised on 2026-09-30, see the README's "Result
+delivery and proactive inspection" section. A child's `agent_settled` makes
+an answer available; it does not require waiting for the parent's entire run
+to settle before delivering that answer.
 
 ```
 /goal Refactor pi-subagent per plugins/subagent/docs/refactor-plan.md. Execute P0, P1, P2 in order, one commit per phase. Every phase must end with bun run typecheck + bun run test + bun run notes green in the repo root. Ship one regression note per non-trivial change under .agents/notes/implemented/feature/. Do not skip a phase or merge two into one commit. --tokens 800000

@@ -15,9 +15,10 @@ export const SUBAGENT_DESCRIPTION = [
 	"Delegate one task to a named subagent running in its own pi process with its own context window.",
 	formatAgentGuidance(),
 	"User-defined agents in ~/.pi/agent/agents/*.md add names or replace built-ins.",
-	"By default the call waits for the answer. Set background=true for independent work; a task ID returns immediately and the answer arrives when it finishes.",
+	"By default the call waits for the answer. Set background=true for independent work; a task ID returns immediately and an unread answer is delivered at a safe parent turn boundary.",
 	"Parallel background children must own disjoint files; otherwise serialize them.",
-	"Completion arrives automatically; do not poll subagent_tasks in a loop — use its wait action when you need to block on a task.",
+	"Completion arrives automatically at a safe turn boundary; do not poll subagent_tasks in a loop — use its wait action when you need to block on a task.",
+	"Returning a settled answer through show, wait, or log consumes its pending notification, not a later reply's answer.",
 	"Use it for a self-contained piece of work that would otherwise fill this conversation with material you do not need to keep.",
 	"Do not use it for a lookup a grep or read answers, and do not chain many of them by hand — `pi-workflow` is the tool for structured fan-out.",
 ].join(" ");

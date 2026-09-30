@@ -29,6 +29,7 @@ function runtimeWith(registry: JobRegistry): Runtime {
 		captureOrigin: () => () => true,
 		started: () => {},
 		deliver: () => {},
+		consumeResult: () => {},
 	};
 }
 

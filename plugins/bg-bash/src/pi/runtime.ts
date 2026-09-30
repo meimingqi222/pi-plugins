@@ -32,4 +32,5 @@ export interface Runtime {
 	started(job: Job, ctx: ExtensionContext, isCurrent: () => boolean): void;
 	/** Persist and route a finished background job. */
 	deliver(job: Job, outcome: RunOutcome, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void;
+	consumeResult(job: Job, signal?: AbortSignal): void;
 }
