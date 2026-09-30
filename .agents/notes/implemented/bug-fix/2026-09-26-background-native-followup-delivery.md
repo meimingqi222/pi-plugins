@@ -1,7 +1,14 @@
 # Agent Note: Deliver background results at Pi's settled boundary
 
 Status: implemented
-Partly-superseded-by: 2026-09-26-bg-bash-late-completion-routing.md
+Partly-superseded-by: 2026-09-30-subagent-result-consumption-and-turn-delivery.md
+
+The bg-bash delivery portion is also superseded by
+`2026-09-30-bg-bash-result-consumption-and-turn-delivery.md`: it now owns a
+query-consumable pending map, submits native steering at turn_end, and keeps
+agent_settled as the late-result fallback. It no longer uses
+SettledDeliveryQueue. The historical decision below still documents the
+original fix; it is not a ban on native active-run delivery.
 
 ## Problem
 
@@ -36,9 +43,12 @@ also clears queued sends on navigation and rechecks the origin at delivery.
 **Poll `isIdle()` on a timer.** That duplicates Pi's scheduler, adds polling to
 long runs, and still leaves a private message invisible to goal verification.
 
-**Send immediately while a run is active.** Pi checks its native queue before
-it marks itself idle and emits `agent_settled`. A result entering the queue in
-that gap can miss the last wake-up.
+**Send blindly at any point while a run is active.** Pi supports native
+steering and follow-up messages during an active run. The race is narrower:
+a result entering the native queue after the final queue check but before
+`agent_settled` can miss the last wake-up. That gap justifies a settled
+fallback, not a blanket prohibition on active-run delivery. A `turn_end`
+handler can enqueue steering before the loop's next queue check.
 
 **Treat goal spend failure as a workflow result failure.** The result already
 exists; accounting failure should be reported separately.
@@ -54,10 +64,17 @@ error channel.
 
 ## Superseded
 
-The shared settled-boundary primitive and its use by workflow and subagent
-still hold. Bg-bash now persists every completion but wakes the model only for
+The shared settled-boundary primitive and its use by workflow still hold.
+Subagent now uses a revision-aware queue: unread results steer at the parent's
+`turn_end`, with `agent_settled` retained as a late-arrival fallback. Queries
+returning the canonical answer consume the pending result. See the successor
+note for the source audit and real Pi runtime tests. The original all-busy-runs
+deferral was a conservative policy, not a transport-layer requirement.
+
+Bg-bash now persists every completion but wakes the model only for
 failures, timeouts, or explicit `notify: "always"`; successful default jobs
-do not enter this queue. See the successor note for that policy. Its
+do not enter this queue. See `2026-09-26-bg-bash-late-completion-routing.md`
+for that independent policy. Its
 post-`agent_end` wake-worthy completions still use `agent_settled`.
 
 ## Verification

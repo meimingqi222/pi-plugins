@@ -66,14 +66,47 @@ settle and returns its record either way — the supported alternative to pollin
 `show` in a loop. An interrupted call returns at once and says so; only a
 deadline that actually elapsed reports an elapsed time.
 
+### Result delivery and proactive inspection
+
+A child's `agent_settled` makes its answer available immediately, independently
+of whether the parent is busy and whether the child process is still alive.
+Each new answer has a `resultRevision`; a new terminal failure also advances it,
+while process exit repeating a settled outcome does not.
+
+- When the parent is idle, an unread success or failure starts a follow-up.
+- When the parent is running, unread answers enter Pi's native steering queue
+  at the parent's `turn_end`, after the entire tool batch has returned and
+  before the next model call. They do not have to wait for the run to finish.
+- Results arriving after the run's last `turn_end` stay pending until `agent_settled`;
+  an unread success or failure can then start a follow-up. Cancellation remains
+  context-only, without requesting a new run. Failure is delivered through the
+  native queue rather than only appended to history, so the parent can actually
+  account for it before claiming success.
+- `show` and `wait` returning an answer consume its pending notification.
+  `log` also appends the latest canonical settled answer when available and
+  consumes that revision, even when its raw-log preview is truncated or
+  unavailable. The appended answer uses the same 50 KB model-facing bound as
+  the normal result, separate from the raw-log preview's 32 KB bound.
+- Reading only status, activity, partial logs, or the UI panel does not consume
+  an answer. A cancelled query does not acknowledge delivery. Reading an old
+  answer while a reply is running never consumes the reply's later answer.
+
+This is boundary delivery, not an interruption of tokens already being streamed.
+An answer arriving during the parent's final response can still require a later
+model response; the plugin cannot retroactively change text already shown. If a
+required result is still outstanding, use `wait` before claiming completion.
+Once a notification is submitted to Pi, it cannot be withdrawn; proactive
+inspection suppresses notifications that are still pending in the plugin.
+
 `reply` sends a follow-up message to a live background child (they run on
 pi's RPC transport, so the process survives its own turn). On an **idle**
 lane — turn settled, child alive — it starts a new turn. Mid-turn,
 `interrupt: true` steers (injected after the current tool calls), while the
 default queues a `follow_up` for after the turn. A turn's answer is
-delivered when the turn actually settles (`agent_settled`), not when the
+available when the child turn actually settles (`agent_settled`), not when the
 process exits: the lane then reads as answered-awaiting-reply, and `show`
-and `wait` already carry its text. An idle lane settles on its own after a
+and `wait` already carry its text. Automatic delivery follows the parent's
+boundaries described above. An idle lane settles on its own after a
 keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`) — the window only
 keeps the process warm for replies; ending it does not re-deliver an answer
 already sent, and a failure mid-turn still reports. Idle lanes hold no

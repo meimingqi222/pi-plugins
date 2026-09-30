@@ -1,6 +1,7 @@
 # Agent Note: Deliver a background lane's answer at turn settle, not process exit
 
 Status: implemented
+Partly-superseded-by: 2026-09-30-subagent-result-consumption-and-turn-delivery.md
 
 ## Problem
 
@@ -96,6 +97,17 @@ non-completed final status or an undelivered turn still delivers.
 
 `AgentRunResult.usage` on `onTurnSettled` is cumulative across turns by design;
 callers needing per-turn deltas must subtract.
+
+## Superseded
+
+Child turn settlement, per-turn deadlines, RPC reply routing, command-error
+visibility, idle capacity accounting, and final goal-spend settlement still
+hold. The parent delivery mechanism is replaced by the successor note:
+`resultRevision` distinguishes new answers from process-exit repeats;
+`SubagentResultDelivery` steers unread results at the parent's `turn_end` and
+uses its `agent_settled` only as a late fallback. Queries returning an answer
+consume its pending notification. The old `deliveredTurns` field recorded
+scheduling, not confirmed submission or proactive consumption.
 
 ## Verification
 

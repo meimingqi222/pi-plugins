@@ -58,6 +58,7 @@ export interface Lane {
 	logPath?: string;
 	progress?: SubagentProgress;
 	result?: AgentToolResult<SubagentDetails>;
+	resultRevision?: number;
 	errorMessage?: string;
 	/** Prompts buffered for a live child; consumed by the reply transport. */
 	queuedPrompts?: string[];
@@ -162,12 +163,22 @@ export class LaneRegistry {
 		const done = Promise.resolve()
 			.then(() => work(controller.signal, lane.id))
 			.then((result) => {
-				lane.result = result;
+				const previous = lane.result?.details;
 				lane.status = result.details?.status === "running" ? "failed" : result.details?.status ?? "failed";
+				const completedTurnReported = lane.status === "completed" && previous?.status === "completed" && (lane.turnsAnswered ?? 0) > 0;
+				const repeatsSettledOutcome = lane.idleSince !== undefined && previous !== undefined
+					&& previous.status === result.details?.status && previous.output === result.details?.output
+					&& previous.errorMessage === result.details?.errorMessage;
+				if (!completedTurnReported && !repeatsSettledOutcome) {
+					lane.resultRevision = (lane.resultRevision ?? 0) + 1;
+				}
+				lane.result = result;
 			})
 			.catch((error: unknown) => {
 				lane.status = controller.signal.aborted ? "aborted" : "failed";
+				lane.result = undefined;
 				lane.errorMessage = error instanceof Error ? error.message : String(error);
+				lane.resultRevision = (lane.resultRevision ?? 0) + 1;
 			})
 			.finally(() => this.settle(lane));
 		return { record: { ...lane }, done };
@@ -224,6 +235,7 @@ export class LaneRegistry {
 		const lane = this.active.get(id)?.lane;
 		if (!lane) return;
 		lane.result = result;
+		lane.resultRevision = (lane.resultRevision ?? 0) + 1;
 		lane.turnsAnswered = (lane.turnsAnswered ?? 0) + 1;
 		const visible = publicLane(lane);
 		for (const waiter of [...this.waiters]) {

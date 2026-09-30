@@ -468,7 +468,7 @@ describe("the extension registers delegation and task tools", () => {
     expect(childSignal?.aborted).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(messages).toHaveLength(1);
-    expect(messages[0]!.options).toBeUndefined();
+    expect(messages[0]!.options).toEqual({ triggerTurn: false });
     const next = await tools[0]!.execute!("bg-3", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
     const nextId = next.details.taskId as string;
     emit("session_shutdown", { type: "session_shutdown" });

@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { SettledDeliveryQueue, createWorkReporter } from "pi-run-core";
+import { createWorkReporter } from "pi-run-core";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
 import type { RunOutcome } from "../core/types.ts";
@@ -41,7 +41,6 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	const registry = new JobRegistry({ runningLimit: BACKGROUND_JOB_LIMIT });
 	let shuttingDown = false;
 	let sessionGeneration = 0;
-	const delivery = new SettledDeliveryQueue(pi);
 
 	// The UI context the reporter draws on: refreshed by `session_start` and
 	// lazily when a job detaches (a tool call can precede or survive one).
@@ -59,8 +58,11 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	let agentRunActive = false;
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 	const pendingNotices = new Map<Job, { ctx: ExtensionContext | undefined; isCurrent: () => boolean }>();
+	let consumed = new WeakSet<Job>();
+	let submitted = new WeakSet<Job>();
+	let warned = new WeakSet<Job>();
 	const scheduleNotices = (delayMs: number): void => {
-		if (!noticeTimer) noticeTimer = setTimeout(flushNotices, delayMs);
+		if (!noticeTimer) noticeTimer = setTimeout(() => flushNotices(), delayMs);
 	};
 
 	const captureOrigin = (ctx: ExtensionContext): (() => boolean) => {
@@ -95,44 +97,43 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const flushNotices = (): void => {
+	const flushNotices = (boundary?: "steer" | "followUp"): void => {
+		if (noticeTimer) clearTimeout(noticeTimer);
 		noticeTimer = undefined;
 		for (const [job, origin] of pendingNotices) {
-			if (!origin.isCurrent()) pendingNotices.delete(job);
+			if (!origin.isCurrent() || consumed.has(job) || submitted.has(job)) pendingNotices.delete(job);
 		}
 		const batch = [...pendingNotices.entries()];
 		if (shuttingDown || batch.length === 0) return;
 		const ctx = batch[0][1].ctx;
-		const send = (deliverAs: "steer" | "followUp"): void => {
-			const current = batch.map(([job, origin]) => origin.isCurrent() ? job : undefined).filter((job): job is Job => Boolean(job));
-			if (shuttingDown || current.length === 0) return;
-			try {
-				pi.sendMessage(
-					{ customType: BG_BASH_CUSTOM_TYPE, content: formatCompletionNotice(current), display: false },
-					{ deliverAs, triggerTurn: true },
-				);
-			} catch (error) {
-				try { ctx?.ui.notify(`Background job completion could not be delivered: ${String(error)}`, "warning"); }
-				catch { /* A torn-down UI cannot show the warning. */ }
+		if (!boundary) {
+			if (agentRunActive || afterAgentEnd) return;
+			let idle = true;
+			try { idle = ctx?.isIdle() ?? true; } catch {}
+			if (!idle) {
+				scheduleNotices(250);
+				return;
 			}
-		};
-		let idle = true;
-		try { idle = ctx?.isIdle() ?? true; } catch { /* Origin checks still guard the send. */ }
-		if (idle) {
-			pendingNotices.clear();
-			send("followUp");
 		}
-		else if (afterAgentEnd) {
-			pendingNotices.clear();
-			// Pi has already checked its native queue here. Wait for settlement.
-			delivery.defer(() => send("followUp"));
-		} else if (agentRunActive) {
-			pendingNotices.clear();
-			send("steer");
-		} else {
-			// isIdle is also false during manual compaction, with no agent run
-			// able to receive a steer. Retry until Pi becomes idle or a run starts.
-			scheduleNotices(250);
+		const current = batch.filter(([job, origin]) => origin.isCurrent() && !consumed.has(job) && !submitted.has(job)).map(([job]) => job);
+		if (shuttingDown || current.length === 0) return;
+		try {
+			pi.sendMessage(
+				{ customType: BG_BASH_CUSTOM_TYPE, content: formatCompletionNotice(current), display: false },
+				{ deliverAs: boundary ?? "followUp", triggerTurn: true },
+			);
+			for (const job of current) {
+				submitted.add(job);
+				pendingNotices.delete(job);
+				warned.delete(job);
+			}
+		} catch (error) {
+			if (current.some((job) => !warned.has(job))) {
+				for (const job of current) warned.add(job);
+				try { ctx?.ui.notify(`Background job completion could not be delivered: ${String(error)}`, "warning"); }
+				catch {}
+			}
+			if (!agentRunActive && !afterAgentEnd) scheduleNotices(250);
 		}
 	};
 
@@ -140,6 +141,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		if (shuttingDown || !isCurrent()) return;
 		persist(job, BG_BASH_COMPLETION_ENTRY, ctx, isCurrent);
 		if (job.notify === "quiet" || (job.notify === "auto" && job.status !== "failed" && job.status !== "timedout")) return;
+		if (consumed.has(job) || submitted.has(job)) return;
 		pendingNotices.set(job, { ctx, isCurrent });
 		scheduleNotices(25);
 	};
@@ -165,6 +167,11 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 			}
 		},
 		captureOrigin,
+		consumeResult: (job, signal) => {
+			if (signal?.aborted || job.status === "running" || registry.get(job.id) !== job) return;
+			consumed.add(job);
+			pendingNotices.delete(job);
+		},
 		started: (job, ctx, isCurrent) => {
 			// A job has just become live background work: bind the UI context here
 			// because this is the earliest call guaranteed to carry one. `promote`
@@ -184,8 +191,10 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	 */
 	const leaveSession = () => {
 		sessionGeneration += 1;
-		delivery.clear();
 		pendingNotices.clear();
+		consumed = new WeakSet<Job>();
+		submitted = new WeakSet<Job>();
+		warned = new WeakSet<Job>();
 		if (noticeTimer) clearTimeout(noticeTimer);
 		noticeTimer = undefined;
 		afterAgentEnd = false;
@@ -251,7 +260,14 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer(BG_BASH_COMPLETION_ENTRY, renderStatusEntry);
 	pi.on("agent_start", () => { agentRunActive = true; afterAgentEnd = false; });
 	pi.on("agent_end", () => { afterAgentEnd = true; });
-	pi.on("agent_settled", () => { agentRunActive = false; afterAgentEnd = false; });
+	pi.on("turn_end", (_event, ctx) => {
+		if (agentRunActive && !afterAgentEnd && !ctx.signal?.aborted) flushNotices("steer");
+	});
+	pi.on("agent_settled", () => {
+		agentRunActive = false;
+		afterAgentEnd = false;
+		flushNotices("followUp");
+	});
 
 	// Older session messages still need their original renderer. New completions
 	// use a TUI-only entry and bounded hidden model notifications.

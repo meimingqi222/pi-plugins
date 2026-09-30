@@ -36,7 +36,7 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 	return {
 		name: "bg_tasks",
 		label: "bg_tasks",
-		description: "List, inspect, wait for, or stop background bash jobs. result gives bounded status and output; log reads a bounded tail; output returns only output produced since the previous output call — prefer it when checking a running job repeatedly. Success does not wake the agent by default.",
+		description: "List, inspect, wait for, or stop background bash jobs. result gives bounded status and output; result and wait consume pending notifications for finished jobs they return. Status and raw-output inspection do not consume notifications. log reads a bounded tail; output returns only output produced since the previous output call — prefer it when checking a running job repeatedly. Success does not wake the agent by default.",
 		promptSnippet: "Inspect or wait for background bash jobs before relying on their results.",
 		parameters: schema,
 		async execute(_toolCallId, params, signal) {
@@ -44,7 +44,12 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 			switch (params.action) {
 				case "list": return answer(formatJobList(registry.list()));
 				case "status": return answer(formatJobStatus(requireJob(runtime, params.id)));
-				case "result": return answer(formatResult(requireJob(runtime, params.id)));
+				case "result": {
+					const job = requireJob(runtime, params.id);
+					const result = answer(formatResult(job));
+					runtime.consumeResult(job, signal);
+					return result;
+				}
 				case "log": {
 					const job = requireJob(runtime, params.id);
 					const output = jobOutput(job);
@@ -61,7 +66,9 @@ export function createBgTasksTool(runtime: Runtime): ToolDefinition<typeof schem
 					const outcome = await waitForJobs(runtime, jobs, params.mode ?? "all", seconds * 1000, signal);
 					if (outcome === "changed") return answer("Background job registry changed while waiting; query bg_tasks list before relying on a result.");
 					const headline = outcome === "timeout" ? `Wait timed out after ${seconds}s. For long jobs that should resume the agent, start them with notify: "always".` : outcome === "aborted" ? "Wait cancelled." : "Requested job state reached.";
-					return answer(`${headline}\n${jobs.map(formatResult).join("\n\n")}`);
+					const result = answer(`${headline}\n${jobs.map(formatResult).join("\n\n")}`);
+					if (outcome !== "aborted") for (const job of jobs) runtime.consumeResult(job, signal);
+					return result;
 				}
 				case "output": {
 					const job = requireJob(runtime, params.id);

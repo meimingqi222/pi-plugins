@@ -46,9 +46,12 @@ execution to *during* it.
   wakes for any completion. `notify: "quiet"` never wakes, including on a
   failed long-running service. Notifications are short and hidden in the TUI.
   When Pi is idle, a notification starts a follow-up turn. During an active
-  agent run it is sent as a steer; after `agent_end` it waits for
-  `agent_settled`. If Pi is busy compacting without an active run, delivery
-  waits until Pi becomes idle or a new run starts.
+  agent run unread notifications are batched into a steer at `turn_end`,
+  after the whole tool batch has returned. Results arriving after the last
+  turn boundary wait for `agent_settled`. If Pi is busy compacting without
+  an active run, delivery waits until Pi becomes idle or a new run starts.
+  Synchronous send failures remain pending for retry, with one UI warning
+  per affected job rather than a warning on every attempt.
 - **`bg_tasks`.** `list`, `status`, `result`, `log`, `output`, `wait`, `kill`.
   `result` returns metadata and at most 40 lines / 4 KB of output; `log`
   returns at most 2000 lines / 50 KB. `output` returns only what the job
@@ -58,6 +61,13 @@ execution to *during* it.
   `all`) for at most 30 seconds without a polling loop. Await or inspect a
   required command before claiming it succeeded. For a much longer job that
   should resume the agent, use `notify: "always"`.
+  Returning terminal results through `result` or `wait` consumes their
+  pending notifications. A partial or timed-out wait consumes only finished
+  jobs included in its response; an aborted query consumes nothing. Reading
+  a running job cannot consume its future completion. `list`, `status`,
+  `log`, `output`, and TUI inspection do not acknowledge results.
+  Notifications already submitted to Pi cannot be withdrawn, and reading
+  a result does not remove its durable completion entry or log.
 - **Durable metadata.** Session entries record start and terminal state,
   without copying the command or stdout. Completed jobs remain queryable after
   restoring a session. A formerly running job becomes `interrupted` when
