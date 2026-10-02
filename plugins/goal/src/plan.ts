@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { withDeadline } from "pi-run-core";
+import { resolveHelperModel, withDeadline } from "pi-run-core";
 import type { RedactService } from "./redact.ts";
 
 /**
@@ -243,7 +243,12 @@ export async function runPlanner(
   ctx: ExtensionContext, objective: string, controller: AbortController,
   redactor: RedactService | undefined,
 ) {
-  const model = ctx.model;
+  // Resolved through the shared identity helper, not `ctx.model` directly: since
+  // pi 1.0 the session selection can be a virtual model, and a virtual model has
+  // no provider credentials of its own. Planning is an isolated call outside the
+  // agent loop, so it gets the physical model that answered the last response.
+  const resolved = resolveHelperModel(ctx, { purpose: "planning" });
+  const model = resolved.model;
   if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
     throw new Error("Current model has no configured authentication");
   }

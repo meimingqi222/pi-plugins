@@ -1497,6 +1497,43 @@ describe("goal lifecycle", () => {
 		expect((await state(env)).verifierModel).toBe("test/model");
 	});
 
+	// pi 1.0 splits the session selection from the model that answered: a virtual
+	// model is selectable, and only each assistant message names the physical
+	// model. The verifier is an isolated call outside the agent loop, so handing
+	// it the selection would ask a provider named `router` for work — an
+	// authentication failure naming a model the user never chose.
+	test("a virtual session selection is never sent to the verifier", async () => {
+		const entries = [
+			{
+				type: "message",
+				message: { role: "assistant", provider: "openai-codex", model: "gpt-5.6-luna", stopReason: "stop" },
+			},
+		];
+		const env = setup(entries, async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		env.catalogue.set("openai-codex/gpt-5.6-luna", { provider: "openai-codex", id: "gpt-5.6-luna" });
+		// The selection the user made is a virtual router; the turn was answered
+		// by a physical model, and that is the one the judge must run on.
+		env.ctx.model = { provider: "jev", id: "auto" };
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await endWork(env);
+		expect(env.judgedBy.at(-1)).toBe("openai-codex/gpt-5.6-luna");
+		expect((await state(env)).verifierModel).toBe("openai-codex/gpt-5.6-luna");
+		expect((await state(env)).status).toBe("complete");
+	});
+
+	// Nothing physical has answered yet, so there is no safer identity to use:
+	// the selection is all there is, and the user is told it may be a virtual
+	// model rather than being left to discover it from a failed call.
+	test("a virtual selection with no physical answer is used and says so", async () => {
+		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));
+		env.ctx.model = { provider: "jev", id: "auto" };
+		await run(env.commands.get("goal"), "task", env.ctx);
+		await endWork(env);
+		expect(env.judgedBy.at(-1)).toBe("jev/auto");
+		expect((await state(env)).verifierModel).toBe("jev/auto");
+		expect(env.notices.join("\n")).toContain("may be a virtual model");
+	});
+
 	test("an unknown verifier model falls back to the active model", async () => {
 		process.env.PI_GOAL_VERIFIER_MODEL = "other/typo";
 		const env = setup([], async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ passed: true, reason: "ok", evidence: "e" }) }] }));

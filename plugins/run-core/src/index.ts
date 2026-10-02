@@ -39,6 +39,17 @@ export {
   type RegisteredModel,
 } from "./isolated.ts";
 export {
+  childModelSpec,
+  formatModelIdentity,
+  lastPhysicalModel,
+  parseModelIdentity,
+  resolveHelperModel,
+  type ModelContext,
+  type ModelIdentity,
+  type ModelSource,
+  type ResolvedModel,
+} from "./model-identity.ts";
+export {
   createWorkReporter,
   fitWorkText,
   formatWorkElapsed,

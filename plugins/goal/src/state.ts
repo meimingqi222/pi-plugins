@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveHelperModel } from "pi-run-core";
 import { restoreLatestRun } from "pi-run-core";
 
 /**
@@ -103,31 +104,26 @@ export function verifierModelSpec(
 }
 
 /**
- * Resolves the verifier's model, falling back to the session's active model.
+ * Resolves the verifier's model, falling back to a model the judge can run on.
  *
- * `reason` is `undefined` when the configured model was used, otherwise it
+ * The fallback is `resolveHelperModel`, not `ctx.model`: since pi 1.0 the session
+ * selection can be a virtual model, and a virtual model has no provider
+ * credentials of its own — sending one to `complete()` fails with an
+ * authentication error naming a provider the user never chose. The physical
+ * model that answered the last response is what both worlds can run on.
+ *
+ * `reason` is undefined when the configured model was used, otherwise it
  * explains the fallback so a caller can surface it. An unknown id or a model
  * without configured auth must not throw here: verification still has a usable
  * model, and failing closed on a typo would make the goal unverifiable.
  */
 export function resolveVerifierModel(
-  ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+  ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "sessionManager">,
   env: Record<string, string | undefined> = process.env,
 ): { model: RegisteredModel | undefined; reason?: string } {
   const spec = verifierModelSpec(env);
-  const active = ctx.model;
-  if (!spec) return { model: active };
-  const configured = ctx.modelRegistry.find(spec.provider, spec.id);
-  if (!configured) {
-    return { model: active, reason: `Unknown model ${spec.provider}/${spec.id}; using the active model.` };
-  }
-  if (!ctx.modelRegistry.hasConfiguredAuth(configured)) {
-    return {
-      model: active,
-      reason: `No configured authentication for ${spec.provider}/${spec.id}; using the active model.`,
-    };
-  }
-  return { model: configured };
+  const resolved = resolveHelperModel(ctx, { spec, purpose: "verification" });
+  return { model: resolved.model, reason: resolved.reason };
 }
 
 /**
