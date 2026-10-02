@@ -14,7 +14,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
+import { childModelSpec, connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
 import { laneResultText, SubagentResultDelivery, type ResultOrigin } from "./result-delivery.ts";
 import { formatBackground } from "./background.ts";
 import { LaneRegistry, type Lane } from "./lane.ts";
@@ -98,6 +98,27 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     let downUnsubscribe: (() => void) | undefined;
     let notifyDone = options.notifyDone ?? notifyDoneDefault();
     const downInspect = options.downInspect ?? downInspectEnabled();
+
+    // The model a child runs on, as `provider/id`. Since pi 1.0 `ctx.model` can be
+    // a virtual model — selectable, with no provider credentials of its own. A
+    // child pi resolves `--model` against its own catalog, so a virtual id works
+    // only when the extension that registered it is loaded in the child too,
+    // which depends on where the user installed it rather than on anything this
+    // process can see. The physical model that answered the last response
+    // resolves in both worlds, so that is what is passed.
+    //
+    // The fallback to the selection (before any response exists) is reported once
+    // per distinct reason: a repeated warning on every spawn is one the user
+    // learns to ignore, and this is a thing worth knowing exactly once.
+    const childModelNotices = new Set<string>();
+    function childModelFor(ctx: ExtensionContext): string | undefined {
+      const child = childModelSpec(ctx, {});
+      if (child.reason && !childModelNotices.has(child.reason)) {
+        childModelNotices.add(child.reason);
+        try { ctx.ui.notify(`pi-subagent: ${child.reason}`, "warning"); } catch { /* A toast cannot fail a spawn. */ }
+      }
+      return child.spec;
+    }
 
     const reporter = createFleetReporter({
       ui: () => (uiCtx?.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
@@ -360,9 +381,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           const sessionId = ctx.sessionManager.getSessionId();
           const launchedIn = generation;
           const lease = goalSpend()?.begin(ctx, toolCallId);
+          const childModel = childModelFor(ctx);
           const childContext = {
             cwd: ctx.cwd,
-            ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+            ...(childModel ? { model: childModel } : {}),
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
           };
           try {
@@ -436,10 +458,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         const lease = goalSpend()?.begin(ctx, toolCallId);
         const sessionId = ctx.sessionManager?.getSessionId?.();
         if (!sessionId) {
+          const childModel = childModelFor(ctx);
           try {
             const result = await executeSubagent(params, {
               cwd: ctx.cwd,
-              ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+              ...(childModel ? { model: childModel } : {}),
               ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
               ...(signal ? { signal } : {}),
               ...(onUpdate ? { onUpdate } : {}),
@@ -472,6 +495,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
         const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
         const fgResolved = resolveAgent(fgAgents, params.agent);
+        const fgModel = childModelFor(ctx);
         const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
           // A foreground call is the lane that blocks this session, so it is the one
           // that most needs an evidence file when it wedges — and it was the only
@@ -480,7 +504,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           registry.setLogPath(id, logPath);
           return executeSubagent(params, {
             cwd: ctx.cwd,
-            ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+            ...(fgModel ? { model: fgModel } : {}),
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
             signal: runSignal,
             evidencePath: logPath,

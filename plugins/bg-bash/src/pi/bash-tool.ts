@@ -223,7 +223,7 @@ function logHeader(job: { id: string; command: string; cwd: string }, sessionId:
 }
 
 /** Mirror pi's session environment exposure for the spawned shell. */
-function buildEnv(ctx: ExtensionContext): NodeJS.ProcessEnv {
+export function buildEnv(ctx: ExtensionContext): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env };
 	delete env.PI_SESSION_ID;
 	delete env.PI_SESSION_FILE;

@@ -13,7 +13,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobRegistry } from "../src/core/jobs.ts";
-import { createBgBashTool } from "../src/pi/bash-tool.ts";
+import { createBgBashTool, buildEnv } from "../src/pi/bash-tool.ts";
 import type { Runtime } from "../src/pi/runtime.ts";
 
 function runtimeWith(registry: JobRegistry): Runtime {
@@ -102,5 +102,41 @@ describe("shell settings", () => {
 		const tool = createBgBashTool(runtimeWith(new JobRegistry()));
 		const result = await tool.execute("p3", { command: "echo no-settings" }, undefined, undefined, ctx);
 		expect(result.content.map((part: any) => part.text).join("")).toContain("no-settings");
+	});
+});
+
+describe("session environment mirror", () => {
+	// A mirror, not a resolver. pi exposes the *selection* as PI_MODEL, and since
+	// 1.0 a selection can be a virtual model that no provider answers for. A
+	// shell that re-launches pi gets exactly the variable pi gave it, and pi is
+	// the only party that knows what that selection resolves to — resolving it
+	// here would report a model this process cannot see the result of.
+	test("PI_MODEL mirrors the session selection verbatim, virtual or not", () => {
+		const saved = { model: process.env.PI_MODEL, provider: process.env.PI_PROVIDER };
+		try {
+			process.env.PI_MODEL = "stale/leftover";
+			process.env.PI_PROVIDER = "stale";
+			const env = buildEnv({ ...ctx, model: { provider: "jev", id: "auto" } } as any);
+			expect(env.PI_MODEL).toBe("auto");
+			expect(env.PI_PROVIDER).toBe("jev");
+		} finally {
+			for (const [key, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	});
+
+	test("a parent's session identifiers are not inherited", () => {
+		const saved = process.env.PI_SESSION_ID;
+		try {
+			process.env.PI_SESSION_ID = "someone-elses-session";
+			const env = buildEnv(ctx);
+			expect(env.PI_SESSION_ID).toBe("capacity-test");
+			expect(env.PI_SESSION_FILE).toBeUndefined();
+		} finally {
+			if (saved === undefined) delete process.env.PI_SESSION_ID;
+			else process.env.PI_SESSION_ID = saved;
+		}
 	});
 });

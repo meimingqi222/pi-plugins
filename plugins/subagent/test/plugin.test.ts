@@ -562,6 +562,45 @@ describe("the fleet surfaces", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+  // pi 1.0 splits the session selection from the model that answered: a virtual
+  // model is selectable, and only each assistant message names the physical one.
+  // A child pi resolves `--model` against its own catalog, so a virtual id works
+  // only when the router extension is loaded in the child too — which depends on
+  // where the user installed it, not on anything this process can see. Passing
+  // the physical model is the identity that resolves either way.
+  test("a child is launched on the physical model, not a virtual selection", async () => {
+    const { pi, tools, emit } = fakePi();
+    let seen: any;
+    subagentExtension({
+      executor: async (input) => {
+        seen = input;
+        return { status: "completed", text: "ok", usage: doneUsage };
+      },
+    })(pi);
+    const ctx = {
+      cwd: "/repo",
+      mode: "rpc",
+      hasUI: true,
+      ui: { notify: () => {} },
+      sessionManager: {
+        getSessionId: () => "session-a",
+        getBranch: () => [
+          { type: "message", message: { role: "assistant", provider: "openai-codex", model: "gpt-5.6-luna" } },
+        ],
+      },
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      model: { provider: "jev", id: "auto" },
+      modelRegistry: {
+        hasConfiguredAuth: () => true,
+        find: (provider: string, id: string) => ({ provider, id }),
+      },
+    };
+    emit("session_start", {}, ctx);
+    await tools[0]!.execute!("bg-vm", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    expect(seen?.model).toBe("openai-codex/gpt-5.6-luna");
+  });
+
   test("PI_SUBAGENT_DOWN_INSPECT opens the panel when down lands on an empty editor", async () => {
     const { pi, tools, emit } = fakePi();
     let finish: ((value: any) => void) | undefined;

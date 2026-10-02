@@ -10,7 +10,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isolatedComplete, parseJsonReply, type RegisteredModel } from "pi-run-core";
+import { isolatedComplete, parseJsonReply, parseModelIdentity, type RegisteredModel } from "pi-run-core";
 import { jevReview, resolveJevEndpoint, resolveJevKey } from "./jev.ts";
 import type { PolicyEnv, ReviewerConfig } from "./types.ts";
 
@@ -75,10 +75,16 @@ function lastUserRequest(ctx: Pick<ExtensionContext, "sessionManager">): string 
 }
 
 function resolveModel(ctx: Pick<ExtensionContext, "modelRegistry">, spec: string): RegisteredModel | undefined {
-  const slash = spec.indexOf("/");
-  if (slash <= 0 || slash === spec.length - 1) return undefined;
+  // Parsing is the shared primitive: a reviewer spec typed as `provider/id` must
+  // mean the same thing as a goal's or a subagent's, or the same setting text
+  // resolves differently depending on which plugin reads it. Resolution here
+  // stays strict — an unknown model disables the reviewer — because this is a
+  // permission layer, and a reviewer that silently falls back to some other
+  // model is worse than one that asks.
+  const identity = parseModelIdentity(spec);
+  if (!identity) return undefined;
   try {
-    return ctx.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1)) ?? undefined;
+    return ctx.modelRegistry.find(identity.provider, identity.id) ?? undefined;
   } catch {
     return undefined;
   }
