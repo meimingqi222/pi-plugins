@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { runNpm } from "./npm-command.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const plugins = join(root, "plugins");
@@ -25,13 +26,9 @@ try {
   });
 
   const installRoot = join(temporary, "installed");
-  // On Windows, `npm` is an `npm.cmd` shim, and `spawnSync` cannot execute a
-  // `.cmd` without a shell — ENOENT, which reads as "npm is missing" even when
-  // `npm --version` works in the same terminal. `bun` is an `.exe`, so packing
-  // is unaffected. Scoped to win32 so the CI path is byte-identical.
-  execFileSync("npm", ["install", "--prefix", installRoot, "--ignore-scripts", "--legacy-peer-deps", "--no-audit", "--no-fund", ...archives], {
+  // runNpm preserves argv even when Windows temp paths contain spaces.
+  runNpm(["install", "--prefix", installRoot, "--ignore-scripts", "--legacy-peer-deps", "--no-audit", "--no-fund", ...archives], {
     stdio: "inherit",
-    ...(process.platform === "win32" ? { shell: true } : {}),
   });
 
   const entries = extensionNames.map((name) => {

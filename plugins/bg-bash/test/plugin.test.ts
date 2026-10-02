@@ -486,7 +486,7 @@ describe("session lifecycle", () => {
 	test("leaving a session kills its background jobs and drops the completion", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
-		await bash(harness).execute(
+		const launched = await bash(harness).execute(
 			"t21",
 			{ command: "sleep 5; echo leftover", background: true },
 			undefined,
@@ -494,7 +494,25 @@ describe("session lifecycle", () => {
 			harness.ctx,
 		);
 		await harness.emit("session_before_tree");
-		await new Promise((resolve) => setTimeout(resolve, 400));
+		// Windows taskkill completes asynchronously and can exceed 400ms under
+		// load. Wait for the terminal state, bounded below the command's 5s sleep
+		// so a missing kill cannot pass by letting the command exit naturally.
+		const deadline = Date.now() + 3_000;
+		let status: string;
+		do {
+			status = textOf(await tasks(harness).execute("cleanup-status", {
+				action: "status", id: launched.details.jobId,
+			}, undefined, undefined, harness.ctx));
+			if (!status.includes("running")) break;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		} while (Date.now() < deadline);
+		expect(status).toContain("killed");
+		// Read the actual log: the status includes the original command text.
+		const output = await tasks(harness).execute("cleanup-output", {
+			action: "output", id: launched.details.jobId,
+		}, undefined, undefined, harness.ctx);
+		expect(textOf(output)).not.toContain("leftover");
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(harness.messages).toHaveLength(0);
 		const list = textOf(await tasks(harness).execute("l4", { action: "list" }, undefined, undefined, harness.ctx));
 		expect(list).not.toContain("running");

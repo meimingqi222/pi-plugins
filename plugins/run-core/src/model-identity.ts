@@ -20,12 +20,9 @@
  * identity was used", which is the worst kind of bug to ship to a user who just
  * installed a router extension.
  *
- * So every helper call resolves its model here, and the resolution order is
- * "physical first": the physical model that answered the last response, falling
- * back to the session selection only when nothing physical is known. Physical
- * first is correct in both worlds — it is what the judge would have used before
- * virtual models existed, and after they exist it is the one identity every
- * consumer (a child process, a direct `complete`) can resolve.
+ * Concrete session selections are used directly. For a virtual selection, use
+ * the physical model that answered the last response, falling back to the
+ * selection only when nothing runnable is known.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -134,10 +131,11 @@ export type ModelContext = Pick<ExtensionContext, "model" | "modelRegistry" | "s
  * `spec` is an explicit configuration the user wrote, and it always wins — a
  * user who names a model meant that model. An unset spec resolves in this order:
  *
- * 1. The physical model that answered the last response, when the registry still
+ * 1. The current session selection, when it is a concrete model.
+ * 2. The physical model that answered the last response, when the registry still
  *    has it and it still has credentials. This is the pre-1.0 behaviour applied
  *    to the model that actually ran.
- * 2. The session selection, with a `reason` saying a virtual model may be in
+ * 3. The session selection, with a `reason` saying a virtual model may be in
  *    play. Nothing physical is known yet, so this is today's behaviour, not a
  *    new one.
  *
@@ -160,34 +158,25 @@ export function resolveHelperModel(
         ? parseModelIdentity(raw)
         : undefined;
   if (raw && !spec) {
-    const active = selectionOf(ctx);
-    return {
-      ...fromIdentity(ctx, active),
-      reason: `Model "${raw}" is not provider/id; using ${formatModelIdentity(active)}.`,
-      source: "selection",
-    };
+    return fallbackModel(ctx, purpose, `Model "${raw}" is not provider/id`);
   }
   if (spec) {
     const found = findIdentity(ctx, spec);
     if (!found) {
-      const active = selectionOf(ctx);
-      return {
-        ...fromIdentity(ctx, active),
-        reason: `Unknown model ${formatModelIdentity(spec)}; using ${formatModelIdentity(active)}.`,
-        source: "selection",
-      };
+      return fallbackModel(ctx, purpose, `Unknown model ${formatModelIdentity(spec)}`);
     }
     if (!ctx.modelRegistry.hasConfiguredAuth(found)) {
-      const active = selectionOf(ctx);
-      return {
-        ...fromIdentity(ctx, active),
-        reason: `No configured authentication for ${formatModelIdentity(spec)}; using ${formatModelIdentity(active)}.`,
-        source: "selection",
-      };
+      return fallbackModel(ctx, purpose, `No configured authentication for ${formatModelIdentity(spec)}`);
     }
     return { model: found, source: "spec", identity: spec };
   }
 
+  // A concrete selection is already runnable. In particular, switching models
+  // must take effect before that model has produced its first response.
+  const active = selectionOf(ctx);
+  if (ctx.model?.api && ctx.model.api !== "pi-virtual") {
+    return fromIdentity(ctx, active);
+  }
   const physical = lastPhysicalModel(readBranch(ctx));
   if (physical) {
     const found = findIdentity(ctx, physical);
@@ -196,7 +185,6 @@ export function resolveHelperModel(
     }
   }
 
-  const active = selectionOf(ctx);
   const resolved = fromIdentity(ctx, active);
   return {
     ...resolved,
@@ -204,6 +192,15 @@ export function resolveHelperModel(
       ? `${formatModelIdentity(physical)} is no longer available; using ${formatModelIdentity(active)}.`
       : `No physical model has answered yet, so this ${purpose} uses the session selection ${formatModelIdentity(active)}, which may be a virtual model.`,
     source: "selection",
+  };
+}
+
+function fallbackModel(ctx: ModelContext, purpose: string, problem: string): ResolvedModel {
+  const resolved = resolveHelperModel(ctx, { purpose });
+  const warning = resolved.reason ? ` ${resolved.reason}` : "";
+  return {
+    ...resolved,
+    reason: `${problem}; using ${formatModelIdentity(resolved.identity)}.${warning}`,
   };
 }
 
@@ -238,7 +235,8 @@ function fromIdentity(ctx: ModelContext, identity: ModelIdentity | undefined): O
 /**
  * The model spec to hand a child process, as `provider/id`.
  *
- * Defaults to the physical model for the same reason a judge does: a child pi
+ * Defaults to the current concrete selection, or the last physical answer for
+ * a virtual selection, for the same reason a judge does: a child pi
  * resolves `--model` against its own catalog, and a virtual id only resolves
  * when the router extension is loaded in the child as well. Whether it is depends
  * on where the user installed it, not on anything the parent can see, so the safe
@@ -257,7 +255,7 @@ export function childModelSpec(
     return { spec: active ? formatModelIdentity(active) : undefined };
   }
   const resolved = resolveHelperModel(ctx, { purpose: "child run" });
-  if (resolved.source === "physical") {
+  if (resolved.source === "physical" || !resolved.reason) {
     return { spec: formatModelIdentity(resolved.identity) };
   }
   // No session model at all — a headless context, or one torn down mid-call.

@@ -1,6 +1,7 @@
 # Agent Note: Launch subagent children on the physical model, not a virtual selection
 
 Status: implemented
+Partly-superseded-by: 2026-10-03-helper-current-selection.md
 
 ## Problem
 
@@ -87,6 +88,11 @@ extension is loaded in the child, and the failure is a hard exit rather than a
 silent fallback. That is the measured case for the physical-first default: a
 parent cannot detect which of the two a child will be, and a virtual id that
 resolves in the parent may not resolve in the child.
+
+## Superseded
+
+The successor makes a current concrete selection win over historical responses.
+Physical-answer inheritance still applies to virtual selections.
 
 ## Verification
 

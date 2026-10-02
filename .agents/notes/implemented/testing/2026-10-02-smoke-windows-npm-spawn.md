@@ -1,6 +1,7 @@
 # Agent Note: Make the smoke gate runnable on Windows
 
 Status: implemented
+Partly-superseded-by: 2026-10-03-smoke-npm-argv.md
 
 ## Problem
 
@@ -41,6 +42,11 @@ call site instead of the one place the platform is already being branched on.
 `Loaded 10 packed extensions from an isolated install.` Packing (`bun pm pack`)
 was never affected, so the tarball side of the gate was already verified; only
 the install and load steps were unreachable.
+
+## Superseded
+
+The successor replaces shell execution with direct npm CLI execution on Windows
+because the shell loses argument boundaries for paths containing spaces.
 
 ## Verification
 
