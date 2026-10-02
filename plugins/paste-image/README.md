@@ -3,7 +3,7 @@
 Paste or drag an image into pi and it arrives as image content, not as a file
 path the model has to go read.
 
-Requires pi **0.85.1 or newer**. From this workspace:
+Requires pi **1.0.0 or newer**. From this workspace:
 
 ```sh
 pi install -l ./plugins/paste-image
