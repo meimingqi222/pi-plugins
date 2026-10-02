@@ -3,7 +3,7 @@
 Delegate **one task** to a named subagent running in its own pi process. The
 caller chooses whether to wait for its answer or continue while it runs.
 
-Requires pi **0.85.1 or newer**. From this workspace, install locally with:
+Requires pi **1.0.0 or newer**. From this workspace, install locally with:
 
 ```sh
 pi install -l ./plugins/subagent

@@ -1,6 +1,6 @@
 # pi-goal
 
-Requires pi **0.85.1 or newer** (uses `agent_settled` and the model registry's
+Requires pi **1.0.0 or newer** (uses `agent_settled` and the model registry's
 isolated completion API). From this workspace, install locally with:
 
 ```sh
