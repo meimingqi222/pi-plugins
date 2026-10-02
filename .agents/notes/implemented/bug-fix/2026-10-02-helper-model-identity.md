@@ -1,6 +1,7 @@
 # Agent Note: Resolve a physical model for helper calls that must not inherit a router
 
 Status: implemented
+Partly-superseded-by: 2026-10-03-helper-current-selection.md
 
 ## Problem
 
@@ -94,6 +95,12 @@ The same probe measured the child-process case (see the sibling note
 extension fails at startup with `Model "p/i" not found`, while a child that did
 load it reaches routing. Nothing between those two is observable from the parent,
 which is why `pi-subagent` hands children the physical model.
+
+## Superseded
+
+Unconditional historical-model priority is replaced by the successor: a current
+concrete selection wins over old responses. Invalid explicit specs use the same
+default resolver, as recorded in `2026-10-03-helper-invalid-spec-fallback.md`.
 
 ## Verification
 

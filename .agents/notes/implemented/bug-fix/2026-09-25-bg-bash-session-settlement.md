@@ -24,6 +24,10 @@ Switching away cancels outstanding background work. The log file remains for dia
 
 ## Verification
 
+The cleanup test now waits for terminal status rather than assuming taskkill
+finishes within 400ms. See `2026-10-03-bg-bash-session-cleanup-wait.md` for the
+Windows timing evidence and the revised red-run proof.
+
 - `plugins/bg-bash/test/plugin.test.ts`
 - `plugins/bg-bash/test/plugin.test.ts::a background job cannot deliver into a later session`
 - `plugins/bg-bash/test/plugin.test.ts::leaving a session kills its background jobs and drops the completion`
