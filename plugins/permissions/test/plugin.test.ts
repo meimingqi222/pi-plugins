@@ -83,12 +83,19 @@ function makePi() {
 const ENV_KEYS = ["PI_AGENT_CHILD", "PI_PERMISSIONS_MODE", "PI_PERMISSIONS_INHERITED_MODE", "PI_CODING_AGENT_DIR"] as const;
 
 /**
- * A realpath'd directory the way `projects[<cwd>]` is keyed: `normalizePath`
- * emits `/`-separated paths on every platform, so a raw `fs.realpathSync` on
- * Windows (`C:\Users\…`) names a key the plugin never writes.
+ * A realpath'd directory the way `projects[<cwd>]` is keyed.
+ *
+ * Two details, both learned the hard way. `normalizePath` emits `/`-separated
+ * paths on every platform, so a raw `C:\Users\…` names a key the plugin never
+ * writes. And the plugin realpaths with `realpathSync.native`, which on Windows
+ * goes through `GetFinalPathNameByHandle` and expands an 8.3 short component to
+ * its long form; the non-native call resolves junctions but leaves a short
+ * component alone. On a machine whose `%TEMP%` is `…/MEIMIN~1/…` the two disagree
+ * by exactly that component, so a grant is written under one key and asserted
+ * under another.
  */
 function projectKey(directory: string): string {
-  return fs.realpathSync(directory).replaceAll(path.sep, "/");
+  return fs.realpathSync.native(directory).replaceAll(path.sep, "/");
 }
 
 /**
