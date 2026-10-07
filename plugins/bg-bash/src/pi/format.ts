@@ -122,9 +122,9 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 /** Small model notification; stdout remains in the job log. */
 export function formatCompletionNotice(jobs: Job[]): string {
 	return [
-		`Background bash completion${jobs.length === 1 ? "" : "s"}:`,
+		`Background commands finished:`,
 		...jobs.map((job) => `- ${job.id}: ${job.status}${job.exitCode === null ? "" : ` (exit ${job.exitCode})`}, ${formatDuration(durationMs(job))}`),
-		"Use bg_tasks result <id> for a bounded preview or bg_tasks log <id> for more output. Do not infer the command's output from this notification.",
+		"Status only. Output: bg_tasks result <id>.",
 	].join("\n");
 }
 

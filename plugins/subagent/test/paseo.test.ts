@@ -16,6 +16,52 @@ const usage = {
   totalTokens: 0,
 };
 
+test.each(["foreground", "background"] as const)(
+  "%s RPC launch reports readable progress before the child finishes",
+  async (kind) => {
+    const tools: Array<{ execute: (...args: unknown[]) => Promise<unknown> }> = [];
+    const messages: Array<{ content: string; display: boolean; details: { id: string; status: string } }> = [];
+    const listeners = new Map<string, () => void>();
+    let finish!: (result: AgentRunResult) => void;
+    let started!: () => void;
+    let taskDeadline: number | undefined;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const done = new Promise<AgentRunResult>((resolve) => { finish = resolve; });
+    const pi = {
+      registerTool: (tool: unknown) => tools.push(tool as (typeof tools)[number]),
+      on: (name: string, handler: () => void) => listeners.set(name, handler),
+      events: { on: () => {}, emit: () => {} },
+      sendMessage: (message: unknown) => messages.push(message as (typeof messages)[number]),
+    } as unknown as ExtensionAPI;
+    subagentExtension({
+      discover: () => [{ name: "review", description: "review", systemPrompt: "review", filePath: "review.md" }],
+      executor: async (input) => { taskDeadline = input.timeoutMs; started(); return done; },
+      spawnRpcChild: async (input) => {
+        taskDeadline = input.timeoutMs;
+        started();
+        return { pid: 1, done, send: () => true, end: () => {}, terminate: () => finish({ status: "aborted", usage }) };
+      },
+    })(pi);
+    const call = tools[0]!.execute("live-call", { subagent_type: "review", prompt: "inspect", timeout: 1800, background: kind === "background" }, undefined, undefined, {
+      cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "live-session" }, isIdle: () => false,
+    });
+    try {
+      await ready;
+      expect(taskDeadline).toBe(1_800_000);
+      const progress = messages.find((message) => message.display && message.content.includes("starting"));
+      expect(progress).toBeDefined();
+      expect(progress!.details.status).toBe("running");
+      if (kind === "foreground") expect(progress!.details.id).toBe("live-call");
+      else expect(progress!.details.id).toMatch(/^sa-/u);
+    } finally {
+      finish({ status: "completed", text: "done", usage });
+      await call;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      listeners.get("session_shutdown")?.();
+    }
+  },
+);
+
 test("Paseo gets a correlated failed update even when the parent consumes the answer", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-paseo-test-"));
   const oldDir = process.env.PI_SUBAGENT_LOG_DIR;
@@ -250,7 +296,7 @@ test.each(["completed", "failed", "thrown"] as const)(
         outcome === "completed" ? "completed" : "failed",
       );
       const update = messages.find(
-        (message) => message.customType === "subagent-update",
+        (message) => message.customType === "subagent-update" && message.details.outputFile,
       )!;
       expect(update.details.id).toBe("foreground-spawn");
       const rows = readFileSync(update.details.outputFile!, "utf8")

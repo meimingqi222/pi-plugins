@@ -165,6 +165,25 @@ pi-plugins/
 5. Keep third-party runtime dependencies in that plugin's `dependencies`;
    shared dev tooling (`typescript`, `@types/*`) stays at the root.
 
+## Pi TUI and Paseo
+
+Subagent, workflow, bg-bash and goal retain their native Pi TUI surfaces. In RPC
+mode they also publish readable execution state: activity, completion/failure
+and budgets. Status updates do not start a model turn; repeated updates are
+deduplicated and coalesced, and session changes cancel queued progress.
+
+Paseo can display these messages without extra setup. An optional
+[Paseo UI companion](integrations/paseo-ui/README.md) renders status cards using
+the host theme on desktop and mobile. It requires Paseo 0.11.0 or later and
+does not modify Paseo source. Older versions use plain text. The companion is
+independent of the Pi extensions and is installed separately.
+
+Background status defaults to passive messages delivered at a safe turn
+boundary. On a host that supports RPC notifications, set
+`PI_RPC_PROGRESS_TRANSPORT=notify` in the parent Pi environment for immediate
+background updates. Foreground subagent progress streams through tool updates.
+See the companion documentation for installation and version limits.
+
 ## Regression notes
 
 Every non-trivial bug fix ships one note and one regression test in the same

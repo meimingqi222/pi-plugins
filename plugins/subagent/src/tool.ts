@@ -35,6 +35,9 @@ import {
   TASK_PARAM_DESCRIPTION,
 } from "./contract.ts";
 
+const DEFAULT_SUBAGENT_TIMEOUT_SECONDS = 30 * 60;
+const MAX_SUBAGENT_TIMEOUT_SECONDS = 3 * 60 * 60;
+
 export const SubagentParams = Type.Object({
   agent: Type.String({ description: AGENT_PARAM_DESCRIPTION }),
   task: Type.String({
@@ -47,9 +50,19 @@ export const SubagentParams = Type.Object({
     Type.Boolean({ description: "Return a task ID immediately and continue independent work. Omit or false to wait for the answer in this call." }),
   ),
   alias: Type.Optional(Type.String({ description: ALIAS_PARAM_DESCRIPTION })),
+  timeout: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_SUBAGENT_TIMEOUT_SECONDS, description: `Total task deadline in seconds (1–${MAX_SUBAGENT_TIMEOUT_SECONDS}, default ${DEFAULT_SUBAGENT_TIMEOUT_SECONDS} or PI_SUBAGENT_TIMEOUT_SECONDS). Includes all model and tool time; activity does not reset it. Split broad reviews into focused tasks, or explicitly budget a longer task.` })),
 });
 
 export type SubagentToolParams = Static<typeof SubagentParams>;
+
+export function subagentTimeoutMs(seconds?: number): number {
+  const configured = seconds ?? (process.env.PI_SUBAGENT_TIMEOUT_SECONDS === undefined
+    ? DEFAULT_SUBAGENT_TIMEOUT_SECONDS
+    : Number(process.env.PI_SUBAGENT_TIMEOUT_SECONDS));
+  if (!Number.isFinite(configured) || configured < 1 || configured > MAX_SUBAGENT_TIMEOUT_SECONDS)
+    throw new Error(`Subagent timeout must be between 1 and ${MAX_SUBAGENT_TIMEOUT_SECONDS} seconds.`);
+  return configured * 1_000;
+}
 
 // The description/guideline text lives in contract.ts; re-exported so callers
 // importing from tool.ts keep working.
@@ -190,13 +203,18 @@ export function toSubagentToolResult(
   const text =
     result.status === "completed"
       ? truncate(result.text || "(the agent returned no text)")
-      : `Agent "${agentName}" ${result.status}: ${result.errorMessage ?? "no error message"}`;
+      : `Agent "${agentName}" ${result.status}: ${displayFailure(result.errorMessage ?? "no error message")}`;
 
   return {
     content: [{ type: "text", text }],
     details,
     usage: toPiUsage(result.usage),
   };
+}
+
+/** Diagnostic locations stay in details and explicit log inspection. */
+export function displayFailure(message: string): string {
+  return message.replace(/; its event stream is at [\s\S]*$/u, "");
 }
 
 /**
@@ -305,6 +323,7 @@ export async function executeSubagent(
     // The `Task:` prefix is what pi's own subagent example sends, so a child sees
     // the same framing whichever tool spawned it.
     prompt: `Task: ${params.task}`,
+    timeoutMs: subagentTimeoutMs(params.timeout),
     systemPrompt: agent.systemPrompt,
     cwd,
     ...(agent.tools ? { tools: agent.tools } : {}),
@@ -332,7 +351,7 @@ export async function executeSubagent(
     } } : {}),
   });
 
-  delete progress.activeTool;
+  if (result.status === "completed") delete progress.activeTool;
 
   return toSubagentToolResult(result, agent.name, progress);
 }

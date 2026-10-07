@@ -1,0 +1,23 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\subagent\test\deadline-display.test.ts:
+12 |       timeoutMs = input.timeoutMs;
+13 |       input.onProgress?.({ type: "tool_start", toolName: "bash" });
+14 |       return { status: "failed", text: "", errorMessage: reason, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 } };
+15 |     },
+16 |   });
+17 |   expect(timeoutMs).toBe(1_800_000);
+                         ^
+error: expect(received).toBe(expected)
+
+Expected: 1800000
+Received: 900000
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\deadline-display.test.ts:17:21)
+(fail) task deadline is configurable and failure display preserves tool evidence without exposing log paths [1.08ms]
+
+ 0 pass
+ 2 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [859.00ms]

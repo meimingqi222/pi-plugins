@@ -1,0 +1,386 @@
+$ bun run --sequential --filter '*' test
+pi-ace-search:test       | bun test v1.3.14 (0d9b296a)
+pi-ace-search:test       |
+pi-ace-search:test       | test\client.test.ts:
+pi-ace-search:test       | (pass) createAceClient > uploadBlobs posts names under `path`, never hashes [1.08ms]
+pi-ace-search:test       | (pass) createAceClient > findMissing posts hashes under `mem_object_names` and reads both lists [0.32ms]
+pi-ace-search:test       | (pass) createAceClient > search sends hashes in added_blobs and the exact legacy envelope [0.22ms]
+pi-ace-search:test       | (pass) createAceClient > an empty formatted_retrieval becomes a readable message, not an empty string [0.11ms]
+pi-ace-search:test       | (pass) createAceClient > a 401 fails immediately instead of burning retries [0.29ms]
+pi-ace-search:test       | (pass) createAceClient > a 500 is retried and then succeeds [262.16ms]
+pi-ace-search:test       | (pass) createAceClient > an aborted signal rejects instead of retrying [263.57ms]
+pi-ace-search:test       | (pass) createAceClient > uploading zero blobs makes no request [0.26ms]
+pi-ace-search:test       | (pass) createAceClient > the bearer token is attached to every request [0.22ms]
+pi-ace-search:test       |
+pi-ace-search:test       | test\config.test.ts:
+pi-ace-search:test       | (pass) parseSettingsToml > parses the flat string/int/array/bool forms acemcp writes [0.54ms]
+pi-ace-search:test       | (pass) parseSettingsToml > strips comments, including a `#` inside a string [0.03ms]
+pi-ace-search:test       | (pass) parseSettingsToml > ignores malformed lines instead of failing the whole file [0.03ms]
+pi-ace-search:test       | (pass) parseSettingsToml > an unterminated array does not produce phantom entries [0.02ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > reads BASE_URL/TOKEN/chunking from a settings file [5.60ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > no base URL at all is a loud error, not a silent placeholder [0.21ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > an env override supplies the base URL and token [0.15ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > defaults stay compatible with acemcp so the warm cache is reused [0.22ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > numeric env overrides are parsed and validated [0.20ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > a non-positive or non-numeric batch size is rejected loudly [0.27ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > extensions are normalized to a leading dot and lower case [0.14ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > exclude patterns can be overridden from the environment too [0.15ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > --data wins over the environment [0.27ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > an explicit settings path is honoured and isolates the caller from real credentials [3.54ms]
+pi-ace-search:test       | (pass) loadAceSearchConfig > PI_ACE_SETTINGS redirects the settings file, not just the home directory [0.19ms]
+pi-ace-search:test       | (pass) toPosixAbsolutePath > resolves a relative path against cwd and strips backslashes [0.14ms]
+pi-ace-search:test       | (pass) toPosixAbsolutePath > leaves an absolute path absolute [0.03ms]
+pi-ace-search:test       |
+pi-ace-search:test       | test\index-store.test.ts:
+pi-ace-search:test       | (pass) cache path > matches acemcp's sha256(absPath)[:16] scheme [0.15ms]
+pi-ace-search:test       | (pass) cache path > the same project root always maps to the same cache file [0.04ms]
+pi-ace-search:test       | (pass) cache path > this client's own index lives beside, not on top of, acemcp's [0.05ms]
+pi-ace-search:test       | (pass) loadBlobHashStore > reads acemcp's { h: [...] } manifest and reconstructs chunk names [4.82ms]
+pi-ace-search:test       | (pass) loadBlobHashStore > reads its own `entries` format [11.04ms]
+pi-ace-search:test       | (pass) loadBlobHashStore > a missing or corrupt file yields an empty store rather than throwing [5.23ms]
+pi-ace-search:test       | (pass) loadBlobHashStore > a JSON array at the root does not masquerade as a manifest [3.63ms]
+pi-ace-search:test       | (pass) persistPiAceIndex > round-trips through the entries format [10.04ms]
+pi-ace-search:test       | (pass) persistPiAceIndex > a single-chunk file is stored without a chunk suffix [8.47ms]
+pi-ace-search:test       | (pass) persistPiAceIndex > writes atomically and leaves no temporary file behind [8.69ms]
+pi-ace-search:test       | (pass) persistPiAceIndex > re-writes replace the previous index rather than merging stale entries [9.89ms]
+pi-ace-search:test       | (pass) mergeHashStores > a name known to only one store is still warm [0.35ms]
+pi-ace-search:test       | (pass) mergeHashStores > a name present in both with the same hash stays warm [0.05ms]
+pi-ace-search:test       | (pass) mergeHashStores > a name present in both with different hashes is dropped, forcing an upload [0.03ms]
+pi-ace-search:test       | (pass) mergeHashStores > a conflict on one name does not discard the others [0.04ms]
+pi-ace-search:test       | (pass) mergeHashStores > empty stores contribute nothing and do not create conflicts [0.02ms]
+pi-ace-search:test       | (pass) mergeHashStores > a single non-empty store is passed through [0.02ms]
+pi-ace-search:test       | (pass) mergeHashStores > no stores yields an empty result rather than throwing [0.02ms]
+pi-ace-search:test       | (pass) mergeHashStores > entryCount counts files, not chunks [0.02ms]
+pi-ace-search:test       |
+pi-ace-search:test       | test\search.test.ts:
+pi-ace-search:test       | (pass) runAceSearch > gitignore rules exclude upload bodies and retrieval hashes with nested overrides [33.98ms]
+pi-ace-search:test       | (pass) runAceSearch > a cold project uploads every chunk, then retrieves with hashes [7.93ms]
+pi-ace-search:test       | (pass) runAceSearch > a warm index uploads nothing and skips the upload phase [11.68ms]
+pi-ace-search:test       | (pass) runAceSearch > a stale hash forces a re-upload on the next run [13.81ms]
+pi-ace-search:test       | (pass) runAceSearch > waitForIndex polls find-missing with hashes, not names [6.42ms]
+pi-ace-search:test       | (pass) runAceSearch > waitForIndex is skipped when there was nothing to upload [12.27ms]
+pi-ace-search:test       | (pass) runAceSearch > a failing batch does not abort the run, but a 401 does [5.56ms]
+pi-ace-search:test       | (pass) runAceSearch > aborting mid-run stops the search phase from starting [3.31ms]
+pi-ace-search:test       | (pass) runAceSearch > a failed upload is not persisted, so the next run retries it [8.36ms]
+pi-ace-search:test       | (pass) runAceSearch > a successful upload is persisted and the next run is warm [15.06ms]
+pi-ace-search:test       | (pass) runAceSearch > the cache key is canonical, so a redundant spelling finds the same index [18.84ms]
+pi-ace-search:test       | (pass) runAceSearch > progress reports every phase so a slow run is attributable [6.31ms]
+pi-ace-search:test       | (pass) runAceSearch > a file known only to this client's index is not re-uploaded [15.81ms]
+pi-ace-search:test       | (pass) runAceSearch > both stores contribute: the union is warm [15.80ms]
+pi-ace-search:test       | (pass) runAceSearch > a hash disagreement between the stores forces a re-upload [16.51ms]
+pi-ace-search:test       |
+pi-ace-search:test       | test\walk.test.ts:
+pi-ace-search:test       | (pass) chunkFileContent > a file at or under the limit is a single chunk named after the path [0.13ms]
+pi-ace-search:test       | (pass) chunkFileContent > a file over the limit splits with `#chunk{N}of{TOTAL}` names [0.17ms]
+pi-ace-search:test       | (pass) chunkFileContent > the hash is sha256 over name + content, not content alone [0.08ms]
+pi-ace-search:test       | (pass) chunkFileContent > two files with identical bodies hash differently [0.05ms]
+pi-ace-search:test       | (pass) chunkFileContent > over-long lines are truncated with the same ellipsis acemcp appends [0.06ms]
+pi-ace-search:test       | (pass) chunkFileContent > an empty file still produces one chunk [0.04ms]
+pi-ace-search:test       | (pass) chunkFileContent > splitting is line-based, so a trailing newline lands in the last chunk [0.06ms]
+pi-ace-search:test       | (pass) createExcludeMatcher > a bare name excludes that directory at any depth [0.05ms]
+pi-ace-search:test       | (pass) createExcludeMatcher > a wildcard pattern matches by suffix [0.04ms]
+pi-ace-search:test       | (pass) createExcludeMatcher > unrelated paths are kept [0.02ms]
+pi-ace-search:test       | (pass) createExcludeMatcher > a path pattern only matches at the root [0.17ms]
+pi-ace-search:test       |
+pi-ace-search:test       |  71 pass
+pi-ace-search:test       |  0 fail
+pi-ace-search:test       |  168 expect() calls
+pi-ace-search:test       | Ran 71 tests across 5 files. [852.00ms]
+pi-ace-search:test       | Done in 1.00s
+pi-agent-runner:test     | bun test v1.3.14 (0d9b296a)
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\child-env.test.ts:
+pi-agent-runner:test     | (pass) agentChildEnv > sets every scheduler-disable switch [0.89ms]
+pi-agent-runner:test     | (pass) agentChildEnv > disables pi-bg-bash's auto-backgrounding in the headless child [0.02ms]
+pi-agent-runner:test     | (pass) agentChildEnv > marks the child as a headless agent for approval plugins
+pi-agent-runner:test     | (pass) agentChildEnv > inherits the parent environment rather than replacing it
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\executor.test.ts:
+pi-agent-runner:test     | (pass) agent executor spawn path > forwards child tool activity with a bounded path but no search pattern or output [116.51ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > reports-allowlisted-lifecycle-metadata-without-copying-tool-inputs [141.53ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a normal run returns the reply, its usage, and the model [124.73ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > counts a final assistant reply present only in agent_end [150.29ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a closed stdin does not stall the child [137.36ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > many progress events are drained without stalling [161.58ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > an assistant error is reported as a failed run [138.09ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a non-zero exit with no error event is a failure, not an empty success [118.62ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a run that recovered after a terminal error is completed, not failed [142.75ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a hanging child is killed by the timeout instead of hanging the caller [1461.42ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a child that stops emitting is failed by the stall bound, naming the last event [599.14ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a tool that declared its own timeout outranks the silence bound while it runs [1148.73ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a parallel sibling finishing does not strip a long call's declared budget [1141.16ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a tool that declared nothing is still caught by the silence bound [469.50ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > the stall bound is off when stallMs is zero [633.98ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > the environment sets the stall bound, and an explicit value wins over it [0.11ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > the stall label names a tool but never carries its arguments [0.12ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > both transports share one sampling rule and one failure message [0.06ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a declared timeout is tracked per call, and only its own end drops it [0.13ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > an abort signal kills a hanging child [529.14ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a delegated system prompt is written and cleaned up [120.94ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a delegated prompt preparation failure refuses the child [0.77ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > parses a structured reply only when the caller asks for a value [248.49ms]
+pi-agent-runner:test     | (pass) agent executor spawn path > a throwing parse callback leaves the text and no value [173.27ms]
+pi-agent-runner:test     | (pass) agent executor diagnostics > a per-call timeout overrides the executor's default [496.59ms]
+pi-agent-runner:test     | (pass) agent executor diagnostics > the child's raw event stream is written to the evidence path [168.54ms]
+pi-agent-runner:test     | (pass) agent executor diagnostics > evidenceMaxBytes-bounds-the-raw-stream-and-records-truncation [155.08ms]
+pi-agent-runner:test     | (pass) agent executor diagnostics > a timeout names the evidence file so the stream can be read [488.03ms]
+pi-agent-runner:test     | (pass) agent executor diagnostics > the deadline and silence bound keep the event loop alive [132.80ms]
+pi-agent-runner:test     | (pass) JSON executor forwards raw transcript events without letting observers fail the run [139.04ms]
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\kill-tree.test.ts:
+pi-agent-runner:test     | (pass) killAgentTree > ends a real child process on this platform [593.91ms]
+pi-agent-runner:test     | (pass) killAgentTree > a pid-less child is a no-op rather than an error [0.06ms]
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\process-tree.test.ts:
+pi-agent-runner:test     | (skip) real Pi bash stops writing after agent abort
+pi-agent-runner:test     | (skip) real Pi bash stops writing after agent timeout
+pi-agent-runner:test     | (skip) real Pi background bash stops writing after agent abort
+pi-agent-runner:test     | (skip) real Pi background bash stops writing after agent timeout
+pi-agent-runner:test     | (skip) inherited pipes cannot delay timeout settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay abort settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay exit settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay ignore-term settlement
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\rpc-child.test.ts:
+pi-agent-runner:test     | (pass) rpcRunArgs > selects the RPC protocol without a session store [0.04ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > the RPC system prompt survives startup and is removed after done [42.95ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a synchronous RPC spawn failure cleans the system prompt [4.99ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > the run's deadline and silence bound keep the event loop alive [21.44ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > writes the initial prompt as a stdin command, not argv [31.19ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > agent_end does not settle the run; end() does, mapping to completed [92.62ms]
+pi-agent-runner:test     | (skip) spawnRpcChild > the evidence log is written private: directory 0o700, file 0o600
+pi-agent-runner:test     | (pass) spawnRpcChild > terminate() resolves done as aborted and kills the child [31.41ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > idle change fires on turn boundaries, and send() follows the protocol shapes [33.36ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > send() refuses after the run is finished [30.01ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a turn that goes quiet is failed by the stall bound, naming the last event [156.15ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a parallel sibling finishing does not strip a long call's declared budget [233.24ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > the first bound to fire owns the label, even when the wall clock expires during the grace period [126.51ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a turn whose tool declared its own timeout is not killed by the silence bound [434.41ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > an idle lane is not stalled: silence between turns is expected [373.61ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > onTurnSettled fires once per agent_settled with that turn's outcome [30.53ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a turn with an error settles as failed, and a recovered turn clears it [31.96ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a new turn does not re-report the previous turn's text [30.27ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > the run's final text survives an idle gap between turns [77.08ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a failed command response reaches onCommandError instead of being dropped [63.72ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > prompt commands carry streamingBehavior followUp so pi queues them mid-turn [30.65ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > the wall clock is per-turn: idle time does not spend it, a long turn does [511.17ms]
+pi-agent-runner:test     | (pass) spawnRpcChild > a dialog request is cancelled instead of pinning the child forever [65.23ms]
+pi-agent-runner:test     | (pass) raw transcript observers run before RPC turn settlement and cannot fail a child [2.23ms]
+pi-agent-runner:test     |
+pi-agent-runner:test     | test\spawn.test.ts:
+pi-agent-runner:test     | (pass) applyEvent > adds separate assistant replies while ignoring the agent_end replay [0.16ms]
+pi-agent-runner:test     | (pass) applyEvent > message_end is authoritative for the final text [0.06ms]
+pi-agent-runner:test     | (pass) applyEvent > usage is cumulative, so a zeroed later event does not erase a total [0.06ms]
+pi-agent-runner:test     | (pass) applyEvent > reads cost from both the nested object and a scalar [0.06ms]
+pi-agent-runner:test     | (pass) applyEvent > an assistant error message is captured [0.06ms]
+pi-agent-runner:test     | (pass) applyEvent > a later successful reply clears an earlier error [0.10ms]
+pi-agent-runner:test     | (pass) applyEvent > agent_end replays its messages, so a failed run still yields text [0.06ms]
+pi-agent-runner:test     | (pass) applyEvent > non-assistant messages are ignored [0.03ms]
+pi-agent-runner:test     | (pass) applyEvent > malformed events are ignored rather than throwing [0.09ms]
+pi-agent-runner:test     | (pass) buildAgentArgs > orders flags and keeps the prompt after -- [0.08ms]
+pi-agent-runner:test     | (pass) buildAgentArgs > omits every optional flag when none is given [0.06ms]
+pi-agent-runner:test     | (pass) resolvePiInvocation > a virtual script path is never forwarded [0.21ms]
+pi-agent-runner:test     | (pass) resolvePiInvocation > a plain interpreter with no forwarding script falls back to PATH [0.03ms]
+pi-agent-runner:test     | (pass) resolvePiInvocation > a source launch forwards the script and its loader flags [0.38ms]
+pi-agent-runner:test     | (pass) forwardedExecArgs > drops debugger ports, which a second process cannot bind [0.03ms]
+pi-agent-runner:test     | (pass) forwardedExecArgs > keeps inline loader flags [0.03ms]
+pi-agent-runner:test     | (pass) forwardedExecArgs > drops a loader flag with no value [0.02ms]
+pi-agent-runner:test     | (pass) jsonRunArgs > is non-interactive and does not persist a session per agent [0.02ms]
+pi-agent-runner:test     |
+pi-agent-runner:test     | 9 tests skipped:
+pi-agent-runner:test     | (skip) real Pi bash stops writing after agent abort
+pi-agent-runner:test     | (skip) real Pi bash stops writing after agent timeout
+pi-agent-runner:test     | (skip) real Pi background bash stops writing after agent abort
+pi-agent-runner:test     | (skip) real Pi background bash stops writing after agent timeout
+pi-agent-runner:test     | (skip) inherited pipes cannot delay timeout settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay abort settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay exit settlement
+pi-agent-runner:test     | (skip) inherited pipes cannot delay ignore-term settlement
+pi-agent-runner:test     | (skip) spawnRpcChild > the evidence log is written private: directory 0o700, file 0o600
+pi-agent-runner:test     |
+pi-agent-runner:test     |  77 pass
+pi-agent-runner:test     |  9 skip
+pi-agent-runner:test     |  0 fail
+pi-agent-runner:test     |  215 expect() calls
+pi-agent-runner:test     | Ran 86 tests across 6 files. [12.45s]
+pi-agent-runner:test     | Done in 12.59s
+pi-bg-bash:test          | bun test v1.3.14 (0d9b296a)
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\bash-tool.test.ts:
+pi-bg-bash:test          | (pass) bash tool capacity > refuses an explicit background job at capacity [0.77ms]
+pi-bg-bash:test          | (pass) bash tool capacity > still runs a foreground command at capacity [127.13ms]
+pi-bg-bash:test          | (pass) bash tool capacity > returns terminal details for a completed foreground command [96.22ms]
+pi-bg-bash:test          | (pass) shell settings > prepends the configured shellCommandPrefix like the builtin tool [94.37ms]
+pi-bg-bash:test          | (pass) shell settings > passes the configured shellPath through to the runner [0.22ms]
+pi-bg-bash:test          | (pass) shell settings > runs without a settings reader, as before the seam existed [102.47ms]
+pi-bg-bash:test          | (pass) session environment mirror > PI_MODEL mirrors the session selection verbatim, virtual or not [0.48ms]
+pi-bg-bash:test          | (pass) session environment mirror > a parent's session identifiers are not inherited [0.22ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\config.test.ts:
+pi-bg-bash:test          | (pass) parseSeconds > accepts finite numbers, including zero [0.06ms]
+pi-bg-bash:test          | (pass) parseSeconds > rejects missing and non-numeric input [0.02ms]
+pi-bg-bash:test          | (pass) resolveAutoBackgroundSeconds > falls back to the default when nothing is configured [0.04ms]
+pi-bg-bash:test          | (pass) resolveAutoBackgroundSeconds > prefers the environment over both files [0.03ms]
+pi-bg-bash:test          | (pass) resolveAutoBackgroundSeconds > prefers the project file over the user file [0.02ms]
+pi-bg-bash:test          | (pass) resolveAutoBackgroundSeconds > treats a zero threshold as 'auto-background disabled' [0.02ms]
+pi-bg-bash:test          | (pass) resolveAutoBackgroundSeconds > ignores unusable values instead of producing NaN [0.02ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\jobs.test.ts:
+pi-bg-bash:test          | (pass) statusFromOutcome > maps every terminal outcome [1.04ms]
+pi-bg-bash:test          | (pass) statusFromOutcome > timeout wins over the kill flag it sets internally [0.04ms]
+pi-bg-bash:test          | (pass) JobRegistry > assigns zero-padded sequential ids [0.08ms]
+pi-bg-bash:test          | (pass) JobRegistry > counts only running background jobs toward capacity [0.09ms]
+pi-bg-bash:test          | (pass) JobRegistry > promote flips a foreground job to background [0.05ms]
+pi-bg-bash:test          | (pass) JobRegistry > kill only acts on running jobs and hands the signal to the handle [0.11ms]
+pi-bg-bash:test          | (pass) JobRegistry > retains only the most recent finished jobs [0.12ms]
+pi-bg-bash:test          | (pass) JobRegistry > restore marks a formerly running record interrupted without inventing an end time [0.12ms]
+pi-bg-bash:test          | (pass) JobRegistry > restore keeps a real terminal end time [0.04ms]
+pi-bg-bash:test          | (pass) JobRegistry > reset drops every job and restarts the id counter [0.09ms]
+pi-bg-bash:test          | (pass) JobRegistry > killAll signals every running job [0.15ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\loader.test.ts:
+pi-bg-bash:test          | (pass) pi loads the published entry point and registers the bash override and bg_tasks [57.40ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\logs.test.ts:
+pi-bg-bash:test          | (pass) allocateLogPath > prefixes the file name with a sanitized session id [2.02ms]
+pi-bg-bash:test          | (pass) allocateLogPath > falls back to the bare job id without a session [1.85ms]
+pi-bg-bash:test          | (pass) allocateLogPath > returns undefined when the directory cannot be created [3.23ms]
+pi-bg-bash:test          | (pass) log files > two sessions reusing the same job id write separate files [398.43ms]
+pi-bg-bash:test          | (pass) log files > a reused path is truncated, not appended [389.91ms]
+pi-bg-bash:test          | (pass) log files > writes the provenance header before any command output [233.26ms]
+pi-bg-bash:test          | (pass) log files > a log path that cannot be opened does not fail the command [91.17ms]
+pi-bg-bash:test          | (pass) readLogTail > a mid-file start drops the partial first line [4.00ms]
+pi-bg-bash:test          | (pass) readLogTail > returns everything when the file fits [3.57ms]
+pi-bg-bash:test          | (pass) readLogTail > keeps a single oversized line as-is [8.27ms]
+pi-bg-bash:test          | (pass) sweepLogDir > deletes logs older than the retention window [6.74ms]
+pi-bg-bash:test          | (pass) sweepLogDir > keeps only the newest files when the count cap is exceeded [353.83ms]
+pi-bg-bash:test          | (pass) sweepLogDir > a retention of zero disables the sweep [3.31ms]
+pi-bg-bash:test          | (pass) sweepLogDir > ignores non-log files and a missing directory [5.82ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\output.test.ts:
+pi-bg-bash:test          | (pass) TailBuffer > keeps everything under the cap and reports no drops [0.10ms]
+pi-bg-bash:test          | (pass) TailBuffer > drops whole leading lines once the cap is exceeded [0.05ms]
+pi-bg-bash:test          | (pass) TailBuffer > keeps a byte tail of a single oversized line [0.09ms]
+pi-bg-bash:test          | (pass) TailBuffer > cuts on code-point boundaries for multi-byte text [0.03ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\plugin.test.ts:
+pi-bg-bash:test          | (pass) bash tool > RPC background jobs publish running and exited state even with quiet notifications [369.55ms]
+pi-bg-bash:test          | (pass) bash tool > returns output for a command that finishes before the threshold [116.47ms]
+pi-bg-bash:test          | (pass) bash tool > throws on a non-zero exit, carrying the output [109.42ms]
+pi-bg-bash:test          | (pass) bash tool > moves a long command to the background and records success without waking [801.37ms]
+pi-bg-bash:test          | (pass) bash tool > background: true detaches immediately [123.01ms]
+pi-bg-bash:test          | (pass) bash tool > the terminal record renders as one status line without injecting stdout [128.33ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > default failure wakes with metadata while full output stays queryable [156.62ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > quiet suppresses even a failed completion [169.07ms]
+pi-bg-bash:test          | 249 | 		await bash(harness).execute("one", { command: "echo one-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+pi-bg-bash:test          | 250 | 		await bash(harness).execute("two", { command: "echo two-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+pi-bg-bash:test          | 251 | 		await waitFor(() => completions(harness).length === 2);
+pi-bg-bash:test          | 252 | 		await waitFor(() => harness.messages.length === 1);
+pi-bg-bash:test          | 253 | 		expect(harness.messages[0].message.content).toContain("bg001: exited");
+pi-bg-bash:test          | 254 | 		expect(harness.messages[0].message.content).toContain("bg002: exited");
+pi-bg-bash:test          |                                                     ^
+pi-bg-bash:test          | error: expect(received).toContain(expected)
+pi-bg-bash:test          |
+pi-bg-bash:test          | Expected to contain: "bg002: exited"
+pi-bg-bash:test          | Received: "Background bash completion:\n- bg001: exited (exit 0), 0.1s\nUse bg_tasks result <id> for a bounded preview or bg_tasks log <id> for more output. Do not infer the command's output from this notification."
+pi-bg-bash:test          |
+pi-bg-bash:test          |       at <anonymous> (D:\code\pi-plugins\plugins\bg-bash\test\plugin.test.ts:254:47)
+pi-bg-bash:test          | (fail) bg_tasks tool > explicit always batches simultaneous successes into one short notification [176.50ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > wait returns a bounded result when the required job settles [265.56ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > wait supports any of several jobs and reports unfinished peers [314.86ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > wait can be cancelled without stopping the background process [35.25ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > wait honours a fractional-second timeout [99.83ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > lists nothing when no jobs exist [3.00ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > reports status and full log of a finished background job [146.73ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > kills a running job and records it as stopped [642.68ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > log prefers the in-memory tail over a stale file [165.54ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > requires an id for status/log/kill [2.71ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > restored terminal metadata stays queryable and missing logs are explicit [138.52ms]
+pi-bg-bash:test          | (pass) bg_tasks tool > log clamps a single oversized line to 50KB [177.10ms]
+pi-bg-bash:test          | (pass) session lifecycle > completion waits through idle compaction instead of starting an agent run [700.58ms]
+pi-bg-bash:test          | (pass) session lifecycle > a completion held during compaction is dropped on session switch [509.59ms]
+pi-bg-bash:test          | (pass) session lifecycle > a successful background job does not wake the agent after it has settled [218.12ms]
+pi-bg-bash:test          | (pass) session lifecycle > session_start restores completed jobs and continues the id sequence [150.86ms]
+pi-bg-bash:test          | (pass) session lifecycle > a formerly running job is restored as interrupted, not live [147.29ms]
+pi-bg-bash:test          | (pass) session lifecycle > a background job cannot deliver into a later session [522.88ms]
+pi-bg-bash:test          | (pass) session lifecycle > an old job cannot settle a reused id after session_start [357.84ms]
+pi-bg-bash:test          | (pass) session lifecycle > auto-backgrounding keeps the session where the command started [482.78ms]
+pi-bg-bash:test          | (pass) session lifecycle > leaving a session kills its background jobs and drops the completion [756.26ms]
+pi-bg-bash:test          | (pass) session lifecycle > a busy agent's background job cannot report after its session leaves [336.94ms]
+pi-bg-bash:test          | (pass) session lifecycle > a completion after agent_end is handed to Pi at agent_settled [190.32ms]
+pi-bg-bash:test          | (pass) session lifecycle > an active agent receives an opted-in completion as a short steer [184.44ms]
+pi-bg-bash:test          | (pass) session lifecycle > a terminal result consumes a pending completion before settlement [235.08ms]
+pi-bg-bash:test          | (pass) session lifecycle > a terminal wait consumes a pending completion before settlement [201.56ms]
+pi-bg-bash:test          | (pass) session lifecycle > status inspection does not consume a completion [137.29ms]
+pi-bg-bash:test          | (pass) session lifecycle > log inspection does not consume a completion [108.41ms]
+pi-bg-bash:test          | (pass) session lifecycle > output inspection does not consume a completion [109.47ms]
+pi-bg-bash:test          | (pass) session lifecycle > list inspection does not consume a completion [122.92ms]
+pi-bg-bash:test          | (pass) session lifecycle > aborted result queries and parent turns preserve the settled fallback [141.90ms]
+pi-bg-bash:test          | (pass) session lifecycle > reading one job leaves only unread jobs in the boundary batch [158.34ms]
+pi-bg-bash:test          | (pass) session lifecycle > a refused boundary submission remains pending for retry [107.07ms]
+pi-bg-bash:test          | (pass) session lifecycle > reading a running job through result does not consume its future completion [325.58ms]
+pi-bg-bash:test          | (pass) session lifecycle > reading a running job through wait does not consume its future completion [328.31ms]
+pi-bg-bash:test          | (pass) session lifecycle > a partial wait consumes only terminal jobs returned in its result [466.33ms]
+pi-bg-bash:test          | (pass) session lifecycle > an aborted wait does not consume terminal results included in its response [132.20ms]
+pi-bg-bash:test          | (pass) session lifecycle > an idle refusal retries without repeating the UI warning [709.73ms]
+pi-bg-bash:test          | (pass) session lifecycle > a queued completion is discarded when its session leaves before agent_settled [171.62ms]
+pi-bg-bash:test          | (pass) session lifecycle > a failed follow-up delivery is reported without escaping the completion callback [199.20ms]
+pi-bg-bash:test          | (pass) session lifecycle > a completion from a torn-down session manager is dropped, not thrown [529.49ms]
+pi-bg-bash:test          | (pass) session lifecycle > a completion does not depend on the origin's idle probe [450.48ms]
+pi-bg-bash:test          | (pass) poll guard > a bare sleep while a job runs is blocked without ending the turn [27.67ms]
+pi-bg-bash:test          | (pass) poll guard > a sleep with a purpose is left alone [28.91ms]
+pi-bg-bash:test          | (pass) poll guard > a powershell sleep is also recognised as a poll [70.06ms]
+pi-bg-bash:test          | (pass) poll guard > a running foreground job does not make a sleep a poll [673.03ms]
+pi-bg-bash:test          | (pass) poll guard > nothing is blocked when no job is running [1.87ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\poll-guard.test.ts:
+pi-bg-bash:test          | (pass) isPureWaitCommand > recognises a bare sleep, which is the poll [0.05ms]
+pi-bg-bash:test          | (pass) isPureWaitCommand > leaves a sleep with a purpose alone [0.04ms]
+pi-bg-bash:test          | (pass) isPureWaitCommand > does not match a sleep-shaped non-command [0.02ms]
+pi-bg-bash:test          | (pass) pollBlockReason > names the jobs to inspect [0.07ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\records.test.ts:
+pi-bg-bash:test          | (pass) session record replay keeps the latest state without trusting an outside log pointer [2.13ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\render.test.ts:
+pi-bg-bash:test          | (pass) model-facing text > a truncated foreground result keeps the log pointer on the result itself [1.29ms]
+pi-bg-bash:test          | (pass) completion rendering > an interrupted record without an end renders unknown duration [0.27ms]
+pi-bg-bash:test          | (pass) completion rendering > the terminal view is a status line, a command, and the output — not the report [1.00ms]
+pi-bg-bash:test          | (pass) completion rendering > output past the preview is hidden behind an expand hint and shown when expanded [1.74ms]
+pi-bg-bash:test          | (pass) completion rendering > a truncated result shows the log pointer once, as a warning instead of as output [3.81ms]
+pi-bg-bash:test          | (pass) completion rendering > each terminal status reads as a word a person recognises [0.50ms]
+pi-bg-bash:test          | (pass) completion rendering > a message without usable details falls back to pi's default rendering [0.12ms]
+pi-bg-bash:test          | (pass) completion rendering > content this plugin did not write is shown whole rather than mis-split [0.09ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\run.test.ts:
+pi-bg-bash:test          | (pass) startCommand > captures output and a zero exit code [92.39ms]
+pi-bg-bash:test          | (pass) startCommand > reports a non-zero exit code [83.76ms]
+pi-bg-bash:test          | (pass) startCommand > kills the process tree when the timeout elapses [806.62ms]
+pi-bg-bash:test          | (pass) startCommand > an explicit kill is recorded as killed, not timed out [519.43ms]
+pi-bg-bash:test          | (pass) startCommand > detach stops a later abort from killing the command [547.71ms]
+pi-bg-bash:test          | (pass) startCommand > decodes a multi-byte character split across chunks [439.31ms]
+pi-bg-bash:test          | (pass) startCommand > a descendant that never stops writing cannot outlive the grace deadline [303.26ms]
+pi-bg-bash:test          | (pass) startCommand > a descendant holding the pipe cannot hold the run open forever [236.69ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\surface.test.ts:
+pi-bg-bash:test          | (pass) jobWorkItem > maps every job status onto the shared work vocabulary [0.19ms]
+pi-bg-bash:test          | (pass) jobWorkItem > kind is the mode, label is the command, metric is the pid while running [0.06ms]
+pi-bg-bash:test          | (pass) runningWorkItems > lists only live background jobs — foreground and settled stay out [0.13ms]
+pi-bg-bash:test          | (pass) formatJobsListing > names id, mode, status, elapsed and the command [0.29ms]
+pi-bg-bash:test          | (pass) formatJobsListing > an empty registry reads as nothing to show [0.02ms]
+pi-bg-bash:test          | (pass) JobRegistry change notification > promote fires onChange: a detaching job becomes visible background work [0.11ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | test\tasks-tool.test.ts:
+pi-bg-bash:test          | (pass) bg_tasks output > successive calls return disjoint chunks, starting after the log header [7.95ms]
+pi-bg-bash:test          | (pass) bg_tasks output > data beyond the cap returns a tail with an earlier-bytes marker and the cursor reaches the end [21.06ms]
+pi-bg-bash:test          | (pass) bg_tasks output > a job without a readable log reports unavailable output [0.37ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          | 1 tests failed:
+pi-bg-bash:test          | (fail) bg_tasks tool > explicit always batches simultaneous successes into one short notification [176.50ms]
+pi-bg-bash:test          |
+pi-bg-bash:test          |  129 pass
+pi-bg-bash:test          |  1 fail
+pi-bg-bash:test          |  317 expect() calls
+pi-bg-bash:test          | Ran 130 tests across 13 files. [20.04s]
+pi-bg-bash:test          | Exited with code 1
+error: script "test" exited with code 1

@@ -119,6 +119,20 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
 
 const SCRIPT = "return await agent('hi', {});";
 
+test("RPC workflow publishes launch and final state independently of its answer", async () => {
+  const cwd = await tempCwd();
+  const { pi, captured } = fakePi();
+  const ctx = { ...fakeCtx(cwd), mode: "rpc" };
+  workflowExtension({ cwd, executor: fakeExecutor })(pi);
+  const result = await captured.tool.execute("rpc", { script: SCRIPT }, undefined, undefined, ctx);
+  expect(captured.delivered.find((message) => message.customType === "pi-work-status")?.content).toContain(`[Workflow ${result.details.runId}] running`);
+  await waitFor(() => captured.delivered.some((message) => message.customType === "workflow-result"));
+  const states = captured.delivered.filter((message) => message.customType === "pi-work-status");
+  expect(states.at(-1)!.content).toContain("] completed");
+  expect(states.every((message) => (message.options as { triggerTurn: boolean }).triggerTurn === false)).toBe(true);
+  for (const shutdown of captured.shutdown) shutdown();
+});
+
 describe("workflow tool launches a background run", () => {
   test("a run cannot deliver into a later session", async () => {
     const cwd = await tempCwd();

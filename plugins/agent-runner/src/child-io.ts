@@ -149,6 +149,7 @@ export function mapRunOutcome(input: {
 	killedBy?: "timeout" | "abort" | "stalled";
 	stalledForMs?: number;
 	lastEventLabel?: string;
+	quietMs?: number;
 	timeoutMs: number;
 	evidencePath?: string;
 	stderr?: string;
@@ -176,7 +177,7 @@ export function mapRunOutcome(input: {
 						lastEvent: input.lastEventLabel ?? "event",
 						...(input.evidencePath ? { evidencePath: input.evidencePath } : {}),
 					})
-				: timeoutFailureMessage({ timeoutMs: input.timeoutMs, ...(input.evidencePath ? { evidencePath: input.evidencePath } : {}) }),
+				: timeoutFailureMessage({ timeoutMs: input.timeoutMs, lastEvent: input.lastEventLabel, quietMs: input.quietMs, ...(input.evidencePath ? { evidencePath: input.evidencePath } : {}) }),
 			usage: state.usage,
 		};
 	}

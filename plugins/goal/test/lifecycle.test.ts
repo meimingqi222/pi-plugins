@@ -160,6 +160,19 @@ function goalSpend(env: ReturnType<typeof setup>): GoalSpendService {
 }
 
 async function run(command: any, args: string, ctx: any) { await command.handler(args, ctx); }
+
+test("RPC goal exposes active and paused state without replacing TUI status behavior", async () => {
+  const env = setup();
+  env.ctx.mode = "rpc";
+  await run(env.commands.get("goal"), "task --tokens 100", env.ctx);
+  await run(env.commands.get("goal"), "pause", env.ctx);
+  const states = env.sent.filter(({ message }) => message.customType === "pi-work-status");
+  expect(states[0]?.message.content).toContain("] active");
+  expect(states.at(-1)!.message.content).toContain("] paused");
+  expect(states.at(-1)!.message.content).toContain("/100 tokens");
+  expect(states.every(({ options }) => options.triggerTurn === false)).toBe(true);
+  await env.emit("session_shutdown");
+});
 async function update(tool: any, kind: string, message: string, ctx: any) { return tool.execute("call", { kind, message }, undefined, undefined, ctx); }
 async function tick() { await new Promise((resolve) => setTimeout(resolve, 0)); }
 /**

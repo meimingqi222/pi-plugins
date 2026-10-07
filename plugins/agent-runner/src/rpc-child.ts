@@ -317,6 +317,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				killedBy,
 				stalledForMs,
 				lastEventLabel,
+				quietMs: Math.max(0, Date.now() - lastEventAt),
 				timeoutMs,
 				stderr,
 				exitCode,

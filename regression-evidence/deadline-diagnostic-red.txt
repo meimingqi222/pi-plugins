@@ -1,0 +1,22 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\agent-runner\test\deadline-diagnostic.test.ts:
+4 |
+5 | test("deadline failures distinguish total budget from upstream timeouts and preserve last activity", () => {
+6 |   const result = mapRunOutcome({ killedBy: "timeout", timeoutMs: 900_000, lastEventLabel: "tool_start bash", quietMs: 397_000, state: emptyStreamState() });
+7 |   expect(result.status).toBe("failed");
+8 |   expect(result.errorMessage).toContain("total task deadline, not an upstream timeout");
+9 |   expect(result.errorMessage).toContain("tool_start bash (397s ago)");
+                                  ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "tool_start bash (397s ago)"
+Received: "The agent timed out after 900000ms (total task deadline, not an upstream timeout)"
+
+      at <anonymous> (D:\code\pi-plugins\plugins\agent-runner\test\deadline-diagnostic.test.ts:9:31)
+(fail) deadline failures distinguish total budget from upstream timeouts and preserve last activity [0.51ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [59.00ms]

@@ -29,7 +29,7 @@
 import { Type } from "typebox";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
+import { connectGoalSpend, createHostWorkReporter, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
 import { renderLiveStatus } from "../runs/live-status.ts";
@@ -82,7 +82,8 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     const goalLeases = new Map<string, GoalSpendLease>();
     let sessionGeneration = 0;
     const delivery = new SettledDeliveryQueue(pi);
-    const origins = new Map<string, { isCurrent: () => boolean; isIdle: () => boolean; notify: (message: string) => void }>();
+    const hostWork = createHostWorkReporter(pi);
+    const origins = new Map<string, { isCurrent: () => boolean; isIdle: () => boolean; notify: (message: string) => void; ctx: ExtensionContext }>();
     const executor = options.executor ?? createPiExecutor();
     const cwd = (ctx: ExtensionContext): string => options.cwd ?? ctx.cwd;
 
@@ -145,6 +146,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
           footer.sync();
           return;
         }
+        hostWork.publish({ kind: "workflow", id: record.runId, title: record.name, status: record.status, description: record.message ?? "", activity: record.progress?.currentPhase ?? "", metric: `${record.progress?.completedAgents ?? 0}/${record.progress?.totalAgents ?? 0} agents · ${record.progress?.spentTokens ?? 0} tokens` }, origin.ctx);
         const send = () => {
           if (!origin.isCurrent()) return;
           try {
@@ -190,6 +192,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         const generation = sessionGeneration;
         const lease = goalSpend()?.begin(ctx, runId);
         origins.set(runId, {
+          ctx,
           isIdle: () => ctx.isIdle(),
           isCurrent: () => {
             if (generation !== sessionGeneration) return false;
@@ -218,7 +221,10 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
             onProgress: (progress) => {
               registry.setProgress(runId, progress);
               // A phase change is news; the ticker only refreshes the clock.
-              if (origins.get(runId)?.isCurrent()) footer.sync();
+              if (origins.get(runId)?.isCurrent()) {
+                footer.sync();
+                hostWork.publish({ kind: "workflow", id: runId, title: source.name, status: "running", description: progress.message ?? "", activity: progress.currentPhase ?? "starting", metric: `${progress.completedAgents}/${progress.totalAgents} agents · ${progress.spentTokens} tokens` }, ctx);
+              }
             },
           }),
           );
@@ -230,6 +236,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
         }
         attachFooter(ctx);
         footer.sync();
+        hostWork.publish({ kind: "workflow", id: runId, title: source.name, status: "running", description: "Workflow launched", activity: "starting" }, ctx);
 
         return {
           content: [
@@ -407,6 +414,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
 
     const leaveSession = () => {
       sessionGeneration += 1;
+      hostWork.clear();
       delivery.clear();
       footer.dispose();
       // Settlement after a leave may never arrive (an executor that ignores

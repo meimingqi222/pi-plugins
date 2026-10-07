@@ -361,6 +361,22 @@ The first cut is deliberately small. Not implemented:
 Each call still starts only one child. Background handles and results live in
 the current session's memory and are not resumable after a process restart.
 
+## Task deadlines
+
+The default **total task deadline is 1800 seconds (30 minutes)**, including model generation
+and every tool call. It does not reset when progress arrives. This differs from
+the five-minute silence bound and from an upstream request timeout. A tool's
+declared timeout can extend the silence allowance, but cannot extend the total
+task budget. Delegate focused review scopes; avoid running the same broad test
+suite in several parallel reviewers.
+
+Use `subagent(..., timeout: 10800)` for a three-hour task, or set
+`PI_SUBAGENT_TIMEOUT_SECONDS=10800` in the parent Pi environment. Allowed values
+are 1–10800 seconds (maximum three hours); an explicit call parameter takes
+precedence. Both foreground and background children receive this budget.
+Failures report the last observed activity; diagnostic log paths stay in tool
+details and explicit `subagent_tasks log` output.
+
 ## Development
 
 ```sh

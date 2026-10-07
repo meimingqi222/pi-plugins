@@ -5,7 +5,8 @@
   "description": "A workspace of independent pi extensions, published as separate packages.",
   "type": "module",
   "workspaces": [
-    "plugins/*"
+    "plugins/*",
+    "integrations/paseo-ui"
   ],
   "scripts": {
     "test": "bun run --sequential --filter '*' test",

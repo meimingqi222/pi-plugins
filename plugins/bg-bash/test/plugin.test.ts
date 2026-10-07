@@ -146,6 +146,16 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 }
 
 describe("bash tool", () => {
+	test("RPC background jobs publish running and exited state even with quiet notifications", async () => {
+		const harness = setup();
+		harness.ctx.mode = "rpc";
+		await bash(harness).execute("rpc", { command: "sleep 0.2; echo done", background: true, notify: "quiet" }, undefined, undefined, harness.ctx);
+		const states = () => harness.messages.filter(({ message }) => message.customType === "pi-work-status");
+		expect(states()[0]?.message.content).toContain("[Bash bg001] running");
+		await waitFor(() => states().some(({ message }) => message.details.status === "exited"));
+		expect(states().at(-1)!.message.content).toContain("[Bash bg001] exited");
+		expect(states().every(({ options }) => options.triggerTurn === false)).toBe(true);
+	});
 	test("returns output for a command that finishes before the threshold", async () => {
 		process.env.PI_BG_BASH_THRESHOLD = "30";
 		const harness = setup();
@@ -236,8 +246,12 @@ describe("bg_tasks tool", () => {
 
 	test("explicit always batches simultaneous successes into one short notification", async () => {
 		const harness = setup();
-		await bash(harness).execute("one", { command: "echo one-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
-		await bash(harness).execute("two", { command: "echo two-output", background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		// Hold both shells until they are started; process startup can exceed the batch window.
+		const gate = join(logDir, "batch-ready").replaceAll("\\", "/");
+		const waitForGate = `while [ ! -f '${gate}' ]; do sleep 0.01; done;`;
+		await bash(harness).execute("one", { command: `${waitForGate} echo one-output`, background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		await bash(harness).execute("two", { command: `${waitForGate} echo two-output`, background: true, notify: "always" }, undefined, undefined, harness.ctx);
+		writeFileSync(gate, "ready");
 		await waitFor(() => completions(harness).length === 2);
 		await waitFor(() => harness.messages.length === 1);
 		expect(harness.messages[0].message.content).toContain("bg001: exited");

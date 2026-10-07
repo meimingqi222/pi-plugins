@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createWorkReporter } from "pi-run-core";
+import { createHostWorkReporter, createWorkReporter } from "pi-run-core";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
 import type { RunOutcome } from "../core/types.ts";
@@ -45,6 +45,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	// The UI context the reporter draws on: refreshed by `session_start` and
 	// lazily when a job detaches (a tool call can precede or survive one).
 	let uiCtx: ExtensionContext | undefined;
+	const hostWork = createHostWorkReporter(pi);
 	const reporter = createWorkReporter({
 		key: "pi-bg-bash-jobs",
 		ui: () => (uiCtx && uiCtx.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
@@ -53,7 +54,15 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		title: "bg jobs",
 		hint: "bg_tasks · /bg",
 	});
-	registry.onChange(() => reporter.sync());
+	function syncSurfaces(): void {
+		reporter.sync();
+		if (!uiCtx || shuttingDown) return;
+		for (const job of registry.list()) {
+			if (job.mode !== "background") continue;
+			hostWork.publish({ kind: "bash", id: job.id, title: job.command, status: job.status, description: "Background command", activity: job.status === "running" ? "running" : `exit ${job.exitCode ?? "unknown"}`, metric: job.pid === undefined ? "" : `pid ${job.pid}` }, uiCtx);
+		}
+	}
+	registry.onChange(syncSurfaces);
 	let afterAgentEnd = false;
 	let agentRunActive = false;
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -177,8 +186,9 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 			// because this is the earliest call guaranteed to carry one. `promote`
 			// already fired the registry's onChange, possibly before this context
 			// was bound, so sync again after binding.
-			if (ctx.mode === "tui") uiCtx = ctx;
-			reporter.sync();
+			if (!isCurrent()) return;
+			uiCtx = ctx;
+			syncSurfaces();
 			persist(job, BG_BASH_STATE_ENTRY, ctx, isCurrent);
 		},
 		deliver: (job, _outcome: RunOutcome, ctx, isCurrent) => routeCompletion(job, ctx, isCurrent),
@@ -191,6 +201,8 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	 */
 	const leaveSession = () => {
 		sessionGeneration += 1;
+		uiCtx = undefined;
+		hostWork.clear();
 		pendingNotices.clear();
 		consumed = new WeakSet<Job>();
 		submitted = new WeakSet<Job>();
@@ -210,11 +222,11 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		shuttingDown = false;
-		if (ctx.mode === "tui") uiCtx = ctx;
 		// A new session must not inherit the previous one's job list or id
 		// counter; shutdown already killed anything still running.
 		leaveSession();
 		registry.reset();
+		uiCtx = ctx;
 		// Bound the log directory: files past the retention window are deleted,
 		// then the newest MAX_LOG_FILES are kept.
 		sweepLogDir();

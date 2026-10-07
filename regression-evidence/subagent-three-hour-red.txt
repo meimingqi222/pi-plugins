@@ -1,0 +1,23 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\subagent\test\deadline-display.test.ts:
+23 |
+24 | test("environment deadline has explicit precedence and rejects unbounded values", () => {
+25 |   const previous = process.env.PI_SUBAGENT_TIMEOUT_SECONDS;
+26 |   try {
+27 |     delete process.env.PI_SUBAGENT_TIMEOUT_SECONDS;
+28 |     expect(subagentTimeoutMs()).toBe(1_800_000);
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: 1800000
+Received: 900000
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\deadline-display.test.ts:28:33)
+(fail) environment deadline has explicit precedence and rejects unbounded values [0.55ms]
+
+ 0 pass
+ 2 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [796.00ms]

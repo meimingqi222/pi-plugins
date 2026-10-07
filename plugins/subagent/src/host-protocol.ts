@@ -1,4 +1,5 @@
 import { HostTranscript } from "./host-transcript.ts";
+import { formatHostWork, type HostWork, type HostWorkContext } from "pi-run-core";
 import { Type, type Static } from "typebox";
 import type {
   AgentToolResult,
@@ -7,8 +8,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   SubagentParams,
+  emptySubagentUsage,
   type SubagentDetails,
   type SubagentToolParams,
+  displayFailure,
 } from "./tool.ts";
 import type { Lane, LaneStatus } from "./lane.ts";
 
@@ -24,6 +27,43 @@ type HostDetails = Omit<SubagentDetails, "status"> & {
   status: LaneStatus | "error";
   nativeStatus: LaneStatus;
 };
+
+interface ProgressOptions {
+  hostId?: string;
+  visible?: boolean;
+  ctx?: HostWorkContext;
+  onUpdate?: (update: AgentToolResult<SubagentDetails>) => void;
+}
+
+function laneWork(lane: Lane, id = lane.id, status = lane.status): HostWork {
+  return { kind: "subagent", id, title: `${lane.alias} (${lane.agent})`, status, description: lane.task, activity: status === "running" ? progressActivity(lane) : displayFailure(lane.errorMessage ?? lane.result?.details.errorMessage ?? status), metric: `${lane.progress?.completedTools ?? 0} tools completed` };
+}
+
+interface PendingProgress {
+  lane: Lane;
+  options: ProgressOptions;
+  nextAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+function cleanPreview(text: string, limit: number): string {
+  const clean = text.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
+}
+
+function progressActivity(lane: Lane): string {
+  const progress = lane.progress;
+  let activity = "working";
+  if (progress?.activeTool) activity = `using ${cleanPreview(progress.activeTool, 160)}`;
+  else if (progress?.phase === "starting") activity = "starting";
+  else if (progress?.phase === "model") activity = "thinking";
+  else if (progress?.phase === "tool") activity = "running tools";
+  return activity;
+}
+
+function progressDescription(lane: Lane): string {
+  return `${cleanPreview(lane.task, 160)} · ${progressActivity(lane)} · ${lane.progress?.completedTools ?? 0} tools completed`;
+}
 
 export function prepareHostArguments(value: unknown): HostParams {
   if (!value || typeof value !== "object")
@@ -115,6 +155,8 @@ export function registerHostSubagent(
 /** UI state is separate from answer delivery: consuming an answer cannot hide settlement. */
 export class HostSubagentState {
   private readonly last = new Map<string, string>();
+  private readonly progressUpdates = new Map<string, PendingProgress>();
+  private readonly surfaces = new Map<string, ProgressOptions>();
   private readonly pendingFiles = new Map<
     string,
     { revision: string; path: string }
@@ -132,14 +174,57 @@ export class HostSubagentState {
     private readonly pi: Pick<ExtensionAPI, "sendMessage">,
     private readonly logPath: (lane: Lane) => string | undefined = (lane) =>
       lane.logPath,
+    private readonly progressIntervalMs = 2_000,
   ) {}
-  publish(lane: Lane, hostId = lane.id): void {
+
+  /** Coalesce token activity; the trailing update preserves the latest tool/phase. */
+  progress(lane: Lane, options: ProgressOptions = {}): void {
+    if (lane.status !== "running" || lane.idleSince !== undefined) return;
+    this.surfaces.set(lane.id, options);
+    let pending = this.progressUpdates.get(lane.id);
+    if (!pending) {
+      pending = { lane, options, nextAt: 0 };
+      this.progressUpdates.set(lane.id, pending);
+    }
+    pending.lane = { ...lane, progress: lane.progress ? { ...lane.progress } : undefined };
+    pending.options = options;
+    const flush = () => {
+      pending.timer = undefined;
+      pending.nextAt = Date.now() + this.progressIntervalMs;
+      const current = pending.lane;
+      const hostId = pending.options.hostId ?? current.id;
+      if (!this.publish(current, hostId, pending.options.visible)) return;
+      try {
+        pending.options.onUpdate?.({
+          content: [{ type: "text", text: formatHostWork(laneWork(current, hostId)) }],
+          details: { agent: current.agent, status: "running", usage: emptySubagentUsage(), output: "", progress: current.progress },
+        });
+      } catch { /* A renderer cannot fail a child run. */ }
+    };
+    if (pending.timer) return;
+    const delay = pending.nextAt - Date.now();
+    if (delay <= 0) flush();
+    else {
+      pending.timer = setTimeout(flush, delay);
+      pending.timer.unref?.();
+    }
+  }
+
+  private cancelProgress(id: string): void {
+    const pending = this.progressUpdates.get(id);
+    if (pending?.timer) clearTimeout(pending.timer);
+    this.progressUpdates.delete(id);
+  }
+
+  publish(lane: Lane, hostId = lane.id, visible = this.surfaces.get(lane.id)?.visible ?? false): boolean {
     const nativeStatus =
       lane.status === "running" && lane.idleSince !== undefined
         ? (lane.result?.details.status ?? lane.status)
         : lane.status;
-    const revision = `${nativeStatus}:${lane.resultRevision ?? 0}`;
-    if (this.last.get(lane.id) === revision) return;
+    if (nativeStatus !== "running") this.cancelProgress(lane.id);
+    const description = nativeStatus === "running" ? progressDescription(lane) : lane.task;
+    const revision = `${nativeStatus}:${lane.resultRevision ?? 0}:${description}`;
+    if (this.last.get(lane.id) === revision) return false;
     let outputFile =
       this.pendingFiles.get(lane.id)?.revision === revision
         ? this.pendingFiles.get(lane.id)?.path
@@ -161,17 +246,21 @@ export class HostSubagentState {
         this.pendingFiles.set(lane.id, { revision, path: outputFile });
     }
     try {
+      const content = visible ? formatHostWork(laneWork(lane, hostId, nativeStatus)) : "";
+      const ctx = this.surfaces.get(lane.id)?.ctx;
+      const notify = visible && process.env.PI_RPC_PROGRESS_TRANSPORT === "notify" && ctx?.ui;
+      if (notify) notify.notify(content, nativeStatus === "failed" ? "warning" : "info");
       this.pi.sendMessage(
         {
           customType: "subagent-update",
-          content: "",
-          display: false,
+          content: notify ? "" : content,
+          display: visible && !notify,
           details: {
             id: hostId,
             ...(outputFile ? { outputFile } : {}),
             status: hostStatus(nativeStatus),
             nativeStatus,
-            description: lane.task,
+            description,
           },
         },
         { triggerTurn: false },
@@ -179,12 +268,16 @@ export class HostSubagentState {
       this.last.set(lane.id, revision);
       this.pendingFiles.delete(lane.id);
       if (lane.status !== "running") this.transcripts.delete(lane.id);
+      return true;
     } catch {
       /* A later boundary can retry a failed host update. */
+      return false;
     }
   }
   clear(): void {
+    for (const id of this.progressUpdates.keys()) this.cancelProgress(id);
     this.last.clear();
+    this.surfaces.clear();
     this.transcripts.clear();
     this.pendingFiles.clear();
   }

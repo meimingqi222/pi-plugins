@@ -216,7 +216,7 @@ describe("agent executor spawn path", () => {
       "The agent produced no output for 300000ms (last event: tool_start find); killed by the stall bound",
     );
     expect(timeoutFailureMessage({ timeoutMs: 900_000, evidencePath: "/tmp/a.jsonl" })).toBe(
-      "The agent timed out after 900000ms; its event stream is at /tmp/a.jsonl",
+      "The agent timed out after 900000ms (total task deadline, not an upstream timeout); its event stream is at /tmp/a.jsonl",
     );
   });
 

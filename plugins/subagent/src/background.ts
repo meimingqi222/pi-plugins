@@ -64,7 +64,7 @@ export function formatBackground(lane: Lane): string {
 		const stall = deriveChildState(lane, now) === "stalled"
 			? ` · no child event for ${formatDuration(Math.floor((now - lane.startedAt) / 1_000))} (possible stall)`
 			: "";
-		return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools}${stall}${commandError}`;
+		return `**${lane.alias || lane.agent} · ${lane.status}**\n${formatDuration(elapsed)}${tools}${stall}${commandError}\nTask: \`${lane.id}\``;
 	}
 
 	const quietMs = Math.max(0, now - progress.lastActivityAt);
@@ -83,7 +83,7 @@ export function formatBackground(lane: Lane): string {
 				? ` · answered ${idleAge} ago — awaiting a reply`
 				: ` · idle for ${idleAge} — awaiting a reply`
 			: ` · last ${progress.lastEvent} ${quiet} ago`;
-	return `${lane.id} · ${lane.agent} · ${lane.status} · ${elapsed}s${tools} · ${phase}${activity}${commandError}`;
+	return `**${lane.alias || lane.agent} · ${lane.status}**\n${formatDuration(elapsed)}${tools} · ${phase}${activity}${commandError}\nTask: \`${lane.id}\``;
 }
 
 export function formatDuration(seconds: number): string {

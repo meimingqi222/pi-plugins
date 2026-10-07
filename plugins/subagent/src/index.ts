@@ -404,7 +404,12 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 onEvent: (event) => {
                   if (generation === launchedIn) hostState.observe(id, event);
                 },
-                onProgress: (progress) => registry.setProgress(id, progress),
+                onProgress: (progress) => {
+                  registry.setProgress(id, progress);
+                  const lane = registry.get(sessionId, id);
+                  if (lane && generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId)
+                    hostState.progress(lane, { visible: ctx.mode === "rpc", ctx });
+                },
                 // Background lanes ride the live-RPC transport: the child
                 // survives its turn so `reply` can queue or interrupt.
                 rpc: {
@@ -522,8 +527,17 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             onEvent: (event) => {
               if (generation === fgGeneration) hostState.observe(id, event);
             },
-            ...(onUpdate ? { onUpdate } : {}),
-            onProgress: (progress) => registry.setProgress(id, progress),
+            ...(onUpdate && ctx.mode !== "rpc" ? { onUpdate } : {}),
+            onProgress: (progress) => {
+              registry.setProgress(id, progress);
+              const lane = registry.get(sessionId, id);
+              if (lane && generation === fgGeneration && ctx.sessionManager.getSessionId() === sessionId)
+                hostState.progress(lane, {
+                  hostId: toolCallId,
+                  // RPC partial results stream even while pi defers passive custom messages.
+                  ...(ctx.mode === "rpc" ? { visible: true, onUpdate, ctx } : {}),
+                });
+            },
           }, options);
         }, { kind: "foreground", alias: params.alias, generation, slotHeld: true });
         const onAbort = () => registry.abort(launched.record.id);

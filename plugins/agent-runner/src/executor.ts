@@ -281,8 +281,11 @@ export function stallCheckIntervalMs(stallMs: number): number {
 }
 
 /** The failure message for a run the wall clock ended. */
-export function timeoutFailureMessage(input: { timeoutMs: number; evidencePath?: string }): string {
-  return `The agent timed out after ${input.timeoutMs}ms${
+export function timeoutFailureMessage(input: { timeoutMs: number; evidencePath?: string; lastEvent?: string; quietMs?: number }): string {
+  const activity = input.lastEvent
+    ? `; last event: ${input.lastEvent}${input.quietMs === undefined ? "" : ` (${Math.floor(input.quietMs / 1_000)}s ago)`}`
+    : "";
+  return `The agent timed out after ${input.timeoutMs}ms (total task deadline, not an upstream timeout)${activity}${
     input.evidencePath ? `; its event stream is at ${input.evidencePath}` : ""
   }`;
 }
@@ -736,6 +739,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
             killedBy,
             stalledForMs,
             lastEventLabel,
+            quietMs: Math.max(0, Date.now() - lastEventAt),
             timeoutMs,
             stderr,
             exitCode,

@@ -1,0 +1,35 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\subagent\test\paseo.test.ts:
+44 |       cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "live-session" }, isIdle: () => false,
+45 |     });
+46 |     try {
+47 |       await ready;
+48 |       const progress = messages.find((message) => message.display && message.content.includes("starting"));
+49 |       expect(progress).toBeDefined();
+                            ^
+error: expect(received).toBeDefined()
+
+Received: undefined
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\paseo.test.ts:49:24)
+(fail) foreground RPC launch reports readable progress before the child finishes [66.98ms]
+44 |       cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "live-session" }, isIdle: () => false,
+45 |     });
+46 |     try {
+47 |       await ready;
+48 |       const progress = messages.find((message) => message.display && message.content.includes("starting"));
+49 |       expect(progress).toBeDefined();
+                            ^
+error: expect(received).toBeDefined()
+
+Received: undefined
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\paseo.test.ts:49:24)
+(fail) background RPC launch reports readable progress before the child finishes [47.39ms]
+
+ 0 pass
+ 5 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [1002.00ms]

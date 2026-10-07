@@ -30,6 +30,7 @@ plugin independently installable.
 | `isolatedComplete` / `withDeadline` / `parseJsonReply` | A tool-free, isolated judgment call with a deadline the caller cannot forget. |
 | `WorkItem` + `renderWorkSurface` | The shared vocabulary and renderer for "work that is still running" — one row format (`icon · kind · label · elapsed · metric`) so plugins cannot drift on what a live surface looks like. |
 | `createWorkReporter` | The mount/tick/teardown lifecycle for a below-editor widget: claims the slot only while `live()`, repaints on a bounded `unref`'d interval, hands the slot back on the last settle. |
+| `HostWork` / `formatHostWork` / `createHostWorkReporter` | RPC status text and publication independent of TUI rendering. Deduplicates, coalesces active progress, immediately publishes terminal states, and cancels timers with `clear()`. |
 
 ## Why each one is shared rather than local
 
@@ -70,6 +71,12 @@ follow-up can arrive inside a run the extension started, and attributing that
 turn to the extension is what causes a user's own output to be interrupted.
 
 ## Install
+
+`createHostWorkReporter` publishes only when `ctx.mode === "rpc"`. Pass the
+origin context to `publish(work, ctx)` and call `clear()` at session/branch
+boundaries. The default passive message transport never triggers a model turn;
+Pi may defer it while streaming. `PI_RPC_PROGRESS_TRANSPORT=notify` opts into
+host notifications. This library has no Paseo dependency.
 
 Consumed as a workspace dependency:
 

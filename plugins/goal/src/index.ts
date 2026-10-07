@@ -6,6 +6,7 @@ import {
   ActiveTimer,
   appendRunSnapshot,
   ContinuationChannel,
+  createHostWorkReporter,
   GOAL_SPEND_REQUEST,
   GOAL_SPEND_SERVICE,
   readTokenUsage,
@@ -60,6 +61,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
   // own; registering here would inject the parent's objective into a context
   // that cannot act on it. The spawner sets the flag — see `goalDisabled`.
   if (goalDisabled()) return;
+  const hostWork = createHostWorkReporter(pi);
   let goal: Goal | undefined;
   let flight: Flight | undefined;
   let planFlight: { goalId: string; abort: AbortController } | undefined;
@@ -111,6 +113,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     ctx.ui.setStatus("pi-goal", goal && !isRetired(goal)
       ? `Goal ${goal.status} · ${goal.workRuns} runs · ${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens · ${goal.objective.slice(0, 60)}`
       : undefined);
+    if (goal) hostWork.publish({ kind: "goal", id: goal.id, title: goal.objective, status: goal.status, description: goal.reason ?? "", activity: `${goal.workRuns} work runs`, metric: `${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens` }, ctx);
     if (persistFailure && !persistReported) {
       persistReported = true;
       ctx.ui.notify(`pi-goal: ${persistFailure}`, "warning");
@@ -406,6 +409,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     if (goal?.status === "active" && guard.isCurrent(call.token)) schedule(ctx);
   }
   function restore(ctx: ExtensionContext): void {
+    hostWork.clear();
     invalidate();
     continuation.reset();
     guard.nextSession();
@@ -428,6 +432,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     guard.nextSession();
     work = undefined;
     endedRun = undefined;
+    hostWork.clear();
   }
   function account(message: unknown, owner: WorkRun | undefined, ctx: ExtensionContext): void {
     if (!goal || !owner || owner.goalId !== goal.id || owner.session !== guard.sessionId ||

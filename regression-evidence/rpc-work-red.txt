@@ -1,0 +1,43 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\bg-bash\test\plugin.test.ts:
+149 | 	test("RPC background jobs publish running and exited state even with quiet notifications", async () => {
+150 | 		const harness = setup();
+151 | 		harness.ctx.mode = "rpc";
+152 | 		await bash(harness).execute("rpc", { command: "sleep 0.2; echo done", background: true, notify: "quiet" }, undefined, undefined, harness.ctx);
+153 | 		const states = () => harness.messages.filter(({ message }) => message.customType === "pi-work-status");
+154 | 		expect(states()[0]?.message.content).toContain("[Bash bg001] running");
+                                             ^
+error: Received value must be an array type, or both received and expected values must be strings.
+      at <anonymous> (D:\code\pi-plugins\plugins\bg-bash\test\plugin.test.ts:154:40)
+(fail) bash tool > RPC background jobs publish running and exited state even with quiet notifications [38.82ms]
+
+plugins\goal\test\lifecycle.test.ts:
+165 |   const env = setup();
+166 |   env.ctx.mode = "rpc";
+167 |   await run(env.commands.get("goal"), "task --tokens 100", env.ctx);
+168 |   await run(env.commands.get("goal"), "pause", env.ctx);
+169 |   const states = env.sent.filter(({ message }) => message.customType === "pi-work-status");
+170 |   expect(states[0]?.message.content).toContain("] active");
+                                           ^
+error: Received value must be an array type, or both received and expected values must be strings.
+      at <anonymous> (D:\code\pi-plugins\plugins\goal\test\lifecycle.test.ts:170:38)
+(fail) RPC goal exposes active and paused state without replacing TUI status behavior [5.20ms]
+
+plugins\workflow\test\plugin-wiring.test.ts:
+123 |   const cwd = await tempCwd();
+124 |   const { pi, captured } = fakePi();
+125 |   const ctx = { ...fakeCtx(cwd), mode: "rpc" };
+126 |   workflowExtension({ cwd, executor: fakeExecutor })(pi);
+127 |   const result = await captured.tool.execute("rpc", { script: SCRIPT }, undefined, undefined, ctx);
+128 |   expect(captured.delivered.find((message) => message.customType === "pi-work-status")?.content).toContain(`[Workflow ${result.details.runId}] running`);
+                                                                                                       ^
+error: Received value must be an array type, or both received and expected values must be strings.
+      at <anonymous> (D:\code\pi-plugins\plugins\workflow\test\plugin-wiring.test.ts:128:98)
+(fail) RPC workflow publishes launch and final state independently of its answer [15.97ms]
+
+ 0 pass
+ 188 filtered out
+ 3 fail
+ 3 expect() calls
+Ran 3 tests across 3 files. [1028.00ms]
