@@ -462,11 +462,8 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             throw error;
           }
         }
-        // A foreground call is a lane too: registered so the fleet shows it,
-        // not addressable (no id reaches the model) and never occupying a
-        // background concurrency slot. A lane is session-scoped by definition,
-        // so a session-less context (embedded hosts, tests) takes the direct
-        // path instead — there is nothing to own the lane.
+        // Foreground calls share the fleet and its cap. A session-less host takes
+        // the direct path because there is no session to own the lane.
         const lease = goalSpend()?.begin(ctx, toolCallId);
         const sessionId = ctx.sessionManager?.getSessionId?.();
         if (!sessionId) {
@@ -486,6 +483,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             throw error;
           }
         }
+        const fgGeneration = generation;
         // Foreground calls share the fleet's concurrency cap: pi runs a tool
         // batch in parallel, so N blocking calls would otherwise spawn N
         // children at once. Unlike a background launch, a blocking call waits
@@ -499,13 +497,12 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           } catch { /* A progress update cannot fail the call. */ }
         }
         const slotGranted = await registry.acquireSlot(signal);
-        if (!slotGranted || signal?.aborted) {
+        if (!slotGranted || signal?.aborted || generation !== fgGeneration || ctx.sessionManager.getSessionId() !== sessionId) {
           // Granted but already interrupted: hand the slot to the next waiter.
           if (slotGranted) registry.releaseSlot();
           lease?.finish(0);
           return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
         }
-        const fgGeneration = generation;
         const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
         const fgResolved = resolveAgent(fgAgents, params.agent);
         const fgModel = childModelFor(ctx);
@@ -637,21 +634,19 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           // Mid-turn, interrupt chooses steer (after the current tool calls)
           // over follow_up (queued until the turn ends).
           const idle = record.idleSince !== undefined;
+          if (idle && !registry.tryResume(sessionId, params.id)) {
+            return { content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Reply was not sent; retry after a busy lane settles or goes idle.` }], details: record };
+          }
           const command = idle
             ? ({ type: "prompt", message: prompt } as const)
             : params.interrupt
               ? ({ type: "steer", message: prompt } as const)
               : ({ type: "follow_up", message: prompt } as const);
           if (!child.send(command)) {
+            if (idle) registry.setIdle(params.id, true, record.idleSince);
             return { content: [{ type: "text", text: `Subagent ${params.id}'s control channel is already closed — its result will arrive on settle.` }], details: record };
           }
-          if (idle) {
-            // The new prompt makes the lane busy on the next agent_start, but
-            // mark it now so a second reply in the same tick is not misfired
-            // as another fresh turn.
-            registry.setIdle(params.id, false);
-            clearIdleTimer(params.id);
-          }
+          if (idle) clearIdleTimer(params.id);
           const updatedLane = registry.get(sessionId, params.id);
           if (updatedLane) hostState.publish(updatedLane);
           const how = idle ? "a new turn" : params.interrupt ? "steer (after current tool calls)" : "follow-up (after this turn)";

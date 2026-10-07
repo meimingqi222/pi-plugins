@@ -118,7 +118,7 @@ export class LaneRegistry {
 	 */
 	private reservedSlots = 0;
 	/** FIFO queue of foreground calls parked on a full fleet. */
-	private readonly slotWaiters: Array<{ grant: () => void }> = [];
+	private readonly slotWaiters: Array<{ grant: () => void; cancel: () => void }> = [];
 
 	constructor(
 		private readonly onSettled: (lane: Lane) => void,
@@ -258,6 +258,15 @@ export class LaneRegistry {
 		return lane?.sessionId === sessionId ? lane.idleSince : undefined;
 	}
 
+	/** Atomically reclaim a busy slot before sending a new turn to an idle child. */
+	tryResume(sessionId: string, id: string): boolean {
+		const lane = this.active.get(id)?.lane;
+		if (!lane || lane.sessionId !== sessionId || lane.kind !== "background" || lane.idleSince === undefined) return false;
+		if (this.atCapacity() || this.slotWaiters.length > 0) return false;
+		delete lane.idleSince;
+		return true;
+	}
+
 	/** Cancel a background lane. Foreground lanes are not addressable — only their own tool call may end them. */
 	stop(sessionId: string, id: string): StopOutcome {
 		const entry = this.active.get(id);
@@ -273,6 +282,9 @@ export class LaneRegistry {
 	}
 
 	stopAll(): void {
+		// Cancel queued callers before aborting lanes: settlement must not admit
+		// work from the session being torn down.
+		for (const waiter of this.slotWaiters.splice(0)) waiter.cancel();
 		for (const entry of this.active.values()) entry.controller.abort();
 	}
 
@@ -290,8 +302,8 @@ export class LaneRegistry {
 	 * plus reservations a queued foreground call has been granted but not yet
 	 * launched. An idle lane (`idleSince` set) is parked awaiting a reply on
 	 * the caller's keepalive, not doing work: charging it a slot would let four
-	 * answered lanes block every launch, and a reply re-activating one is
-	 * always allowed even past the cap.
+	 * answered lanes block every launch. A reply must reclaim a slot through
+	 * `tryResume` before it can start a new turn.
 	 */
 	busyCount(): number {
 		let count = this.reservedSlots;
@@ -317,15 +329,21 @@ export class LaneRegistry {
 			return Promise.resolve(true);
 		}
 		return new Promise<boolean>((resolve) => {
-			const waiter = { grant: (): void => {
-				signal?.removeEventListener("abort", onAbort);
-				resolve(true);
-			} };
+			const waiter = {
+				grant: (): void => {
+					signal?.removeEventListener("abort", onAbort);
+					resolve(true);
+				},
+				cancel: (): void => {
+					signal?.removeEventListener("abort", onAbort);
+					resolve(false);
+				},
+			};
 			const onAbort = (): void => {
 				const index = this.slotWaiters.indexOf(waiter);
 				if (index < 0) return;
 				this.slotWaiters.splice(index, 1);
-				resolve(false);
+				waiter.cancel();
 			};
 			signal?.addEventListener("abort", onAbort, { once: true });
 			this.slotWaiters.push(waiter);

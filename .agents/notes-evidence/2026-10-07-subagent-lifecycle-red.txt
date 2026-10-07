@@ -1,0 +1,125 @@
+bun test v1.3.14 (0d9b296a)
+
+plugins\agent-runner\test\rpc-child.test.ts:
+(pass) rpcRunArgs > selects the RPC protocol without a session store [0.07ms]
+78 | 		const handle = await spawnRpcChild(
+79 | 			{ prompt: "Task: hi", cwd: "/tmp", systemPrompt: "Keep the delegated instructions." },
+80 | 			{ spawnFn, invocation: { command: "pi", args: [] }, ...FAST },
+81 | 		);
+82 | 		try {
+83 | 			expect(await readFile(promptPath, "utf8").catch(() => "missing")).toBe("Keep the delegated instructions.");
+                                                                          ^
+error: expect(received).toBe(expected)
+
+Expected: "Keep the delegated instructions."
+Received: "missing"
+
+      at <anonymous> (D:\code\pi-plugins\plugins\agent-runner\test\rpc-child.test.ts:83:70)
+(fail) spawnRpcChild > the RPC system prompt survives startup and is removed after done [39.71ms]
+(pass) spawnRpcChild > a synchronous RPC spawn failure cleans the system prompt [6.54ms]
+(pass) spawnRpcChild > the run's deadline and silence bound keep the event loop alive [22.32ms]
+(pass) spawnRpcChild > writes the initial prompt as a stdin command, not argv [31.00ms]
+(pass) spawnRpcChild > agent_end does not settle the run; end() does, mapping to completed [93.13ms]
+(skip) spawnRpcChild > the evidence log is written private: directory 0o700, file 0o600
+(pass) spawnRpcChild > terminate() resolves done as aborted and kills the child [30.49ms]
+(pass) spawnRpcChild > idle change fires on turn boundaries, and send() follows the protocol shapes [32.85ms]
+(pass) spawnRpcChild > send() refuses after the run is finished [31.14ms]
+(pass) spawnRpcChild > a turn that goes quiet is failed by the stall bound, naming the last event [152.66ms]
+(pass) spawnRpcChild > a parallel sibling finishing does not strip a long call's declared budget [233.65ms]
+(pass) spawnRpcChild > the first bound to fire owns the label, even when the wall clock expires during the grace period [125.91ms]
+(pass) spawnRpcChild > a turn whose tool declared its own timeout is not killed by the silence bound [433.43ms]
+(pass) spawnRpcChild > an idle lane is not stalled: silence between turns is expected [374.76ms]
+(pass) spawnRpcChild > onTurnSettled fires once per agent_settled with that turn's outcome [29.74ms]
+(pass) spawnRpcChild > a turn with an error settles as failed, and a recovered turn clears it [33.79ms]
+(pass) spawnRpcChild > a new turn does not re-report the previous turn's text [30.25ms]
+(pass) spawnRpcChild > the run's final text survives an idle gap between turns [79.09ms]
+(pass) spawnRpcChild > a failed command response reaches onCommandError instead of being dropped [63.84ms]
+(pass) spawnRpcChild > prompt commands carry streamingBehavior followUp so pi queues them mid-turn [29.73ms]
+(pass) spawnRpcChild > the wall clock is per-turn: idle time does not spend it, a long turn does [514.89ms]
+(pass) spawnRpcChild > a dialog request is cancelled instead of pinning the child forever [62.22ms]
+(pass) raw transcript observers run before RPC turn settlement and cannot fail a child [1.99ms]
+
+plugins\subagent\test\lane-reply.test.ts:
+79 | 		try {
+80 | 			await launch(); await launch(); await launch();
+81 | 			child.input.onIdleChange?.(true);
+82 | 			await launch();
+83 | 			const refused = await tasks.execute!("reply-1", { action: "reply", id, prompt: "next" }, undefined, undefined, ctx());
+84 | 			expect(refused.content[0].text).toContain("At most 4 subagents");
+                                        ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "At most 4 subagents"
+Received: "Reply sent to sa-7c388a98-1995-42f5-8a8c-44f412d57b97 as a new turn: next"
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:84:36)
+(fail) subagent_tasks reply > an idle reply cannot exceed the cap and can retry after a slot frees [106.15ms]
+(pass) subagent_tasks reply > an unsuccessful idle reply preserves its idle slot and keepalive [108.47ms]
+(pass) subagent_tasks reply > a mid-turn reply with interrupt sends steer [18.93ms]
+(pass) subagent_tasks reply > a mid-turn reply without interrupt queues a follow_up [18.21ms]
+(pass) subagent_tasks reply > an idle lane takes a prompt and clears its idle mark [17.94ms]
+(pass) subagent_tasks reply > reply requires a prompt, refuses a settled lane, and reports a dead channel [43.67ms]
+(pass) subagent_tasks reply > keepAlive ends an idle lane without a reply [117.01ms]
+(pass) turn-settle delivery > a settled turn delivers its answer immediately and wait/show can see it [47.79ms]
+(pass) turn-settle delivery > keepalive end() after a delivered answer does not deliver twice [138.48ms]
+(pass) turn-settle delivery > a reply after idle then a second turn settle delivers again [48.42ms]
+(pass) turn-settle delivery > a mid-turn failure still delivers on final settle [46.57ms]
+(pass) turn-settle delivery > an idle lane does not hold a capacity slot [17.81ms]
+(pass) turn-settle delivery > a wait on a busy next turn does not return the previous turn's answer [92.15ms]
+(pass) turn-settle delivery > a failed command is reported on the lane, not swallowed [14.54ms]
+319 | 			await new Promise((resolve) => setTimeout(resolve, 0));
+320 | 			expect(calls).toEqual(["Task: a"]);
+321 | 			emit("session_before_switch");
+322 | 			try {
+323 | 				const result = await Promise.race([queued, new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 100))]);
+324 | 				expect(result?.details.nativeStatus).toBe("aborted");
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: "aborted"
+Received: undefined
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:324:42)
+      at async withLimit (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:307:17)
+      at async <anonymous> (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:315:9)
+(fail) foreground concurrency > session teardown cancels queued foreground calls without a host abort signal [156.81ms]
+339 | 			const { call, calls, gates, emit } = fgRig();
+340 | 			const pending = call("old", "a");
+341 | 			emit("session_before_switch");
+342 | 			await new Promise((resolve) => setTimeout(resolve, 0));
+343 | 			try {
+344 | 				expect(calls).toEqual([]);
+                        ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "Task: a",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:344:19)
+      at async withLimit (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:307:17)
+      at async <anonymous> (D:\code\pi-plugins\plugins\subagent\test\lane-reply.test.ts:338:9)
+(fail) foreground concurrency > session teardown rejects an already granted foreground reservation [50.58ms]
+(pass) foreground concurrency > a third foreground call waits for a slot instead of spawning past the cap [85.80ms]
+(pass) foreground concurrency > aborting a queued call returns aborted and spawns nothing [114.84ms]
+(pass) foreground concurrency > a background launch is refused while foreground calls hold the fleet [74.22ms]
+
+1 tests skipped:
+(skip) spawnRpcChild > the evidence log is written private: directory 0o700, file 0o600
+
+
+4 tests failed:
+(fail) spawnRpcChild > the RPC system prompt survives startup and is removed after done [39.71ms]
+(fail) subagent_tasks reply > an idle reply cannot exceed the cap and can retry after a slot frees [106.15ms]
+(fail) foreground concurrency > session teardown cancels queued foreground calls without a host abort signal [156.81ms]
+(fail) foreground concurrency > session teardown rejects an already granted foreground reservation [50.58ms]
+
+ 38 pass
+ 1 skip
+ 4 fail
+ 121 expect() calls
+Ran 43 tests across 2 files. [4.65s]

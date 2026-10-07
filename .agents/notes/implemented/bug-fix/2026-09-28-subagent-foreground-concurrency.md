@@ -1,6 +1,7 @@
 # Agent Note: Foreground subagent calls share the fleet's concurrency cap
 
 Status: implemented
+Partly-superseded-by: 2026-10-07-subagent-reply-admission.md
 
 ## Problem
 
@@ -55,6 +56,13 @@ instant a slot is promised — no double-grant race between `acquireSlot` and
 `launch`. The pre-`acquire` `onUpdate` is advisory: a slot freed between the
 check and the queue may make the message slightly stale, which costs one
 harmless progress line.
+
+## Superseded
+
+The idle-reply exception is replaced by
+`2026-10-07-subagent-reply-admission.md`: an idle reply must reclaim capacity
+before starting a new turn. Foreground FIFO admission, reservations, and the
+shared busy-lane cap still hold.
 
 ## Verification
 

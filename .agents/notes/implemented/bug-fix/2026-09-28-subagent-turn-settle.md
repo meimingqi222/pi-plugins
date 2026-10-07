@@ -1,6 +1,7 @@
 # Agent Note: Deliver a background lane's answer at turn settle, not process exit
 
 Status: implemented
+Partly-superseded-by: 2026-10-07-subagent-reply-admission.md
 Partly-superseded-by: 2026-09-30-subagent-result-consumption-and-turn-delivery.md
 
 ## Problem
@@ -108,6 +109,12 @@ hold. The parent delivery mechanism is replaced by the successor note:
 uses its `agent_settled` only as a late fallback. Queries returning an answer
 consume its pending notification. The old `deliveredTurns` field recorded
 scheduling, not confirmed submission or proactive consumption.
+
+## Superseded
+
+Only the always-allowed idle-reply exception is replaced by
+`2026-10-07-subagent-reply-admission.md`. Turn settlement, answer revisions,
+idle observability, and freeing idle slots still hold.
 
 ## Verification
 

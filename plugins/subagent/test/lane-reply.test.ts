@@ -18,7 +18,7 @@ function fakePi() {
 		events: { on(name: string, handler: (v: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); }, emit: () => {} },
 		sendMessage(message: any, options: any) { if (message.customType !== "subagent-update") messages.push({ message, options }); },
 	} as unknown as ExtensionAPI;
-	return { pi, tools, messages };
+	return { pi, tools, messages, emit: (name: string) => { for (const handler of listeners.get(name) ?? []) handler({}); } };
 }
 
 class FakeRpcChild implements RpcChild {
@@ -74,6 +74,45 @@ async function launchRpcLane() {
 }
 
 describe("subagent_tasks reply", () => {
+	test("an idle reply cannot exceed the cap and can retry after a slot frees", async () => {
+		const { tasks, launch, children, child, id } = await launchRpcLane();
+		try {
+			await launch(); await launch(); await launch();
+			child.input.onIdleChange?.(true);
+			await launch();
+			const refused = await tasks.execute!("reply-1", { action: "reply", id, prompt: "next" }, undefined, undefined, ctx());
+			expect(refused.content[0].text).toContain("At most 4 subagents");
+			expect(child.sent).toEqual([]);
+			expect((await tasks.execute!("show", { action: "show", id }, undefined, undefined, ctx())).details.idleSince).toBeDefined();
+			children[4]!.end();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await tasks.execute!("reply-2", { action: "reply", id, prompt: "next" }, undefined, undefined, ctx());
+			expect(child.sent).toEqual([{ type: "prompt", message: "next" }]);
+			const extra = await launch();
+			expect(extra.content[0].text).toContain("At most 4 subagents");
+		} finally {
+			for (const item of children) item.end();
+			await Promise.all(children.map((item) => item.done));
+		}
+	});
+
+	test("an unsuccessful idle reply preserves its idle slot and keepalive", async () => {
+		const { tasks, launch, children, child, id } = await launchRpcLane();
+		try {
+			await launch(); await launch(); await launch();
+			child.input.onIdleChange?.(true);
+			const idleSince = (await tasks.execute!("before", { action: "show", id }, undefined, undefined, ctx())).details.idleSince;
+			child.sendsSucceed = false;
+			const refused = await tasks.execute!("reply", { action: "reply", id, prompt: "next" }, undefined, undefined, ctx());
+			expect(refused.content[0].text).toContain("control channel is already closed");
+			expect((await tasks.execute!("after", { action: "show", id }, undefined, undefined, ctx())).details.idleSince).toBe(idleSince);
+			expect((await launch()).details.nativeStatus).toBe("running");
+		} finally {
+			for (const item of children) item.end();
+			await Promise.all(children.map((item) => item.done));
+		}
+	});
+
 	test("a mid-turn reply with interrupt sends steer", async () => {
 		const { tasks, child, id } = await launchRpcLane();
 		const res = await tasks.execute!("t-2", { action: "reply", id, prompt: "also check the retry path", interrupt: true }, undefined, undefined, ctx());
@@ -231,7 +270,7 @@ describe("turn-settle delivery", () => {
 describe("foreground concurrency", () => {
 	/** A rig whose executor blocks each call until released, so overlap is observable. */
 	function fgRig() {
-		const { pi, tools } = fakePi();
+		const { pi, tools, emit } = fakePi();
 		const calls: string[] = [];
 		const gates = new Map<string, () => void>();
 		const updates = new Map<string, string[]>();
@@ -239,11 +278,15 @@ describe("foreground concurrency", () => {
 			discover: () => [{ name: "explore", description: "read", systemPrompt: "E", filePath: "e.md" }],
 			executor: async (input) => {
 				calls.push(input.prompt);
-				await new Promise<void>((resolve) => gates.set(input.prompt, resolve));
-				return { status: "completed", text: `done ${input.prompt}`, usage: doneUsage };
+				await new Promise<void>((resolve) => {
+					gates.set(input.prompt, resolve);
+					if (input.signal?.aborted) resolve();
+					else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return { status: input.signal?.aborted ? "aborted" : "completed", text: `done ${input.prompt}`, usage: doneUsage };
 			},
 		})(pi);
-		const call = (id: string, task: string, signal?: AbortSignal) =>
+		const call = (id: string, task: string, signal?: AbortSignal, sessionId = "session-a") =>
 			tools[0]!.execute!(
 				id,
 				{ agent: "explore", task },
@@ -252,9 +295,9 @@ describe("foreground concurrency", () => {
 					const text = update?.content?.[0]?.text;
 					if (typeof text === "string") updates.set(task, [...(updates.get(task) ?? []), text]);
 				},
-				ctx(),
+				ctx(sessionId),
 			);
-		return { tools, call, calls, gates, updates };
+		return { tools, call, calls, gates, updates, emit };
 	}
 
 	async function withLimit<T>(limit: string, run: () => Promise<T>): Promise<T> {
@@ -267,6 +310,44 @@ describe("foreground concurrency", () => {
 			else process.env.PI_SUBAGENT_MAX_CONCURRENCY = previous;
 		}
 	}
+
+	test("session teardown cancels queued foreground calls without a host abort signal", async () => {
+		await withLimit("1", async () => {
+			const { call, calls, gates, emit } = fgRig();
+			const first = call("first", "a");
+			const queued = call("queued", "b");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(calls).toEqual(["Task: a"]);
+			emit("session_before_switch");
+			try {
+				const result = await Promise.race([queued, new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 100))]);
+				expect(result?.details.nativeStatus).toBe("aborted");
+				expect(calls).toEqual(["Task: a"]);
+			} finally {
+				for (const finish of gates.values()) finish();
+				await Promise.all([first, queued]);
+			}
+			const next = call("new-session", "c", undefined, "session-b");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gates.get("Task: c")!();
+			expect((await next).details.nativeStatus).toBe("completed");
+		});
+	});
+
+	test("session teardown rejects an already granted foreground reservation", async () => {
+		await withLimit("1", async () => {
+			const { call, calls, gates, emit } = fgRig();
+			const pending = call("old", "a");
+			emit("session_before_switch");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			try {
+				expect(calls).toEqual([]);
+			} finally {
+				for (const finish of gates.values()) finish();
+			}
+			expect((await pending).details.nativeStatus).toBe("aborted");
+		});
+	});
 
 	test("a third foreground call waits for a slot instead of spawning past the cap", async () => {
 		await withLimit("2", async () => {

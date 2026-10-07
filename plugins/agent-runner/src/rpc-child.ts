@@ -162,6 +162,9 @@ export interface SpawnRpcChildOptions {
 export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChildOptions = {}): Promise<RpcChild> {
 	const invocation = options.invocation ?? resolvePiInvocation();
 	const systemPrompt = await writeSystemPromptFile(input.systemPrompt, options.systemPromptRoot, "pi-rpc-agent-");
+	async function cleanupSystemPrompt(): Promise<void> {
+		if (systemPrompt) await rm(systemPrompt.dir, { recursive: true, force: true }).catch(() => undefined);
+	}
 	const spawnFn = options.spawnFn ?? spawn;
 	try {
 		const args = [
@@ -321,7 +324,10 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				...(evidencePath ? { evidencePath } : {}),
 			});
 
-			void evidence.flush().then(() => resolveDone(outcome), () => resolveDone(outcome));
+			// The child reads this file during startup, after spawn returned. Keep
+			// it until the run ends, and finish cleanup before exposing done.
+			void Promise.all([evidence.flush(), cleanupSystemPrompt()])
+				.then(() => resolveDone(outcome), () => resolveDone(outcome));
 		}
 
 		/**
@@ -480,7 +486,8 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		send({ type: "prompt", message: input.prompt });
 		armTurnTimer();
 		return handle;
-	} finally {
-		if (systemPrompt) await rm(systemPrompt.dir, { recursive: true, force: true }).catch(() => undefined);
+	} catch (error) {
+		await cleanupSystemPrompt();
+		throw error;
 	}
 }

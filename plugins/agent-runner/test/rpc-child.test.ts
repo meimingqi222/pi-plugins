@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rpcRunArgs, spawnRpcChild } from "../src/rpc-child.ts";
@@ -68,6 +68,39 @@ describe("rpcRunArgs", () => {
 });
 
 describe("spawnRpcChild", () => {
+	test("the RPC system prompt survives startup and is removed after done", async () => {
+		const child = new FakeChild();
+		let promptPath = "";
+		const spawnFn = ((_command: string, args: readonly string[]) => {
+			promptPath = args[args.indexOf("--append-system-prompt") + 1]!;
+			return child;
+		}) as unknown as SpawnFn;
+		const handle = await spawnRpcChild(
+			{ prompt: "Task: hi", cwd: "/tmp", systemPrompt: "Keep the delegated instructions." },
+			{ spawnFn, invocation: { command: "pi", args: [] }, ...FAST },
+		);
+		try {
+			expect(await readFile(promptPath, "utf8").catch(() => "missing")).toBe("Keep the delegated instructions.");
+		} finally {
+			handle.terminate();
+			await handle.done;
+		}
+		expect(await stat(promptPath).then(() => true, () => false)).toBe(false);
+	});
+
+	test("a synchronous RPC spawn failure cleans the system prompt", async () => {
+		const root = await mkdtemp(join(tmpdir(), "rpc-prompt-failure-"));
+		try {
+			await expect(spawnRpcChild(
+				{ prompt: "Task: hi", cwd: "/tmp", systemPrompt: "Delegated instructions" },
+				{ systemPromptRoot: root, invocation: { command: "pi", args: [] }, spawnFn: (() => { throw new Error("spawn failed"); }) as unknown as SpawnFn },
+			)).rejects.toThrow("spawn failed");
+			expect(await readdir(root)).toEqual([]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test("the run's deadline and silence bound keep the event loop alive", async () => {
 		// Both bounds are the only thing that can end a run the caller awaits, so
 		// neither may be unref'd: Bun treats a loop whose only pending handle is an

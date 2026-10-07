@@ -118,8 +118,11 @@ boundaries described above. An idle lane settles on its own after a
 keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`) — the window only
 keeps the process warm for replies; ending it does not re-deliver an answer
 already sent, and a failure mid-turn still reports. Idle lanes hold no
-capacity slot, so a parked lane never blocks a launch and a reply that wakes
-one is always allowed.
+capacity slot, so a parked lane never blocks a launch. A reply that starts
+a new turn must reclaim a slot first; at the concurrency cap it is refused
+without sending the prompt or changing the idle lane. Retry once a busy lane
+settles or goes idle. Mid-turn steer and follow-up commands use the lane's
+existing slot.
 
 Extension dialogs inside an RPC child are answered rather than left hanging. An
 RPC child is handed a real UI context, so `select`/`confirm`/`input`/`editor`/
