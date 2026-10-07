@@ -93,6 +93,8 @@ export interface RpcChildInput {
 	evidencePath?: string;
 	evidenceMaxBytes?: number;
 	onActivity?: (activity: AgentActivity) => void;
+	/** Raw parsed events for opt-in transcript observers; may contain tool data. */
+	onEvent?: (event: unknown) => void;
 	onProgress?: (event: AgentProgress) => void;
 	/**
 	 * Fires with `true` when a turn is fully settled (lane is idle, awaiting a
@@ -375,6 +377,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			// needs the event shapes it knows.
 			try {
 				const event = parsed as Record<string, unknown>;
+				try { input.onEvent?.(event); } catch { /* Observers cannot fail the run. */ }
 				lastEventAt = Date.now();
 				lastEventLabel = describeAgentEvent(event);
 				trackDeclaredTimeouts(declaredBudgets, event);

@@ -5,14 +5,14 @@ Status: implemented
 ## Problem
 
 Two `pi-permissions` extension-wiring tests failed on Windows, on any machine
-whose `%TEMP%` contains an 8.3 short-name component (`…/MEIMIN~1/…`):
+whose `%TEMP%` contains an 8.3 short-name component (`…/SAMPLE~1/…`):
 
 - `an always-allow rule persists under the realpath'd cwd and is read back`
 - `dangerous rm outside scratch: granting the directory persists it and silences
   the next call`
 
 The diff was exactly one path component: the plugin persisted
-`…/meimingqi222/…` while the test expected `…/MEIMIN~1/…`.
+`…/sampleuser/…` while the test expected `…/SAMPLE~1/…`.
 
 `pi-permissions` keys `projects[<cwd>]` through `createPolicyEnv().cwd`, which
 realpaths with `fs.realpathSync.native()` — on Windows that goes through
@@ -54,6 +54,6 @@ separators.
 - `plugins/permissions/test/plugin.test.ts::dangerous rm outside scratch: granting the directory persists it and silences the next call`
 
 Proved: before the helper change, the first test failed with
-`expected "…/MEIMIN~1/…", received "…/meimingqi222/…"` and the second with
+`expected "…/SAMPLE~1/…", received "…/sampleuser/…"` and the second with
 `saved.projects[projectKey(dir)]` undefined; after switching the helper to
 `realpathSync.native`, both pass — 127 pass, 0 fail for the plugin.

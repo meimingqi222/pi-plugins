@@ -33,17 +33,25 @@ neither a subagent nor a workflow is worth its cost for those.
 
 ## The tool
 
+The public arguments use `subagent_type` and `prompt`; old `agent`/`task` calls
+are normalized before validation. Host results include `agentId`, `status`
+(`error` for failure), and `nativeStatus`. Independent hidden `subagent-update`
+messages keep Paseo cards synchronized on completion, failure, cancellation
+and replies, even when the parent already read the answer. Raw RPC logs remain
+available through `subagent_tasks`; they are not advertised as pi session files.
+Reload pi to load the updated schema. Old recorded launches are not rewritten.
+
 ```jsonc
 {
-  "agent": "explore",        // built in; no agent file needed
-  "task": "Find every place the session store is read, and summarise the callers.",
+  "subagent_type": "explore",        // built in; no agent file needed
+  "prompt": "Find every place the session store is read, and summarise the callers.",
   "model": "provider/model", // optional; overrides this call's agent definition
   "background": true         // optional; return a task ID immediately
 }
 ```
 
 The subagent starts with a **fresh context**: it cannot see this conversation, so
-the `task` must state the goal, the relevant paths, and what a good answer looks
+the `prompt` must state the goal, the relevant paths, and what a good answer looks
 like. Its final text comes back in the tool result (capped at 50 KB to the model;
 the full text stays in the tool details). The child's token usage is returned on
 the tool result as well in foreground mode. In background mode, the tool returns
@@ -361,3 +369,21 @@ The child process is run by the workspace library [`pi-agent-runner`](../agent-r
 (spawn rules, JSON event folding, timeout/abort kill, child environment), shared
 with `pi-workflow`. See [ATTRIBUTION.md](ATTRIBUTION.md). A fix to the spawn path
 belongs there, and both consumers get it.
+
+
+## Paseo child pages
+
+Paseo receives `outputFile` on a terminal `subagent-update`. The file is a
+bounded pi-message JSONL snapshot containing the task, completed assistant
+messages (including thinking and tool calls), tool results, and the final
+answer or failure/cancellation reason. Both foreground and background calls
+publish a transcript. This uses the existing Paseo adapter without modifying
+Paseo or adding configuration.
+
+Paseo 0.10.3 hydrates child sessions only when a turn settles, not while that
+turn is streaming. Replies expose a new immutable file containing only the
+new messages, so earlier answers remain visible without repeating history.
+Each snapshot stays below Paseo's 2 MiB/200-item read limits; long content is
+truncated and older entries may be omitted. Snapshot files share the raw log
+folder's seven-day/200-file cleanup policy. Reload pi before launching new
+children; existing historical blank pages do not gain transcripts retroactively.

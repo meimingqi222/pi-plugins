@@ -12,6 +12,7 @@
  */
 
 import { Type } from "typebox";
+import { HostSubagentState, registerHostSubagent } from "./host-protocol.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { childModelSpec, connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
@@ -84,6 +85,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
     const delivery = new SubagentResultDelivery(pi);
+    const hostState = new HostSubagentState(pi, (lane) => registry.getLogPath(lane.sessionId, lane.id));
     const pending = new Map<string, ResultOrigin & {
       lease?: GoalSpendLease;
     }>();
@@ -200,12 +202,14 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
       }
       if (!launch?.isCurrent()) return;
+      hostState.publish(record);
       delivery.offer(record, launch);
     }, resolveLaneLimit());
 
     const endSession = () => {
       generation += 1;
       delivery.clear();
+      hostState.clear();
       registry.stopAll();
       uiCtx = undefined;
       downUnsubscribe?.();
@@ -352,7 +356,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       });
     }
 
-    pi.registerTool({
+    registerHostSubagent(pi, {
       name: "subagent",
       label: "Subagent",
       description: SUBAGENT_DESCRIPTION,
@@ -397,6 +401,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 signal: runSignal,
                 evidencePath: logPath,
                 evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
+                onEvent: (event) => {
+                  if (generation === launchedIn) hostState.observe(id, event);
+                },
                 onProgress: (progress) => registry.setProgress(id, progress),
                 // Background lanes ride the live-RPC transport: the child
                 // survives its turn so `reply` can queue or interrupt.
@@ -404,6 +411,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                   onChild: (child) => { liveChildren.set(id, child); },
                   onIdleChange: (idle) => {
                     registry.setIdle(id, idle);
+                    if (!idle) {
+                      const lane = registry.get(sessionId, id);
+                      if (lane && generation === launchedIn) hostState.publish(lane);
+                    }
                     clearIdleTimer(id);
                     if (idle) {
                       const timer = setTimeout(() => {
@@ -423,6 +434,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                     const record = registry.get(sessionId, id);
                     const launch = pending.get(id);
                     if (!record || !launch?.isCurrent()) return;
+                    hostState.publish(record);
                     delivery.offer(record, launch);
                   },
                   onCommandError: (info) => {
@@ -493,6 +505,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           lease?.finish(0);
           return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
         }
+        const fgGeneration = generation;
         const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
         const fgResolved = resolveAgent(fgAgents, params.agent);
         const fgModel = childModelFor(ctx);
@@ -509,6 +522,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             signal: runSignal,
             evidencePath: logPath,
             evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
+            onEvent: (event) => {
+              if (generation === fgGeneration) hostState.observe(id, event);
+            },
             ...(onUpdate ? { onUpdate } : {}),
             onProgress: (progress) => registry.setProgress(id, progress),
           }, options);
@@ -520,9 +536,16 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         try {
           await launched.done;
           const settled = registry.get(sessionId, launched.record.id);
-          if (!settled?.result) throw new Error(settled?.errorMessage ?? "Subagent call failed.");
-          lease?.finish(readTokenUsage(settled.result));
-          return settled.result;
+          if (settled && generation === fgGeneration && ctx.sessionManager.getSessionId() === sessionId) {
+            hostState.publish(settled, toolCallId);
+          }
+          const result = settled?.result ?? toSubagentToolResult({
+            status: "failed",
+            errorMessage: settled?.errorMessage ?? "Subagent call failed.",
+            usage: emptySubagentUsage(),
+          }, fgResolved?.name ?? params.agent);
+          lease?.finish(readTokenUsage(result));
+          return result;
         } catch (error) {
           lease?.finish(0);
           throw error;
@@ -629,6 +652,8 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             registry.setIdle(params.id, false);
             clearIdleTimer(params.id);
           }
+          const updatedLane = registry.get(sessionId, params.id);
+          if (updatedLane) hostState.publish(updatedLane);
           const how = idle ? "a new turn" : params.interrupt ? "steer (after current tool calls)" : "follow-up (after this turn)";
           return { content: [{ type: "text", text: `Reply sent to ${params.id} as ${how}: ${prompt.slice(0, 120)}${prompt.length > 120 ? "…" : ""}` }], details: record };
         }

@@ -85,6 +85,8 @@ export interface AgentRunInput {
    * text is still returned. Unset means the caller wants only text.
    */
   parse?: (text: string) => unknown;
+  /** Raw parsed events for opt-in transcript observers; may contain tool data. */
+  onEvent?: (event: unknown) => void;
   /** Optional, bounded UI progress. Only a file path may accompany a tool name. */
   onProgress?: (event: AgentProgress) => void;
   /** Allowlisted child lifecycle events for status displays; never includes content or tool arguments. */
@@ -757,6 +759,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           lastEventAt = Date.now();
           lastEventLabel = describeAgentEvent(event);
           trackDeclaredTimeouts(declaredBudgets, event);
+          try { input.onEvent?.(event); } catch { /* Observers cannot fail the run. */ }
           applyEvent(state, event);
           const activity = readAgentActivity(event);
           if (activity) {

@@ -148,6 +148,7 @@ export interface SubagentCallContext {
   /** The tool call's abort signal, when the harness provides one. */
   signal?: AbortSignal;
   onUpdate?: (update: AgentToolResult<SubagentDetails>) => void;
+  onEvent?: (event: unknown) => void;
   onProgress?: (progress: SubagentProgress) => void;
   /**
    * Run the child on the live-RPC transport instead of the one-shot JSON pipe.
@@ -228,6 +229,7 @@ export async function executeSubagent(
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
           ...(input.evidencePath ? { evidencePath: input.evidencePath } : {}),
           ...(input.evidenceMaxBytes !== undefined ? { evidenceMaxBytes: input.evidenceMaxBytes } : {}),
+          ...(input.onEvent ? { onEvent: input.onEvent } : {}),
           ...(input.onActivity ? { onActivity: input.onActivity } : {}),
           ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           ...(ctx.rpc?.onIdleChange ? { onIdleChange: ctx.rpc.onIdleChange } : {}),
@@ -311,6 +313,7 @@ export async function executeSubagent(
     ...(ctx.signal ? { signal: ctx.signal } : {}),
     ...(ctx.evidencePath ? { evidencePath: ctx.evidencePath } : {}),
     ...(ctx.evidenceMaxBytes ? { evidenceMaxBytes: ctx.evidenceMaxBytes } : {}),
+    ...(ctx.onEvent ? { onEvent: ctx.onEvent } : {}),
     onActivity: recordActivity,
     ...(ctx.onUpdate || ctx.onProgress ? { onProgress: (event) => {
       progress.phase = event.type === "tool_start" ? "tool" : "model";

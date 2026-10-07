@@ -54,7 +54,7 @@ function fakePi(): {
       shortcuts.push({ key: shortcut, ...options });
     },
     on(name: string, handler: (value: any, ctx?: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
-    sendMessage(message: any, options: any) { messages.push({ message, options }); },
+    sendMessage(message: any, options: any) { if (message.customType !== "subagent-update") messages.push({ message, options }); },
     events: {
       on(name: string, handler: (value: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
       emit,

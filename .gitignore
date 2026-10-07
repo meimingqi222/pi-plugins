@@ -29,8 +29,12 @@ Thumbs.db
 !.env.example
 
 # Local scratch
+/temp/
 .tmp/
 *.local
+
+# Subagent evidence and host transcripts
+subagent-logs/
 
 # Project-local plugin install created by `pi install -l`
 .pi/

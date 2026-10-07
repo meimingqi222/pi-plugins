@@ -404,3 +404,12 @@ describe("agent executor diagnostics", () => {
     expect((await execution!).status).toBe("completed");
   }, 15_000);
 });
+
+
+test("JSON executor forwards raw transcript events without letting observers fail the run", async () => {
+  const events: unknown[] = [];
+  const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });
+  const result = await executor(input("TOOLS", { onEvent: event => { events.push(event); throw new Error("observer failed"); } }));
+  expect(result.status).toBe("completed");
+  expect(events.some(event => (event as { type?: string }).type === "message_end")).toBe(true);
+});

@@ -90,7 +90,7 @@ const ENV_KEYS = ["PI_AGENT_CHILD", "PI_PERMISSIONS_MODE", "PI_PERMISSIONS_INHER
  * writes. And the plugin realpaths with `realpathSync.native`, which on Windows
  * goes through `GetFinalPathNameByHandle` and expands an 8.3 short component to
  * its long form; the non-native call resolves junctions but leaves a short
- * component alone. On a machine whose `%TEMP%` is `…/MEIMIN~1/…` the two disagree
+ * component alone. On a machine whose `%TEMP%` is `…/SAMPLE~1/…` the two disagree
  * by exactly that component, so a grant is written under one key and asserted
  * under another.
  */

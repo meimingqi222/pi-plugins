@@ -16,7 +16,7 @@ function fakePi() {
 		registerTool(tool: CapturedTool) { tools.push(tool); },
 		on(name: string, handler: (v: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
 		events: { on(name: string, handler: (v: any) => void) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); }, emit: () => {} },
-		sendMessage(message: any, options: any) { messages.push({ message, options }); },
+		sendMessage(message: any, options: any) { if (message.customType !== "subagent-update") messages.push({ message, options }); },
 	} as unknown as ExtensionAPI;
 	return { pi, tools, messages };
 }
@@ -324,7 +324,7 @@ describe("foreground concurrency", () => {
 			const p2 = call("c2", "b");
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			const refused = await tools[0]!.execute!("c4", { agent: "explore", task: "bg", background: true }, undefined, undefined, ctx());
-			expect(refused.details.status).toBe("failed");
+			expect(refused.details.nativeStatus).toBe("failed");
 			expect(refused.content[0].text).toContain("At most 2 subagents may run at once");
 			gates.get("Task: a")!();
 			gates.get("Task: b")!();

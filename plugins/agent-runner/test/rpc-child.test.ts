@@ -474,3 +474,20 @@ describe("spawnRpcChild", () => {
 		await handle.done;
 	});
 });
+
+
+test("raw transcript observers run before RPC turn settlement and cannot fail a child", async () => {
+  const child = new FakeChild();
+  const events: unknown[] = [];
+  let settledCount = -1;
+  const handle = await spawnRpcChild({ prompt: "inspect", cwd: process.cwd(),
+    onEvent: (event) => { events.push(event); throw new Error("observer failed"); },
+    onTurnSettled: () => { settledCount = events.length; },
+  }, { spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST });
+  child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+  child.writeLine({ type: "agent_settled" });
+  child.emit("close", 0);
+  expect((await handle.done).status).toBe("completed");
+  expect(settledCount).toBe(2);
+  expect(events).toHaveLength(2);
+});

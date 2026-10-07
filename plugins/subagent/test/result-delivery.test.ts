@@ -35,7 +35,7 @@ async function harness() {
         refuseNextSend = false;
         throw new Error("delivery refused");
       }
-      messages.push({ message, options });
+      if (message.customType !== "subagent-update") messages.push({ message, options });
     },
   } as unknown as ExtensionAPI;
   const dir = await mkdtemp(join(tmpdir(), "pi-subagent-result-"));
