@@ -14,6 +14,8 @@ import { rewriteReferences, scanImageReferences, type ImageReference } from "./r
 
 /** Refuse to inline a source file larger than this; leave its path as text. */
 export const DEFAULT_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+export const DEFAULT_MAX_IMAGES = 20;
+export const DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 
 /**
  * Structurally pi's `ImageContent`, which lives in `@earendil-works/pi-ai` and is
@@ -75,7 +77,7 @@ export function candidatePaths(
 		candidates.push(path.join(env.home, expression.slice(2)));
 	} else {
 		candidates.push(path.resolve(env.cwd, expression));
-		if (!expression.includes("/") && !expression.includes("\\")) {
+		if (/^pi-clipboard-[a-zA-Z0-9-]+\.(?:png|jpe?g|webp|gif|bmp)$/i.test(expression)) {
 			candidates.push(path.join(env.tmpdir, expression));
 		}
 	}
@@ -95,21 +97,26 @@ async function loadSafely(env: AttachEnv, filePath: string): Promise<LoadedImage
  * return the matching image content. Text with no resolvable reference comes
  * back byte-identical, so a prompt that merely mentions `.png` is untouched.
  */
-export async function attachImageReferences(text: string, env: AttachEnv): Promise<AttachResult> {
+export async function attachImageReferences(text: string, env: AttachEnv, existingImageCount = 0): Promise<AttachResult> {
 	const references = scanImageReferences(text);
 	if (references.length === 0) return { text, images: [], attached: 0 };
 
 	const numbers = new Map<string, number>();
 	const images: InlineImage[] = [];
 	const replacements: Array<{ reference: ImageReference; placeholder: string }> = [];
+	let totalBytes = 0;
 
 	for (const reference of references) {
+		if (existingImageCount + images.length >= DEFAULT_MAX_IMAGES) break;
 		for (const candidate of candidatePaths(reference.expression, env)) {
 			const loaded = await loadSafely(env, candidate);
 			if (loaded === undefined) continue;
 			let index = numbers.get(candidate);
 			if (index === undefined) {
-				index = numbers.size + 1;
+				const bytes = Math.floor(loaded.base64.length * 3 / 4) - (loaded.base64.endsWith("==") ? 2 : loaded.base64.endsWith("=") ? 1 : 0);
+				if (totalBytes + bytes > DEFAULT_MAX_TOTAL_BYTES) break;
+				totalBytes += bytes;
+				index = existingImageCount + numbers.size + 1;
 				numbers.set(candidate, index);
 				images.push({ type: "image", data: loaded.base64, mimeType: loaded.mimeType });
 			}

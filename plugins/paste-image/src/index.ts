@@ -74,7 +74,7 @@ export async function transformInput(
 	env: AttachEnv = createAttachEnv(ctx.cwd),
 ): Promise<InputEventResult> {
 	if (!modelAcceptsImages(ctx.model)) return { action: "continue" };
-	const attached = await attachImageReferences(text, env);
+	const attached = await attachImageReferences(text, env, images?.length ?? 0);
 	if (attached.attached === 0) return { action: "continue" };
 	return { action: "transform", text: attached.text, images: [...(images ?? []), ...attached.images] };
 }

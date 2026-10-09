@@ -1,6 +1,7 @@
 # Agent Note: A pasted image becomes image content, not a path
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-paste-image-attachment-bounds.md
 
 ## Problem
 
@@ -61,6 +62,10 @@ attachments before the prompt leaves pi:
 - Nothing is attached speculatively: text with no resolvable reference comes
   back byte-identical, and the handler returns `action: "continue"` if anything
   throws.
+
+Mixed attachment numbering starts after the existing image count. The placeholder
+for each newly loaded file names its position in the final images array, and a
+repeated path still reuses that number.
 
 ## Alternatives considered
 
@@ -137,3 +142,13 @@ stays text and nothing is attached — and ran `bun test`: `3 tests failed`,
 `"continue"` where it expected `"transform"`, alongside "images a caller already
 attached are preserved" and "wires the input hook and transforms through it".
 Restoring the branch returned `29 pass`, and `tsc --noEmit` is clean.
+
+
+Additional proof: `plugins/paste-image/test/plugin.test.ts::mixed attachments number new files after existing images and reuse repeated paths`
+failed before the offset fix with placeholders 1, 2, 1 instead of 2, 3, 2.
+It passes after passing the existing image count into attachment planning;
+existing no-image-input tests still verify numbering starts at 1.
+
+## Superseded
+
+Reference parsing, attachment numbering and missing-file behavior remain. Ordinary basenames no longer search the temp directory; aggregate attachment caps now apply.

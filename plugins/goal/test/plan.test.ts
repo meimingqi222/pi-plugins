@@ -143,4 +143,20 @@ describe("planner payload", () => {
     expect(parsed.criteria).toEqual(["padded"]);
     expect(parsed.checklist[0]!.label).toBe("step");
   });
+
+  test("accepts a fenced planner reply", () => {
+    // A fenced reply used to lose the plan silently, leaving a goal with no
+    // criteria at all. The fence is stripped by the shared reply parser.
+    const parsed = parsePlannerPlan(
+      '```json\n' + JSON.stringify({ criteria: ["one"], checklist: ["step"] }) + '\n```',
+    );
+    expect(parsed.criteria).toEqual(["one"]);
+    expect(parsed.checklist.map((item) => item.label)).toEqual(["step"]);
+  });
+
+  test("still rejects a reply that is not a plan object", () => {
+    for (const raw of ['```json\n[]\n```', '```json\n"text"\n```', '```json\n{"criteria":[]}\n```']) {
+      expect(() => parsePlannerPlan(raw)).toThrow();
+    }
+  });
 });

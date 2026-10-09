@@ -56,6 +56,7 @@ type Handler = (event: any, ctx: any) => Promise<unknown> | unknown;
 /** Distinguishes the planner side call from the verifier side call. */
 const PLANNER_MARK = "You turn one user objective";
 const plannerReply = (criteria = ["the objective is met"], steps = ["do the work", "test the work"]) => ({
+	usage: { totalTokens: 0 },
 	stopReason: "stop",
 	content: [{ type: "text", text: JSON.stringify({ criteria, checklist: steps }) }],
 });
@@ -322,7 +323,7 @@ describe("goal safety boundaries", () => {
   })(env.pi);
   await run(env.commands.get("goal"), "task", env.ctx);
   await env.emit("agent_start");
-  const result = await env.tools.get("subagent").execute("real-child", { agent: "scout", task: "inspect" }, undefined, undefined, env.ctx);
+  const result = await env.tools.get("subagent").execute("real-child", { agent: "scout", task: "inspect", background: false }, undefined, undefined, env.ctx);
   expect(result.content[0].text).toBe("done");
   expect((await state(env)).used).toBe(9);
  });
@@ -350,7 +351,7 @@ describe("goal safety boundaries", () => {
   await run(env.commands.get("goal"), "task", env.ctx);
   await env.emit("agent_start");
   env.ctx.isIdle = () => false;
-  await env.tools.get("subagent").execute("late-child", { agent: "explore", task: "inspect", background: true }, undefined, undefined, env.ctx);
+  await env.tools.get("subagent").execute("late-child", { agent: "explore", task: "inspect" }, undefined, undefined, env.ctx);
   await update(env.tools.get("update_goal"), "candidate_complete", "done", env.ctx);
   await env.emit("agent_end", { messages: [verdict()] });
   let wakeups = 0;
@@ -445,6 +446,14 @@ describe("goal safety boundaries", () => {
  test("strict verdict requires evidence and actionable failure", () => {
   expect(() => parseVerdict('{"passed":true,"reason":"done"}')).toThrow();
   expect(() => parseVerdict('{"passed":false,"reason":"no","evidence":"missing"}')).toThrow();
+ });
+ test("a fenced verdict parses instead of failing the goal", () => {
+  // Models habitually wrap a JSON reply in a ```json fence. A fence is a
+  // formatting habit, not a different answer, so it must not pause the goal
+  // and burn a verification round.
+  const verdict = parseVerdict('```json\n{"passed":true,"reason":"tests pass","evidence":"bun test"}\n```');
+  expect(verdict.passed).toBe(true);
+  expect(verdict.evidence).toBe("bun test");
  });
  test("objective flags reject invalid budgets", () => {
   for (const input of ["task --tokens 0", "task --tokens NaN", "task --tokens=3", "task --tokens -1"]) {
@@ -1714,3 +1723,21 @@ describe("goal robustness", () => {
     expect(env.notices.join("\n")).toContain("Could not persist the goal snapshot");
   });
 });
+
+ test("a bounded goal stops on unknown usage but accepts measured zero", async () => {
+  for (const usage of [undefined, { totalTokens: 0 }]) {
+    const env = setup([], undefined, async () => ({ ...plannerReply(), usage: { totalTokens: 0 } }));
+    await run(env.commands.get("goal"), "task --tokens 100", env.ctx);
+    await env.emit("agent_start");
+    await env.emit("message_end", { message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "work" }], ...(usage ? { usage } : {}) } });
+    expect((await state(env)).status).toBe(usage ? "active" : "budget_limited");
+    if (!usage) expect((await state(env)).reason).toContain("usage is unavailable");
+  }
+ });
+ test("unknown delegated usage stops a bounded goal", async () => {
+  const env = setup([], undefined, async () => ({ ...plannerReply(), usage: { totalTokens: 0 } }));
+  await run(env.commands.get("goal"), "task --tokens 100", env.ctx);
+  await env.emit("agent_start");
+  goalSpend(env).begin(env.ctx, "unknown-child")!.finish(null);
+  expect((await state(env)).status).toBe("budget_limited");
+ });

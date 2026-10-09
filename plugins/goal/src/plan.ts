@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveHelperModel, withDeadline } from "pi-run-core";
+import { resolveHelperModel, stripJsonFence, withDeadline } from "pi-run-core";
 import type { RedactService } from "./redact.ts";
 
 /**
@@ -221,7 +221,9 @@ function stringList(value: unknown, max: number, cap: number, field: string): st
 
 /** Strict by construction: a malformed plan is a planner failure, not a bad file. */
 export function parsePlannerPlan(raw: string): GoalPlan {
-  const parsed: unknown = JSON.parse(raw);
+  // The fence is stripped first: a planner that wraps its reply used to lose the
+  // plan silently, which left the goal with no acceptance criteria at all.
+  const parsed: unknown = JSON.parse(stripJsonFence(raw));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Invalid plan object");
   }

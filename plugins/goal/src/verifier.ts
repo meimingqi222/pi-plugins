@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { withDeadline } from "pi-run-core";
+import { withDeadline, stripJsonFence } from "pi-run-core";
 import type { CriteriaChanges } from "./plan.ts";
 import type { Goal } from "./state.ts";
 import type { RedactService } from "./redact.ts";
@@ -77,7 +77,9 @@ export interface Verdict {
   nextAction?: string;
 }
 export function parseVerdict(raw: string): Verdict {
-  const v: unknown = JSON.parse(raw);
+  // A fenced reply is a formatting habit, not a different verdict; the shared
+  // helper owns that convention so it cannot drift from the isolated judge.
+  const v: unknown = JSON.parse(stripJsonFence(raw));
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("Invalid verification object");
   const obj = v as Record<string, unknown>;
   const nonempty = (value: unknown): value is string => typeof value === "string" && !!value.trim();

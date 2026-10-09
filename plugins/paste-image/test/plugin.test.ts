@@ -55,6 +55,17 @@ describe("transformInput", () => {
 		expect(result.images).toEqual([existing, { type: "image", data: PNG_1X1_BASE64, mimeType: "image/png" }]);
 	});
 
+	test("mixed attachments number new files after existing images and reuse repeated paths", async () => {
+		const existing = { type: "image", data: "existing", mimeType: "image/jpeg" } as const;
+		const env = { cwd: workspace, home: workspace, tmpdir: workspace,
+			load: async (file: string) => ({ mimeType: "image/png", base64: path.basename(file) }) };
+		const result = await transformInput("a.png b.png a.png", [existing], ctx(), env);
+		expect(result.action).toBe("transform");
+		if (result.action !== "transform") return;
+		expect(result.text).toBe("[#image 2] [#image 3] [#image 2]");
+		expect(result.images?.map(image => image.data)).toEqual(["existing", "a.png", "b.png"]);
+	});
+
 	test("a .png name over non-image bytes is left alone", async () => {
 		const result = await transformInput(
 			`what is ${path.join(workspace, "notreally.png")}?`,

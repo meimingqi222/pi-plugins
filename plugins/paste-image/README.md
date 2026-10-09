@@ -78,3 +78,8 @@ the path from the text means no reference ever leaves the machine.
   limits put it.
 - **The same file twice is attached once** and both references get the same
   placeholder number.
+
+A submission is limited to 20 images (including existing attachments) and
+32 MiB of newly attached decoded image data. References over either limit stay
+as text. Only `pi-clipboard-*` basenames are looked up in the temporary directory;
+ordinary filenames resolve against the current directory.

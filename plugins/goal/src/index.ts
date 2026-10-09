@@ -154,6 +154,18 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     finish(ctx, "budget_limited", "Token budget exhausted; set a new goal to authorize more work.");
     return true;
   }
+  function accountUsage(tokens: number | null, ctx: ExtensionContext): boolean {
+    if (!goal) return false;
+    if (tokens === null || !Number.isSafeInteger(tokens) || tokens < 0) {
+      if (goal.budget) {
+        finish(ctx, "budget_limited", "Token usage is unavailable; cannot safely continue within the token budget.");
+        return true;
+      }
+      return false;
+    }
+    goal.used += tokens;
+    return false;
+  }
   const spendService: GoalSpendService = {
     begin(ctx, callId) {
       if (goal?.status === "budget_limited" && work?.goalId === goal.id) {
@@ -178,8 +190,8 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
           settledDelegations.add(key);
           if (!goal || goal.id !== goalId || guard.sessionId !== session ||
             ctx.sessionManager.getSessionId() !== sessionIdAtLaunch) return;
-          goal.used += Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
-          if (goal.status === "active" && budgetReached(ctx) && continuationDriven) {
+          const unknown = accountUsage(tokens, ctx);
+          if ((unknown || (goal.status === "active" && budgetReached(ctx))) && continuationDriven) {
             try { ctx.abort(); } catch { /* The goal is already budget limited. */ }
           }
           checkpoint();
@@ -237,7 +249,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
       if (!goal || goal.id !== goalId || goal.status !== "active") return;
       // Bill the response before validating it: a malformed or interrupted
       // planner reply still consumed tokens, just like a rejected verifier reply.
-      goal.used += readTokenUsage(result);
+      if (accountUsage(readTokenUsage(result), ctx)) return;
       checkpoint();
       // The planner's own cost can exhaust a small budget; check before
       // writing a plan for a goal that is already over.
@@ -346,7 +358,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     try {
       const result = await verifyGoal(ctx, structuredClone(goal), call.abort, redactor(), planInput, resolved.model);
       if (!current(call) || !goal) return;
-      goal.used += readTokenUsage(result);
+      if (accountUsage(readTokenUsage(result), ctx)) return;
       checkpoint();
       if (budgetReached(ctx)) return;
       if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -452,7 +464,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
       : createHash("sha256").update(JSON.stringify(message)).digest("hex");
     if (owner.seen.has(key)) return;
     owner.seen.add(key);
-    goal.used += readTokenUsage(message);
+    const unknown = accountUsage(readTokenUsage(message), ctx);
     // The budget used to be enforced only at a settled-run boundary, so a long
     // tool loop could overshoot it by an unbounded amount and the overshoot was
     // invisible until the run ended. Accounting is the moment the spend becomes
@@ -460,7 +472,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     // plugin started is stopped instead of paying for the rest of the loop. A
     // user turn is left alone — it is the user's output, and the goal merely
     // stops being active.
-    if (budgetReached(ctx) && owner.continuationDriven) {
+    if ((unknown || budgetReached(ctx)) && owner.continuationDriven) {
       try {
         ctx.abort();
       } catch {

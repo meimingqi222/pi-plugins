@@ -28,12 +28,12 @@ describe("candidatePaths", () => {
 		expect(candidatePaths("~/Pictures/a.png", env)).toEqual([joined(env.home, "Pictures", "a.png")]);
 	});
 
-	test("a relative path tries the cwd first, a bare name also the temp dir", () => {
+	test("a relative path tries cwd, only clipboard basenames try the temp dir", () => {
 		expect(candidatePaths("img/a.png", env)).toEqual([resolved(env.cwd, "img", "a.png")]);
-		expect(candidatePaths("a.png", env)).toEqual([
-			resolved(env.cwd, "a.png"),
-			joined(env.tmpdir, "a.png"),
-		]);
+		expect(candidatePaths("a.png", env)).toEqual([resolved(env.cwd, "a.png")]);
+        expect(candidatePaths("pi-clipboard-test.png", env)).toEqual([
+          resolved(env.cwd, "pi-clipboard-test.png"), joined(env.tmpdir, "pi-clipboard-test.png"),
+        ]);
 	});
 });
 
@@ -98,4 +98,22 @@ describe("attachImageReferences", () => {
 		expect(result.attached).toBe(0);
 		expect(result.text).toBe("/tmp/a.png");
 	});
+});
+
+test("attachment count includes existing images and is bounded", async () => {
+  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp', load: async () => ({ mimeType: 'image/png', base64: 'fake' }) };
+  const result = await attachImageReferences(Array.from({ length: 100 }, (_, i) => `picture-${i}.png`).join(' '), env, 18);
+  expect(result.images.length).toBe(2);
+  expect(result.text).toContain('picture-2.png');
+});
+test("an ordinary basename cannot attach a same-named temp file", () => {
+  expect(candidatePaths('residual.png', { cwd: '/work', home: '/home/me', tmpdir: '/tmp' })).toEqual(['/work/residual.png']);
+});
+
+test("the aggregate attachment bytes are bounded", async () => {
+  const base64 = 'A'.repeat(24 * 1024 * 1024); // 18 MiB decoded per image.
+  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp', load: async () => ({ mimeType: 'image/png', base64 }) };
+  const result = await attachImageReferences('first.png second.png', env);
+  expect(result.images).toHaveLength(1);
+  expect(result.text).toContain('second.png');
 });
