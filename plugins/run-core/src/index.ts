@@ -34,6 +34,7 @@ export {
   DEFAULT_JUDGE_TIMEOUT_MS,
   isolatedComplete,
   parseJsonReply,
+  stripJsonFence,
   withDeadline,
   type IsolatedCallInput,
   type IsolatedCallResult,

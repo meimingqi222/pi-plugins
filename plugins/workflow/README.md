@@ -381,3 +381,9 @@ divergence.
 ## License
 
 MIT.
+
+Resume cache lookup precedes live admission. A cached call can be returned even
+when either live budget is exhausted. While cached entries remain, parallel
+panels use per-live-call admission rather than rejecting their entire width
+before cache lookup; fresh panels retain their whole-panel preview.
+Schema attempts and read-only transport retries have separate limits.

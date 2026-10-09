@@ -60,6 +60,10 @@ export class ResumeLog {
     return this.loaded > 0;
   }
 
+  get hasCachedEntries(): boolean {
+    return this.byHash.size > 0;
+  }
+
   /** Number of valid entries loaded from the previous run, for reporting. */
   get size(): number {
     return this.loaded;

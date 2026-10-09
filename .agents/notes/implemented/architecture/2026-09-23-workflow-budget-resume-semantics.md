@@ -24,8 +24,8 @@ a made one.
 
 **A budget bounds one execution.** A resume is a new run with its own `budget`
 argument, and the parameter means what it says. A reused call costs nothing, so it
-releases the slot it was admitted (see
-`2026-09-23-workflow-unenforced-guarantees.md`), and the new execution's budget
+is resolved before live admission (see
+`2026-10-09-workflow-cache-before-budget.md`), and the new execution's budget
 covers the work the new execution does.
 
 `restore` stays, and its comment now states what it is: the seam for the other

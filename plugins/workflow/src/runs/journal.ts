@@ -9,7 +9,7 @@
  * contiguous.
  */
 
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isJournalEntry, ResumeLog } from "../core/journal.ts";
@@ -139,7 +139,8 @@ export class WorkflowJournal {
     script: string,
     resumeFrom?: WorkflowRunPaths,
   ): Promise<WorkflowJournal> {
-    await mkdir(paths.runDir, { recursive: true });
+    await mkdir(paths.runDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") await chmod(paths.runDir, 0o700);
     try {
       await writeFile(paths.scriptPath, script, { encoding: "utf8", mode: 0o600, flag: "wx" });
     } catch (error: unknown) {

@@ -128,9 +128,8 @@ export class RunBudget {
   /**
    * Give an admitted call back, because it turned out to cost nothing.
    *
-   * A resumed call served from the journal is admitted by the host before the
-   * orchestrator knows it is a cache hit, so without this a resume would spend
-   * agent budget on work it did not do.
+   * For callers that reserve speculatively and later discover no work is needed.
+   * Workflow cache hits are now resolved before admission and need no release.
    */
   release(agentCalls = 1): void {
     if (agentCalls < 0) throw new Error("Agent call count cannot be negative");

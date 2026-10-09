@@ -87,3 +87,7 @@ Consumed as a workspace dependency:
 ## License
 
 MIT.
+
+`readTokenUsage` returns `null` when usage is missing or malformed, distinct
+from an explicitly measured zero. A token-bounded goal stops on unknown usage;
+unbounded goals can continue without inventing a spend value.

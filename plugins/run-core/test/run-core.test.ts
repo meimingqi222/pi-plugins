@@ -3,6 +3,7 @@ import { ActiveTimer, readTokenUsage } from "../src/usage.ts";
 import { RunGuard } from "../src/guard.ts";
 import { RunBudget, RunBudgetExceeded } from "../src/budget.ts";
 import { ContinuationChannel } from "../src/deliver.ts";
+import { parseJsonReply, stripJsonFence } from "../src/isolated.ts";
 
 describe("readTokenUsage", () => {
   test("totalTokens wins over the derived sum", () => {
@@ -13,9 +14,9 @@ describe("readTokenUsage", () => {
   test("derives from all four fields when no total is present", () => {
     expect(readTokenUsage({ usage: { input: 1, output: 2, cacheRead: 4, cacheWrite: 8 } })).toBe(15);
   });
-  test("missing or malformed usage is zero, not NaN", () => {
+  test("missing or malformed usage is unknown, not zero", () => {
     for (const message of [undefined, null, 42, {}, { usage: null }, { usage: { totalTokens: -1 } }]) {
-      expect(readTokenUsage(message)).toBe(0);
+      expect(readTokenUsage(message)).toBeNull();
     }
   });
 });
@@ -221,5 +222,31 @@ describe("ContinuationChannel", () => {
     channel.deliver("queued", { customType: "x" }, "body");
     channel.reset();
     expect(channel.isOutstanding).toBe(false);
+  });
+});
+
+/**
+ * The fence convention is shared by every consumer of a model reply: the
+ * isolated judge, pi-goal's verifier and pi-goal's planner. It lives in one
+ * export so a plugin that validates its own shape cannot grow a second,
+ * divergent notion of what a reply looks like.
+ */
+describe("stripJsonFence", () => {
+  test("unwraps one fence and nothing else", () => {
+    expect(stripJsonFence('{"a":1}')).toBe('{"a":1}');
+    expect(stripJsonFence('```json\n{"a":1}\n```')).toBe('{"a":1}');
+    expect(stripJsonFence('```\n{"a":1}\n```')).toBe('{"a":1}');
+    expect(stripJsonFence('  \n```json\n{"a":1}\n```\n  ')).toBe('{"a":1}');
+    // Prose around the fence is not a fence-wrapped reply; it must survive as
+    // text so the parse failure is reported rather than silently repaired.
+    expect(stripJsonFence('here you go:\n```json\n{"a":1}\n```')).toContain("here you go:");
+  });
+
+  test("a fenced reply still has to be valid JSON of the required shape", () => {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+    expect(parseJsonReply('```json\n{"a":1}\n```', isRecord)).toEqual({ a: 1 });
+    expect(() => parseJsonReply('```json\nnot json\n```', isRecord)).toThrow("not a single JSON value");
+    expect(() => parseJsonReply('```json\n[]\n```', isRecord)).toThrow("did not match the required shape");
   });
 });

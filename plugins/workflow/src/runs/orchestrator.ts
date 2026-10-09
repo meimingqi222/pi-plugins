@@ -264,6 +264,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
   }
 
   const callbacks: ScriptHostCallbacks = {
+    agentHandlesAdmission: true,
     phase(title) {
       currentPhase = title;
       phases.push({ title });
@@ -279,6 +280,8 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
       budget.admit(calls);
     },
     check(calls) {
+      // A resumed panel may contain only cached work; live calls still admit individually.
+      if (options.journal?.resume.hasCachedEntries) return;
       budget.check(calls);
     },
     async agent(prompt, agentOptions: WorkflowAgentOptions) {
@@ -304,10 +307,6 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         cacheHits += 1;
         record.status = "cached";
         record.finishedAt = now();
-        // The host admitted this call before the orchestrator could tell it was a
-        // cache hit, so hand the slot back: a reused call did no work and must
-        // not spend the agent budget of the run that reused it.
-        budget.release(1);
         // The run's spend does **not** grow here. `spentTokens` is what this run
         // was billed, and a reused call was billed to the earlier run; folding it
         // in would also disagree with the budget, which admits only live calls.
@@ -350,11 +349,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
               : {}),
             ...(options.signal ? { signal: options.signal } : {}),
           },
-          // The bridge already admitted this call once, so attempt 1 admits
-          // zero agents — but still runs the token check, which is what stops
-          // a retry after the budget was spent. Later attempts are new child
-          // invocations and admit one each.
-          admit: (attempt) => budget.admit(attempt === 1 ? 0 : 1),
+          admit: () => budget.admit(1),
           ...(options.signal ? { signal: options.signal } : {}),
         });
       const withSlot = async () => {

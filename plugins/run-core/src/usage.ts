@@ -13,22 +13,27 @@ function natural(value: unknown): value is number {
 }
 
 /**
- * Tokens billed for one finalized assistant message, or 0 when it carries none.
+ * Tokens billed for one finalized assistant message, or null when usage is unknown.
  *
  * `totalTokens` wins when present, because it is the provider's own total and is
  * the only field guaranteed to include cache reads and writes. Only when it is
  * absent is the sum derived, and then all four fields are included so a cached
  * conversation is not silently billed as free.
  */
-export function readTokenUsage(message: unknown): number {
-  if (!message || typeof message !== "object") return 0;
-  const value = (message as { usage?: Record<string, unknown> }).usage;
-  if (!value) return 0;
-  if (natural(value.totalTokens)) return value.totalTokens;
-  return ["input", "output", "cacheRead", "cacheWrite"].reduce(
-    (sum, key) => sum + (natural(value[key]) ? value[key] : 0),
-    0,
-  );
+export function readTokenUsage(message: unknown): number | null {
+  if (!message || typeof message !== "object") return null;
+  const value = (message as { usage?: unknown }).usage;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const usage = value as Record<string, unknown>;
+  if (usage.totalTokens !== undefined) return natural(usage.totalTokens) ? usage.totalTokens : null;
+  if (!natural(usage.input) || !natural(usage.output)) return null;
+  let total = usage.input + usage.output;
+  for (const key of ["cacheRead", "cacheWrite"]) {
+    if (usage[key] === undefined) continue;
+    if (!natural(usage[key])) return null;
+    total += usage[key];
+  }
+  return natural(total) ? total : null;
 }
 
 /**

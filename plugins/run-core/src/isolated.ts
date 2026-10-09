@@ -20,6 +20,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readTokenUsage } from "./usage.ts";
 
 /** Default deadline for a judgment call. Long enough for a real read, short enough to be noticed. */
 export const DEFAULT_JUDGE_TIMEOUT_MS = 45_000;
@@ -51,24 +52,11 @@ export interface IsolatedCallResult {
   /** True when the call ended with `stop` and returned no tool call. */
   clean: boolean;
   /** Input+output tokens billed for this call, for run accounting. */
-  usage: number;
+  usage: number | null;
 }
 
-function natural(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
+export { readTokenUsage } from "./usage.ts";
 
-/** Tokens billed for one assistant message, or 0 when it carries no usage. */
-export function readTokenUsage(message: unknown): number {
-  if (!message || typeof message !== "object") return 0;
-  const value = (message as { usage?: Record<string, unknown> }).usage;
-  if (!value) return 0;
-  if (natural(value.totalTokens)) return value.totalTokens;
-  return ["input", "output", "cacheRead", "cacheWrite"].reduce(
-    (sum, key) => sum + (natural(value[key]) ? value[key] : 0),
-    0,
-  );
-}
 
 /**
  * Race a start function against its deadline.
@@ -190,8 +178,20 @@ export async function isolatedComplete(
  * but a reply that is not a single object is an error the caller must handle
  * rather than something to search for a substring in.
  */
+/**
+ * Strip one wrapping code fence, if a model added one.
+ *
+ * Wrapping a JSON reply in a ```json fence is a formatting habit rather than a
+ * different answer, so every consumer of a model reply shares this convention.
+ * It lives here, next to `parseJsonReply`, so a plugin that needs its own
+ * shape validation cannot end up with a second, divergent definition.
+ */
+export function stripJsonFence(raw: string): string {
+  return raw.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+}
+
 export function parseJsonReply<T>(raw: string, validate: (value: unknown) => value is T): T {
-  const text = raw.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+  const text = stripJsonFence(raw);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

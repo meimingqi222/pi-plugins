@@ -22,6 +22,7 @@ async function run(
     admit?: (calls: number) => void;
     check?: (calls: number) => void;
     signal?: AbortSignal;
+    abandonedAgentDrainMs?: number;
     agent?: (prompt: string, options: Record<string, unknown>) => Promise<{ value: unknown; tokens: number }>;
   } = {},
 ): Promise<Harness> {
@@ -34,6 +35,7 @@ async function run(
     name: "test",
     timeoutMs: options.timeoutMs ?? TEST_TIMEOUT_MS,
     signal: options.signal,
+    abandonedAgentDrainMs: options.abandonedAgentDrainMs,
     callbacks: {
       async agent(prompt, agentOptions) {
         agents.push({ prompt, options: agentOptions as Record<string, unknown> });
@@ -343,5 +345,39 @@ describe("script host shutdown", () => {
     const { result } = await run("");
     expect(result.completed).toBe(true);
     expect(result.value).toBeNull();
+  });
+
+  test("an un-awaited agent call cannot hold a completed run open", async () => {
+    // The script returns while its agent is still running, so the run already
+    // has its final value. Waiting for that child would hold a run slot until
+    // the child's own deadline while the result says `completed`; the drain is
+    // bounded and the result says what it left behind.
+    const started = Date.now();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { result } = await run("agent('slow', {}); return 'returned immediately';", {
+      abandonedAgentDrainMs: 60,
+      agent: async () => {
+        await blocked;
+        return { value: "late", tokens: 1 };
+      },
+    });
+    release();
+    expect(result.completed).toBe(true);
+    expect(result.value).toBe("returned immediately");
+    expect(result.stopReason).toContain("still running");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  test("a run whose agents all finished still reports plain completion", async () => {
+    // Negative control: the abandoned-call note must not appear when the script
+    // awaited its work.
+    const { result } = await run("const r = await agent('echo', {}); return r.value;", {
+      abandonedAgentDrainMs: 60,
+    });
+    expect(result.completed).toBe(true);
+    expect(result.stopReason).toBe("completed");
   });
 });

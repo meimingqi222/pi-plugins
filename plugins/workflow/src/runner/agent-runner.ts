@@ -205,7 +205,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
   let repair = false;
   let transportUsed = 0;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  let attempt = 0;
+  let schemaAttempts = 0;
+  while (schemaAttempts < maxAttempts) {
+    attempt += 1;
     options.admit?.(attempt);
     const prompt = !repair
       ? base
@@ -235,7 +238,6 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
       if (
         result.status === "failed" &&
         transportUsed < transportBudget &&
-        attempt < maxAttempts &&
         isTransportFailure(message)
       ) {
         transportUsed += 1;
@@ -245,6 +247,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
       }
       throw new RunAgentError(message, usage ?? emptyUsage());
     }
+
+    schemaAttempts += 1;
 
     // No schema: the reply text is the value.
     if (!schema || typeof schema !== "object") {

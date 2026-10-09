@@ -19,10 +19,14 @@
  *    `complete` deadlocks. Settlement is driven by the first terminal signal —
  *    a `complete`/`error` message, an `exit`, or a worker `error` — and the
  *    parent terminates the worker afterwards rather than waiting for it.
- * 2. **Never await an abandoned agent handler.** A callback that ignores its
- *    abort signal would hold `Promise.allSettled` open forever, so the drain is
- *    skipped once the run is aborted. The worker is already gone; a result it
- *    could have received is unreachable anyway.
+ * 2. **Never await an abandoned agent handler without a bound.** A callback that
+ *    ignores its abort signal would hold `Promise.allSettled` open forever, so
+ *    the drain is skipped once the run is aborted, and otherwise bounded by
+ *    `abandonedAgentDrainMs`. The worker is already gone; a result it could have
+ *    received is unreachable anyway. The bound exists so a child that is
+ *    mid-write can finish, not so the run can wait out the child's deadline —
+ *    an unbounded wait held a run slot while the result already said
+ *    `completed`.
  * 3. **Terminate at most once, and await the worker's `exit` rather than
  *    `terminate()`'s promise.** On Bun a second `terminate()` — or one issued
  *    after the worker already exited — never settles, so an abort path that
@@ -48,6 +52,8 @@ export interface ScriptHostCallbacks {
   budget(): { total: number | null; spent: number };
   /** Admission check, called before an agent starts. Throwing refuses the call. */
   admit?(calls: number): void;
+  /** Agent callback owns admission when it must check a resume cache first. */
+  agentHandlesAdmission?: boolean;
   /**
    * Admission *preview* for a panel, called before any of its children start.
    * Throwing refuses the whole panel. Never reserves: each child still admits
@@ -63,6 +69,13 @@ export interface ScriptHostOptions {
   callbacks: ScriptHostCallbacks;
   /** Wall-clock cap for the whole script. The worker is terminated when it expires. */
   timeoutMs?: number;
+  /**
+   * How long agent calls the script left running may delay settlement, so a
+   * child that is mid-write can finish instead of being cut off. Their results
+   * are unreachable (the worker is gone), so this is a grace period, not a wait
+   * for the child's own deadline. Defaults to 5s.
+   */
+  abandonedAgentDrainMs?: number;
   signal?: AbortSignal;
   /** Memory cap for the worker, in MB. A script cannot grow the parent's heap past this. */
   memoryLimitMb?: number;
@@ -73,7 +86,12 @@ export interface ScriptHostResult {
   meta: unknown;
   /** True when the script reached `complete`; false for a timeout, kill, or crash. */
   completed: boolean;
-  stopReason?: "completed" | "failed" | "aborted" | "timeout";
+  /**
+   * `completed` when the script returned and no agent was left running;
+   * otherwise the completion is qualified by what was abandoned or why it
+   * failed, because a run slot is released at that point.
+   */
+  stopReason?: string;
   errorMessage?: string;
   /** Agent calls admitted, for run accounting. */
   agentCalls: number;
@@ -81,6 +99,7 @@ export interface ScriptHostResult {
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_MEMORY_LIMIT_MB = 256;
+const DEFAULT_ABANDONED_AGENT_DRAIN_MS = 5_000;
 
 interface RunState {
   value: unknown;
@@ -124,6 +143,29 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
   const terminal = new Promise<void>((resolve) => {
     settle = resolve;
   });
+
+  /**
+   * Let the agents the script abandoned finish, but only for `graceMs`.
+   *
+   * Returns how many are still in flight when the grace expires; `inFlight` is
+   * only emptied by a settling handler, so a non-zero count is exactly the set
+   * of calls the run is giving up on.
+   */
+  async function drainInFlight(graceMs: number): Promise<number> {
+    if (inFlight.size === 0) return 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([...inFlight]),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, graceMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return inFlight.size;
+  }
 
   const reply = (message: HostMessage): void => {
     try {
@@ -257,7 +299,7 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     try {
       // Admission is checked before the agent starts, so a panel that would
       // exceed the budget is refused rather than partially run.
-      options.callbacks.admit?.(1);
+      if (!options.callbacks.agentHandlesAdmission) options.callbacks.admit?.(1);
       state.agentCalls += 1;
     } catch (error) {
       reply({ kind: "agent-result", id: message.id, ok: false, error: errorText(error) });
@@ -285,13 +327,20 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     await terminal;
 
     // Rule 2: an abandoned handler must not hold the run open. The worker is
-    // already gone, so a result it can no longer receive does not matter.
+    // already gone, so a result it can no longer receive does not matter — the
+    // drain is only a grace period for a child that is mid-write.
+    let abandoned = 0;
     if (!controller.signal.aborted) {
-      await Promise.allSettled([...inFlight]);
+      abandoned = await drainInFlight(options.abandonedAgentDrainMs ?? DEFAULT_ABANDONED_AGENT_DRAIN_MS);
     }
 
     if (state.completed) {
-      state.stopReason = "completed";
+      // The run's value is final, so completion is still completion; saying what
+      // was left behind is what keeps `/workflows` from reporting a settled run
+      // as if every call it started had produced something.
+      state.stopReason = abandoned > 0
+        ? `completed; ${abandoned} agent call(s) were still running at script exit`
+        : "completed";
     } else if (controller.signal.aborted) {
       state.stopReason = "timeout";
       state.errorMessage = errorText(controller.signal.reason) || "The workflow script was stopped";

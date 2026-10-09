@@ -12,8 +12,8 @@ export class SettledDeliveryQueue {
 
   /** send must recheck its origin and handle delivery errors. */
   deliver(isIdle: () => boolean, send: () => void): void {
-    let idle = true;
-    try { idle = isIdle(); } catch { /* Let the origin guard handle a torn-down context. */ }
+    let idle = false;
+    try { idle = isIdle(); } catch { /* An unknown state must wait for the settled boundary. */ }
     if (idle) send();
     else this.defer(send);
   }

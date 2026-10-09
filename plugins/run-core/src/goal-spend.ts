@@ -5,7 +5,7 @@ export const GOAL_SPEND_REQUEST = "pi-goal:spend-request:v1";
 
 /** One delegated call belongs to the goal active when it was launched. */
 export interface GoalSpendLease {
-  finish(tokens: number): void;
+  finish(tokens: number | null): void;
 }
 
 export interface GoalSpendService {

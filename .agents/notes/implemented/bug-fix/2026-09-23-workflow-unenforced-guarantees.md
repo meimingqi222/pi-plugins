@@ -1,6 +1,7 @@
 # Agent Note: Enforce the limits and promises pi-workflow advertises
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-workflow-cache-before-budget.md
 Partly-superseded-by: 2026-09-24-workflow-script-boundaries.md
 
 ## Problem
@@ -215,3 +216,7 @@ The tests that do exist for this change are listed above and each has a red run.
 The one for the authoring surface lives in the feature note
 `2026-09-23-workflow-authoring-and-save.md`, since it is new behavior rather than
 a repaired guarantee.
+
+## Superseded
+
+Locks, active-run caps and fresh panel previews remain. Cache hits no longer reserve then release a slot, and resumed panels use per-live-call admission while cached entries remain.
