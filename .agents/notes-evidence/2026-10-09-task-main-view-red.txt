@@ -1,0 +1,39 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/panel.test.ts:
+233 |  oldPanel.dispose?.();
+234 |  let closed = false;
+235 |  const view = createSubagentsPanel({ ...deps, mainView: true, bodyRows: () => 28 }, () => { closed = true; });
+236 |  try {
+237 |   const rendered = view.render(100).join("\n");
+238 |   expect(rendered).toContain("folded reply");
+                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "folded reply"
+Received: " subagents · 1 total · 1 running\n\n› ● Inspect the runner explore · starting · 30s\n\n ↑/↓ select · enter detail · k cancel · t transcript · l log · n notify off · q close"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/panel.test.ts:238:20)
+(fail) main view opens a single child's transcript and Escape restores the parent [5.25ms]
+
+plugins/subagent/test/plugin.test.ts:
+659 |     expect(result).toEqual({ consume: true });
+660 |     expect(customFactory).toBeUndefined();
+661 |     expect(inputHandler!("\r")).toEqual({ consume: true });
+662 |     await new Promise((resolve) => setTimeout(resolve, 0));
+663 |     expect(customFactory).toBeDefined();
+664 |     expect(customOptions?.overlay ?? false).toBe(false);
+                                                  ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/plugin.test.ts:664:45)
+(fail) the fleet surfaces > down selects the default task entry and enter opens the panel [10.25ms]
+
+ 0 pass
+ 44 filtered out
+ 2 fail
+ 6 expect() calls
+Ran 2 tests across 2 files. [439.00ms]

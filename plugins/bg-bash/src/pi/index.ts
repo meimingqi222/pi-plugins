@@ -9,7 +9,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createHostWorkReporter, createWorkReporter } from "pi-run-core";
+import { connectTaskNavigation, openMainTaskView, createHostWorkReporter, createWorkReporter } from "pi-run-core";
+import { createBgTasksPanel } from "./panel.ts";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
 import type { RunOutcome } from "../core/types.ts";
@@ -46,6 +47,24 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	// lazily when a job detaches (a tool call can precede or survive one).
 	let uiCtx: ExtensionContext | undefined;
 	const hostWork = createHostWorkReporter(pi);
+	let panelOpen = false;
+	let panel: { dispose?(): void } | undefined;
+	const navigation = connectTaskNavigation(pi, {
+		key: "background", label: "Background tasks",
+		count: () => registry.list().filter((job) => job.mode === "background").length,
+		open: openPanel,
+	});
+	async function openPanel(ctx: ExtensionContext): Promise<void> {
+		if (panelOpen || ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.custom !== "function") return;
+		panelOpen = true;
+		try {
+			await openMainTaskView(ctx, (tui, theme, close, bodyRows) =>
+				createBgTasksPanel({ tui, theme, bodyRows, list: () => registry.list(), kill: (id) => registry.kill(id) }, close),
+				(view) => { panel = view; },
+			);
+		} finally { panel?.dispose?.(); panel = undefined; panelOpen = false; }
+	}
+
 	const reporter = createWorkReporter({
 		key: "pi-bg-bash-jobs",
 		ui: () => (uiCtx && uiCtx.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
@@ -56,6 +75,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	});
 	function syncSurfaces(): void {
 		reporter.sync();
+        if (uiCtx) navigation.sync(uiCtx);
 		if (!uiCtx || shuttingDown) return;
 		for (const job of registry.list()) {
 			if (job.mode !== "background") continue;
@@ -200,6 +220,10 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	 * they are owned by the context that launched them.
 	 */
 	const leaveSession = () => {
+        navigation.clear();
+        panel?.dispose?.();
+        panel = undefined;
+        panelOpen = false;
 		sessionGeneration += 1;
 		uiCtx = undefined;
 		hostWork.clear();
@@ -243,10 +267,11 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	pi.registerTool(createBgBashTool(runtime));
 	pi.registerTool(createBgTasksTool(runtime));
 	pi.registerCommand?.("bg", {
-		description: "List background jobs, or stop one: /bg [kill <id>]",
+		description: "Inspect background jobs: /bg [live|kill <id>]",
 		handler: async (args: string, ctx: ExtensionContext): Promise<void> => {
 			if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
 			const input = args.trim();
+            if (input === "live") { await openPanel(ctx); return; }
 			if (!input || input === "list") {
 				ctx.ui.notify(formatJobsListing(registry.list(), Date.now()), "info");
 				return;

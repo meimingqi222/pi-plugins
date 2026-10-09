@@ -54,6 +54,9 @@ export interface Lane {
 	kind: LaneKind;
 	status: LaneStatus;
 	startedAt: number;
+	/** Completed active intervals; waiting for a reply never spends this clock. */
+	elapsedMs?: number;
+	activeSince?: number;
 	finishedAt?: number;
 	logPath?: string;
 	progress?: SubagentProgress;
@@ -156,6 +159,7 @@ export class LaneRegistry {
 			kind,
 			status: "running",
 			startedAt: Date.now(),
+			elapsedMs: 0,
 			...(options.generation !== undefined ? { generation: options.generation } : {}),
 		};
 		const controller = new AbortController();
@@ -216,11 +220,15 @@ export class LaneRegistry {
 		const lane = this.active.get(id)?.lane;
 		if (!lane) return;
 		if (idle) {
+			if (lane.idleSince !== undefined) return;
+			lane.elapsedMs = (lane.elapsedMs ?? 0) + Math.max(0, now - (lane.activeSince ?? lane.startedAt));
+			delete lane.activeSince;
 			lane.idleSince = now;
 			// An idle lane frees its concurrency slot: it is parked awaiting a
 			// reply, not doing work.
 			this.wakeSlotWaiter();
-		} else {
+		} else if (lane.idleSince !== undefined) {
+			lane.activeSince = now;
 			delete lane.idleSince;
 		}
 	}
@@ -263,7 +271,7 @@ export class LaneRegistry {
 		const lane = this.active.get(id)?.lane;
 		if (!lane || lane.sessionId !== sessionId || lane.kind !== "background" || lane.idleSince === undefined) return false;
 		if (this.atCapacity() || this.slotWaiters.length > 0) return false;
-		delete lane.idleSince;
+		this.setIdle(id, false);
 		return true;
 	}
 
@@ -454,4 +462,10 @@ export class LaneRegistry {
 function publicLane(lane: Lane): Lane {
 	const { logPath: _privateLogPath, ...visible } = lane;
 	return visible;
+}
+
+/** Shared by widgets, panels and tool text, including legacy records. */
+export function laneElapsedMs(lane: Lane, now: number): number {
+	if (lane.idleSince !== undefined) return lane.elapsedMs ?? Math.max(0, lane.idleSince - lane.startedAt);
+	return (lane.elapsedMs ?? 0) + Math.max(0, (lane.finishedAt ?? now) - (lane.activeSince ?? lane.startedAt));
 }

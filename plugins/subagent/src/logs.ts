@@ -141,3 +141,27 @@ function cleanQuery(value: string): string {
   const clean = value.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").replace(/\s+/gu, " ").trim();
   return clean.length > 80 ? `${clean.slice(0, 79)}…` : clean;
 }
+
+/** Structured events keep whole JSON records; raw-preview truncation breaks parsing. */
+export function readSubagentTranscript(path: string): { lines: string[]; earlierDataOmitted: boolean } {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - SUBAGENT_LOG_SCAN_BYTES);
+    const buffer = Buffer.alloc(size - start);
+    const bytes = readSync(fd, buffer, 0, buffer.length, start);
+    let text = buffer.subarray(0, bytes).toString("utf8");
+    if (start > 0) {
+      const newline = text.indexOf("\n");
+      text = newline < 0 ? "" : text.slice(newline + 1);
+    }
+    // The writer may still be appending the last record. Fold only complete lines.
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    return { lines: complete.split(/\r?\n/u).filter(Boolean), earlierDataOmitted: start > 0 };
+  } catch {
+    return { lines: [], earlierDataOmitted: false };
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* Best effort. */ } }
+  }
+}

@@ -78,8 +78,8 @@ describe("the shared work summary", () => {
 		expect(summary).toContain("1 running");
 		expect(summary).toContain("1 stalled");
 		expect(summary).toContain("subagents");
-		// The eldest start is 400s ago — Math.min, not the newest.
-		expect(summary).toContain("6m40s");
+		// The longest actual duration is the stalled task, excluding settled idle age.
+		expect(summary).toContain("5m");
 		expect(summary.startsWith("◉")).toBe(true);
 	});
 

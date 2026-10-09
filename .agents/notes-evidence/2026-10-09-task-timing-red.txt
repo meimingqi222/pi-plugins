@@ -1,0 +1,66 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/lane.test.ts:
+(pass) the lane registry > foreground lanes appear in list() and hold a concurrency slot like any busy lane [21.04ms]
+(pass) the lane registry > acquireSlot parks a caller FIFO until a busy lane settles or goes idle [13.09ms]
+(pass) the lane registry > a queued acquireSlot resolves false on abort and spawns nothing [2.86ms]
+(pass) the lane registry > stop refuses a foreground lane but abort() reaches it internally [0.26ms]
+(pass) the lane registry > stop still cancels a background lane [0.08ms]
+(pass) the lane registry > stop reports a settled lane rather than pretending it cancelled one [0.06ms]
+(pass) the lane registry > the fifth launch slot, alias fallback and generation are carried [0.04ms]
+(pass) the lane registry > deriveAlias strips control characters after splitting the first line [0.02ms]
+(pass) the lane registry > the wait deadline's timer keeps the event loop alive [1.24ms]
+173 |  const registry = new LaneRegistry(() => {});
+174 |  const pending = pendingWork();
+175 |  const { record, done } = registry.launch("review", "review", SESSION, pending.work);
+176 |  const start = record.startedAt;
+177 |  registry.setIdle(record.id, true, start + 20_000);
+178 |  expect(registry.get(SESSION, record.id)?.elapsedMs).toBe(20_000);
+                                                           ^
+error: expect(received).toBe(expected)
+
+Expected: 20000
+Received: undefined
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/lane.test.ts:178:54)
+(fail) reply turns count active time and exclude every idle gap [3.65ms]
+
+plugins/subagent/test/fleet.test.ts:
+(pass) deriveChildState > settled statuses pass through unchanged [0.05ms]
+(pass) deriveChildState > a running child is stalled only at the threshold [0.03ms]
+(pass) deriveChildState > a child that never emitted progress is quiet since its start [0.02ms]
+(pass) formatBackground shares the stall derivation > the model-facing line and the widget state agree on a stalled child [0.11ms]
+(pass) fit > measures display columns, not string length [1.00ms]
+(pass) fit > strips control characters and never emits ANSI [0.02ms]
+(pass) widget rows > shows the task, not the live tool call [0.61ms]
+(pass) widget rows > row count is bounded and the remainder is named [0.32ms]
+(pass) widget rows > every line fits the width, including a wide-character task [0.47ms]
+(pass) panel rows > show live activity the stable row omits [0.09ms]
+(pass) panel rows > the rail marks the selected row [0.05ms]
+(pass) formatFleetSummary > names running and stalled counts and the eldest age [0.10ms]
+(pass) formatTokens > compacts large counts [0.06ms]
+(pass) formatChildDetail > shows the task and the metadata trail, never raw output rows [0.21ms]
+(pass) formatChildDetail > bounds a huge result body [0.06ms]
+206 | 
+207 | 
+208 | test("idle work duration freezes across every fleet surface", () => {
+209 |  const lane = record({ startedAt: NOW - 30_000, idleSince: NOW - 10_000 });
+210 |  for (const at of [NOW, NOW + 600_000]) {
+211 |   expect(renderFleetWidget([lane], theme, at, 120).join("\n")).toContain("20s");
+                                                                     ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "20s"
+Received: " ◌ subagents · 1 idle · 30s\n ◌ explore      Inspect the runner                                                                                   30s\n   /subagents · ctrl+shift+a"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/fleet.test.ts:211:64)
+(fail) idle work duration freezes across every fleet surface [0.78ms]
+
+2 tests failed:
+(fail) reply turns count active time and exclude every idle gap [3.65ms]
+(fail) idle work duration freezes across every fleet surface [0.78ms]
+
+ 24 pass
+ 2 fail
+ 74 expect() calls
+Ran 26 tests across 2 files. [484.00ms]

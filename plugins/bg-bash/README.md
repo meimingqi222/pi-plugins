@@ -181,3 +181,14 @@ bun run typecheck
 
 The plugin suite spawns real shells; the auto-background tests use a short
 threshold and tear the session down afterwards so no process outlives them.
+
+## Keyboard task navigation
+
+With an empty editor, press ↓ to select **Background tasks** or **Subagents**,
+then ↑/↓ to switch and Enter to switch the main message area to the selected task view. Esc returns to the
+editor. Typed prompts, dialogs and overlays keep their existing keys. The shared
+selector is enabled by default and includes retained results for inspection.
+
+In the background panel, ↑/↓ selects a command, Enter opens its output tail,
+`k` stops a running command, and Esc returns to the list. `/bg live` opens the
+main task view directly.

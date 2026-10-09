@@ -27,7 +27,7 @@ import {
 } from "pi-run-core";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { deriveChildState, formatBackground, formatDuration, type ChildState } from "./background.ts";
-import type { Lane } from "./lane.ts";
+import { laneElapsedMs, type Lane } from "./lane.ts";
 import { formatActivity } from "./tool.ts";
 
 /** The two members every formatter needs; a test supplies a plain object. */
@@ -78,6 +78,7 @@ export function toWorkItem(record: Lane, now: number): WorkItem {
 		state: STATE_TO_WORK[deriveChildState(record, now)],
 		startedAt: record.startedAt,
 		endedAt: record.finishedAt,
+		elapsedMs: laneElapsedMs(record, now),
 		metric: tokens > 0 ? `↓${formatWorkTokens(tokens)}` : undefined,
 	};
 }
@@ -102,7 +103,7 @@ export function formatWidgetRow(record: Lane, theme: FleetTheme, now: number, wi
 export function renderFleetWidget(records: Lane[], theme: FleetTheme, now: number, width: number): string[] {
 	const lines = renderWorkSurface(records.map((record) => toWorkItem(record, now)), theme, now, width, {
 		title: "subagents",
-		hint: "/subagents · ctrl+shift+a",
+		hint: "↓ select tasks · Enter open · /subagents · ctrl+shift+a",
 	});
 	// Clip defensively so the component stays a thin repaint wrapper and the
 	// string surface alone is what a test needs.
@@ -124,7 +125,7 @@ export function formatPanelRow(record: Lane, selected: boolean, theme: FleetThem
 			: state === "idle"
 				? "idle — awaiting a reply"
 				: undefined;
-	const detail = [record.agent, live, `${formatDuration(Math.floor(((record.finishedAt ?? now) - record.startedAt) / 1_000))}`]
+	const detail = [record.agent, live, `${formatDuration(Math.floor(laneElapsedMs(record, now) / 1_000))}`]
 		.filter(Boolean)
 		.join(" · ");
 	const text = `${rail} ${stateIcon(state, theme)} ${theme.fg("toolOutput", fit(record.task, width - 4))} ${theme.fg("dim", detail)}`;

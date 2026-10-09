@@ -9,7 +9,7 @@
  */
 
 import type { SubagentProgress } from "./tool.ts";
-import type { Lane } from "./lane.ts";
+import { laneElapsedMs, type Lane } from "./lane.ts";
 
 export {
 	LaneRegistry,
@@ -52,7 +52,7 @@ export function deriveChildState(lane: Pick<Lane, "status" | "startedAt" | "prog
 
 export function formatBackground(lane: Lane): string {
 	const now = Date.now();
-	const elapsed = Math.round(((lane.finishedAt ?? now) - lane.startedAt) / 1000);
+	const elapsed = Math.floor(laneElapsedMs(lane, now) / 1000);
 	const tools = lane.progress?.completedTools ? ` · ${lane.progress.completedTools} tools` : "";
 	// A refused stdin command (a reply pi rejected) must not die in the child's
 	// output stream — show it on every rendering of the lane.
@@ -64,14 +64,14 @@ export function formatBackground(lane: Lane): string {
 		const stall = deriveChildState(lane, now) === "stalled"
 			? ` · no child event for ${formatDuration(Math.floor((now - lane.startedAt) / 1_000))} (possible stall)`
 			: "";
-		return `**${lane.alias || lane.agent} · ${lane.status}**\n${formatDuration(elapsed)}${tools}${stall}${commandError}\nTask: \`${lane.id}\``;
+		return `**${lane.alias || lane.agent} · ${deriveChildState(lane, now)}**\n${formatDuration(elapsed)}${tools}${stall}${commandError}\nTask: \`${lane.id}\``;
 	}
 
 	const quietMs = Math.max(0, now - progress.lastActivityAt);
 	const quiet = formatDuration(Math.floor(quietMs / 1_000));
 	const latest = progress.recentActivity.at(-1);
 	const activeTool = progress.activeTool ?? [latest?.toolName, latest?.target].filter(Boolean).join(" ");
-	const phase = progress.phase === "tool"
+	const phase = lane.idleSince !== undefined ? "awaiting a reply" : progress.phase === "tool"
 		? `tool ${activeTool || "execution"}`
 		: progress.phase;
 	const childState = deriveChildState(lane, now);
@@ -83,7 +83,7 @@ export function formatBackground(lane: Lane): string {
 				? ` · answered ${idleAge} ago — awaiting a reply`
 				: ` · idle for ${idleAge} — awaiting a reply`
 			: ` · last ${progress.lastEvent} ${quiet} ago`;
-	return `**${lane.alias || lane.agent} · ${lane.status}**\n${formatDuration(elapsed)}${tools} · ${phase}${activity}${commandError}\nTask: \`${lane.id}\``;
+	return `**${lane.alias || lane.agent} · ${deriveChildState(lane, now)}**\n${formatDuration(elapsed)}${tools} · ${phase}${activity}${commandError}\nTask: \`${lane.id}\``;
 }
 
 export function formatDuration(seconds: number): string {

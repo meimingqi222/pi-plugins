@@ -131,7 +131,7 @@ describe("panel rows", () => {
 });
 
 describe("formatFleetSummary", () => {
-	test("names running and stalled counts and the eldest age", () => {
+	test("names running and stalled counts and the longest active duration", () => {
 		const records = [
 			record({ id: "sa-a", startedAt: NOW - 70_000 }),
 			record({ id: "sa-b", startedAt: NOW - 200_000 }),
@@ -140,7 +140,7 @@ describe("formatFleetSummary", () => {
 		const summary = formatFleetSummary(records, NOW);
 		expect(summary).toContain("1 running");
 		expect(summary).toContain("1 stalled");
-		expect(summary).toContain("5m");
+		expect(summary).toContain("3m20s");
 	});
 });
 
@@ -202,4 +202,15 @@ describe("formatChildDetail", () => {
 		expect(lines.length).toBeLessThan(100_000);
 		expect(lines).toContain("…");
 	});
+});
+
+
+test("idle work duration freezes across every fleet surface", () => {
+ const lane = record({ startedAt: NOW - 30_000, idleSince: NOW - 10_000 });
+ for (const at of [NOW, NOW + 600_000]) {
+  expect(renderFleetWidget([lane], theme, at, 120).join("\n")).toContain("20s");
+  expect(formatFleetSummary([lane], at)).toContain("20s");
+  expect(formatPanelRow(lane, false, theme, at, 120)).toContain("20s");
+ }
+ expect(formatBackground(lane).split("\n")[1]).toStartWith("20s");
 });

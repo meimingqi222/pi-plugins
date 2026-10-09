@@ -14,8 +14,8 @@
 import { Type } from "typebox";
 import { HostSubagentState, registerHostSubagent } from "./host-protocol.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui";
-import { childModelSpec, connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
+import { Key, Text } from "@earendil-works/pi-tui";
+import { childModelSpec, connectTaskNavigation, openMainTaskView, connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
 import { laneResultText, SubagentResultDelivery, type ResultOrigin } from "./result-delivery.ts";
 import { formatBackground } from "./background.ts";
 import { LaneRegistry, type Lane } from "./lane.ts";
@@ -26,7 +26,7 @@ import type { RpcChild } from "pi-agent-runner";
 import { discoverAgents, formatAgentNames } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import { WAIT_TIMEOUT_DEFAULT_SECONDS, WAIT_TIMEOUT_MAX_SECONDS } from "./contract.ts";
-import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, SUBAGENT_LOG_MAX_LINES, sweepSubagentLogs } from "./logs.ts";
+import { readSubagentLog, readSubagentTranscript, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, sweepSubagentLogs } from "./logs.ts";
 import { basename } from "node:path";
 import {
   SUBAGENT_DESCRIPTION,
@@ -43,7 +43,7 @@ import {
 export interface SubagentExtensionOptions extends SubagentToolOptions {
   /** Disable registration entirely (test seam). */
   enabled?: boolean;
-  /** Open the fleet panel on `down` at an empty editor; defaults to PI_SUBAGENT_DOWN_INSPECT. */
+  /** Enable Down/Enter task navigation at an empty editor; true by default. */
   downInspect?: boolean;
   /** Notify the user when a child settles; defaults to PI_SUBAGENT_NOTIFY_DONE, toggled by `n` or `/subagents notify`. */
   notifyDone?: boolean;
@@ -51,13 +51,11 @@ export interface SubagentExtensionOptions extends SubagentToolOptions {
 
 /** Raw-log tail rows shown by the panel's `l` key; same bound as the tool's log action. */
 const LOG_TAIL_LINES = 40;
-/** A transcript fold needs more of the tail than the raw viewer shows. */
-const TRANSCRIPT_TAIL_LINES = SUBAGENT_LOG_MAX_LINES;
 
-/** Opt-in: `down` at an empty editor opens the fleet panel (costs history browsing on that key). */
+/** Task navigation defaults on; the legacy environment switch can explicitly disable it. */
 export function downInspectEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.PI_SUBAGENT_DOWN_INSPECT?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "on";
+  return value !== "0" && value !== "false" && value !== "off";
 }
 
 /** Opt-in: notify the user (not only the model) when a child settles. */
@@ -98,9 +96,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     let uiCtx: ExtensionContext | undefined;
     let panelOpen = false;
     let activePanel: { dispose?(): void } | undefined;
-    let downUnsubscribe: (() => void) | undefined;
+
     let notifyDone = options.notifyDone ?? notifyDoneDefault();
-    const downInspect = options.downInspect ?? downInspectEnabled();
+    const navigation = connectTaskNavigation(pi, {
+      key: "subagents", label: "Subagents",
+      count: () => uiCtx ? registry.list(uiCtx.sessionManager.getSessionId()).length : 0,
+      open: openFleetPanel,
+    });
 
     // The model a child runs on, as `provider/id`. Since pi 1.0 `ctx.model` can be
     // a virtual model — selectable, with no provider credentials of its own. A
@@ -137,12 +139,14 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       if (records.length === 0) return;
       panelOpen = true;
       try {
-        await source.ui.custom(
-          (tui, theme, _keybindings, done) =>
-            (activePanel = createSubagentsPanel(
+        await openMainTaskView(source,
+          (tui, theme, close, bodyRows) =>
+            createSubagentsPanel(
               {
                 tui,
                 theme,
+                mainView: true,
+                bodyRows,
                 list: () => registry.list(sessionId),
                 stop: (id) => registry.stop(sessionId, id),
                 notify: (message, type) => {
@@ -155,15 +159,14 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                 readTranscriptLines: (id) => {
                   const path = registry.getLogPath(sessionId, id);
                   if (!path) return undefined;
-                  const read = readSubagentLog(path, { lines: TRANSCRIPT_TAIL_LINES });
-                  return { lines: read.text.split("\n").filter((line) => line.length > 0), earlierDataOmitted: read.earlierDataOmitted };
+                  return readSubagentTranscript(path);
                 },
                 notifyDone: () => notifyDone,
                 setNotifyDone: (value) => { notifyDone = value; },
               },
-              () => done(undefined),
-            )),
-          { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } },
+              close,
+            ),
+          (view) => { activePanel = view; },
         );
       } finally {
         panelOpen = false;
@@ -188,6 +191,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
 
     const registry = new LaneRegistry((record) => {
       reporter.sync();
+      if (uiCtx) attachDownInspect(uiCtx);
       liveChildren.delete(record.id);
       clearIdleTimer(record.id);
       const launch = pending.get(record.id);
@@ -213,8 +217,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       hostState.clear();
       registry.stopAll();
       uiCtx = undefined;
-      downUnsubscribe?.();
-      downUnsubscribe = undefined;
+      navigation.clear();
       // The host removes overlays without disposing them, so the panel would
       // keep its interval alive across a session switch if left to the host.
       activePanel?.dispose?.();
@@ -327,34 +330,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       },
     });
 
-    /**
-     * Down at an empty editor opens the fleet — flag-gated, because it swallows
-     * history browsing at an empty editor and can eat `down` aimed at an open
-     * dialog (the input listener runs before the focused component).
-     */
     function attachDownInspect(ctx: ExtensionContext): void {
-      downUnsubscribe?.();
-      downUnsubscribe = undefined;
-      if (!downInspect || ctx.mode !== "tui" || typeof ctx.ui?.onTerminalInput !== "function") return;
-      downUnsubscribe = ctx.ui.onTerminalInput((data) => {
-        if (isKeyRelease(data) || !matchesKey(data, "down")) return undefined;
-        if (panelOpen) return undefined;
-        const current = uiCtx;
-        if (!current) return undefined;
-        const sessionId = current.sessionManager.getSessionId();
-        if (registry.list(sessionId).length === 0) return undefined;
-        let editorText = "";
-        try {
-          editorText = current.ui.getEditorText();
-        } catch {
-          return undefined;
-        }
-        if (editorText.length > 0) return undefined;
-        // Async open: the listener is synchronous, and a consumed key is already
-        // swallowed by the time the panel mounts.
-        void openFleetPanel(current);
-        return { consume: true };
-      });
+      // Explicit false remains an opt-out; navigation is enabled by default.
+      if (options.downInspect ?? downInspectEnabled()) navigation.sync(ctx);
     }
 
     registerHostSubagent(pi, {
@@ -417,6 +395,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                   onChild: (child) => { liveChildren.set(id, child); },
                   onIdleChange: (idle) => {
                     registry.setIdle(id, idle);
+                    if (uiCtx) attachDownInspect(uiCtx);
                     if (!idle) {
                       const lane = registry.get(sessionId, id);
                       if (lane && generation === launchedIn) hostState.publish(lane);
@@ -463,6 +442,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             // that swapped the extension in mid-session.
             if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
             reporter.sync();
+            attachDownInspect(ctx);
             // The child starts on a later microtask; expose its file before returning the handle.
             const rawLog = subagentLogPath(record.id, sessionId);
             registry.setLogPath(record.id, rawLog);
@@ -553,6 +533,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         signal?.addEventListener("abort", onAbort, { once: true });
         if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
         reporter.sync();
+        attachDownInspect(ctx);
         try {
           await launched.done;
           const settled = registry.get(sessionId, launched.record.id);

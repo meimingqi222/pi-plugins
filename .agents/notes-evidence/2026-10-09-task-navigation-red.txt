@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/plugin.test.ts:
+654 |     };
+655 |     emit("session_start", {}, ctx);
+656 |     await tools[0]!.execute!("bg-down", { agent: "explore", task: "x", background: true }, undefined, undefined, ctx);
+657 |     const result = inputHandler!("\x1b[B");
+658 |     expect(result).toEqual({ consume: true });
+659 |     expect(customFactory).toBeUndefined();
+                                ^
+error: expect(received).toBeUndefined()
+
+Received: [Function]
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/plugin.test.ts:659:27)
+(fail) the fleet surfaces > down selects the default task entry and enter opens the panel [7.19ms]
+
+ 0 pass
+ 29 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [270.00ms]

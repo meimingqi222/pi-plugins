@@ -44,3 +44,17 @@ describe("subagent raw logs", () => {
     }
   });
 });
+
+test("transcript reader preserves complete large JSON messages", async () => {
+  const { readSubagentTranscript } = await import("../src/logs.ts");
+  const dir = await mkdtemp(join(tmpdir(), "pi-child-transcript-"));
+  try {
+    const path = join(dir, "child.jsonl");
+    const text = "A paragraph longer than the raw log preview. ".repeat(300) + "END-OF-REPORT";
+    const event = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } };
+    await writeFile(path, JSON.stringify(event) + "\n");
+    const result = readSubagentTranscript(path);
+    const parsed = result.lines.map((line) => { try { return JSON.parse(line); } catch { return undefined; } });
+    expect(parsed.find((entry) => entry?.type === "message_end")?.message.content[0].text).toBe(text);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

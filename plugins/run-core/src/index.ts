@@ -70,3 +70,7 @@ export {
   type WorkSurfaceUI,
   type WorkTheme,
 } from "./work-surface.ts";
+
+export { connectTaskNavigation, type TaskEntry } from "./task-navigation.ts";
+
+export { createMainTaskView, openMainTaskView, type TaskViewComponent, type TaskViewFactory } from "./main-task-view.ts";

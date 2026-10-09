@@ -1,6 +1,7 @@
 # Agent Note: Give subagent children a liveness surface the user can watch
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-task-keyboard-navigation.md
 
 ## Problem
 
@@ -125,3 +126,14 @@ Proved: reverting `deriveChildState` to always `running` fails five tests
 stall notify, and the no-progress stall) and `formatBackground` loses its
 "possible stall" marker. Reverted; all 70 plugin tests pass, `bun run
 typecheck` is clean.
+
+## Superseded
+
+The opt-in Down-to-open decision is replaced by the shared default Down/Enter
+category selector in 2026-10-09-task-keyboard-navigation.md. Widget, panel,
+shortcut and lifecycle behavior described here otherwise remains applicable.
+Active duration accounting is now owned by 2026-10-09-subagent-active-duration.md.
+
+The overlay and Enter-to-detail presentation is superseded by
+`2026-10-09-task-main-message-view.md`: main task navigation now replaces the
+message area, and Enter opens the selected child's transcript.

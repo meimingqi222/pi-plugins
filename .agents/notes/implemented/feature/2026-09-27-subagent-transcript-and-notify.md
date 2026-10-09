@@ -1,6 +1,7 @@
 # Agent Note: Fold the child event log into a transcript, and let the user opt into settle notifications
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-task-main-message-view.md
 
 ## Problem
 
@@ -96,3 +97,10 @@ user-facing only — the model's `subagent_result` message is untouched.
 Proved: disabling the `message_end` fold fails the transcript-fold tests
 and the panel's `t`-view test. Reverted; 79 tests pass, `bun run typecheck`
 clean.
+
+## Superseded
+
+The fold and notification policies remain authoritative. The raw-preview
+reader and detail-first navigation are superseded by
+`2026-10-09-task-main-message-view.md`: whole JSON records feed the fold,
+and main views open child messages directly with details as an optional drill.

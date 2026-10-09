@@ -57,7 +57,7 @@ function fakePanel(list: () => BackgroundRecord[], stopOutcome: StopOutcome = "s
 		},
 	};
 	const panel = createSubagentsPanel(deps, () => { closed.value = true; });
-	return { panel, stopped, notifications, closed, timers, renders: () => renders, notify: () => notifyFlag };
+	return { deps, panel, stopped, notifications, closed, timers, renders: () => renders, notify: () => notifyFlag };
 }
 
 describe("the fleet panel", () => {
@@ -225,4 +225,67 @@ describe("the fleet panel", () => {
 		expect(timers.size).toBe(0);
 		panel.dispose?.();
 	});
+});
+
+
+test("main view opens a single child's transcript and Escape restores the parent", () => {
+	const { deps, panel: oldPanel } = fakePanel(() => [record()]);
+	oldPanel.dispose?.();
+	let closed = false;
+	const view = createSubagentsPanel({ ...deps, mainView: true, bodyRows: () => 28 }, () => { closed = true; });
+	try {
+		const rendered = view.render(100).join("\n");
+		expect(rendered).toContain("folded reply");
+		expect(rendered).toContain("explore");
+		view.handleInput?.(ESC);
+		expect(closed).toBe(true);
+	} finally { view.dispose?.(); }
+});
+
+test("main view selects children beyond the viewport and returns through transcript", () => {
+	const records = Array.from({ length: 12 }, (_, i) => record({ id: `sa-${i + 1}`, task: `task ${i + 1}` }));
+	const { deps, panel: oldPanel } = fakePanel(() => records);
+	oldPanel.dispose?.();
+	let closed = false;
+	const view = createSubagentsPanel({ ...deps, mainView: true, bodyRows: () => 3,
+		readTranscriptLines: (id) => ({ lines: [JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `reply for ${id}` }] } })], earlierDataOmitted: false }),
+	}, () => { closed = true; });
+	try {
+		view.render(100);
+		for (let i = 0; i < 9; i++) view.handleInput?.(DOWN);
+		expect(view.render(100).join("\n")).toContain("› ● task 10");
+		view.handleInput?.(ENTER);
+		expect(view.render(100).join("\n")).toContain("reply for sa-10");
+		view.handleInput?.("d");
+		expect(view.render(100).join("\n")).toContain("Task");
+		view.handleInput?.(ESC);
+		expect(view.render(100).join("\n")).toContain("reply for sa-10");
+		view.handleInput?.(ESC);
+		expect(view.render(100).join("\n")).toContain("› ● task 10");
+		expect(closed).toBe(false);
+		view.handleInput?.(ESC);
+		expect(closed).toBe(true);
+	} finally { view.dispose?.(); }
+});
+
+test("main transcript follows new messages until scrolling away and resizes", () => {
+	const { deps, panel: oldPanel } = fakePanel(() => [record()]);
+	oldPanel.dispose?.();
+	let rows = 6;
+	let count = 30;
+	const view = createSubagentsPanel({ ...deps, mainView: true, bodyRows: () => rows,
+		readTranscriptLines: () => ({ lines: [JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: Array.from({ length: count }, (_, i) => `message ${i}`).join("\n\n") }] } })], earlierDataOmitted: false }),
+	}, () => {});
+	try {
+		expect(view.render(40).join("\n")).toContain("message 29");
+		view.handleInput?.("\x1b[H");
+		expect(view.render(40).join("\n")).toContain("message 0");
+		count = 40;
+		expect(view.render(40).join("\n")).not.toContain("message 39");
+		view.handleInput?.(END);
+		expect(view.render(40).join("\n")).toContain("message 39");
+		rows = 15;
+		expect(view.render(40)).toHaveLength(rows + 4);
+		for (const line of view.render(20)) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+	} finally { view.dispose?.(); }
 });

@@ -43,6 +43,8 @@ export interface WorkItem {
 	readonly state: WorkState;
 	readonly startedAt: number;
 	readonly endedAt?: number;
+	/** Active work duration supplied by a producer with a pausable clock. */
+	readonly elapsedMs?: number;
 	/** Extra metric rendered after elapsed, e.g. `"↓1.2k"`; absent for most kinds. */
 	readonly metric?: string;
 }
@@ -114,8 +116,8 @@ export function fitWorkText(value: string, width: number): string {
 }
 
 /** "12s" / "5m" / "3m01s"; `endedAt` pins a settled item so the clock does not keep running. */
-export function formatWorkElapsed(item: Pick<WorkItem, "startedAt" | "endedAt">, now: number): string {
-	const seconds = Math.max(0, Math.floor(((item.endedAt ?? now) - item.startedAt) / 1_000));
+export function formatWorkElapsed(item: Pick<WorkItem, "startedAt" | "endedAt" | "elapsedMs">, now: number): string {
+	const seconds = Math.max(0, Math.floor((item.elapsedMs ?? ((item.endedAt ?? now) - item.startedAt)) / 1_000));
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	const remainder = seconds % 60;
@@ -148,8 +150,8 @@ export function formatWorkSummary(items: WorkItem[], now: number, title = "work"
 		: count("idle") > 0 ? "idle"
 		: items.every((item) => item.state === "queued") ? "queued"
 		: "succeeded";
-	const eldest = items.reduce((min, item) => Math.min(min, item.startedAt), now);
-	return `${WORK_ICONS[worst]} ${title}${parts.length ? ` · ${parts.join(" · ")}` : ""} · ${formatWorkElapsed({ startedAt: eldest }, now)}`;
+	const elapsedMs = items.reduce((longest, item) => Math.max(longest, item.elapsedMs ?? ((item.endedAt ?? now) - item.startedAt)), 0);
+	return `${WORK_ICONS[worst]} ${title}${parts.length ? ` · ${parts.join(" · ")}` : ""} · ${formatWorkElapsed({ startedAt: now, elapsedMs }, now)}`;
 }
 
 /**

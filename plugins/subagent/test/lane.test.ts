@@ -167,3 +167,21 @@ describe("the lane registry", () => {
 		}
 	});
 });
+
+
+test("reply turns count active time and exclude every idle gap", async () => {
+ const registry = new LaneRegistry(() => {});
+ const pending = pendingWork();
+ const { record, done } = registry.launch("review", "review", SESSION, pending.work);
+ const start = record.startedAt;
+ registry.setIdle(record.id, true, start + 20_000);
+ expect(registry.get(SESSION, record.id)?.elapsedMs).toBe(20_000);
+ registry.setIdle(record.id, true, start + 30_000);
+ expect(registry.get(SESSION, record.id)?.idleSince).toBe(start + 20_000);
+ registry.setIdle(record.id, false, start + 120_000);
+ registry.setIdle(record.id, false, start + 125_000);
+ registry.setIdle(record.id, true, start + 130_000);
+ expect(registry.get(SESSION, record.id)?.elapsedMs).toBe(30_000);
+ pending.finish();
+ await done;
+});

@@ -632,12 +632,13 @@ describe("the fleet surfaces", () => {
     expect(seen?.model).toBe("openai-codex/gpt-5.6-luna");
   });
 
-  test("PI_SUBAGENT_DOWN_INSPECT opens the panel when down lands on an empty editor", async () => {
+  test("down selects the default task entry and enter opens the panel", async () => {
     const { pi, tools, emit } = fakePi();
     let finish: ((value: any) => void) | undefined;
     let inputHandler: ((data: string) => unknown) | undefined;
     let customFactory: unknown;
-    subagentExtension({ downInspect: true, executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    let customOptions: any;
+    subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
     const ctx = {
       cwd: "/repo",
       mode: "tui",
@@ -645,7 +646,7 @@ describe("the fleet surfaces", () => {
       ui: {
         onTerminalInput: (handler: (data: string) => unknown) => { inputHandler = handler; return () => {}; },
         getEditorText: () => "",
-        custom: async (factory: any) => { customFactory = factory; },
+        custom: async (factory: any, options: any) => { customFactory = factory; customOptions = options; },
         setWidget: () => {},
         notify: () => {},
       },
@@ -656,8 +657,11 @@ describe("the fleet surfaces", () => {
     await tools[0]!.execute!("bg-down", { agent: "explore", task: "x", background: true }, undefined, undefined, ctx);
     const result = inputHandler!("\x1b[B");
     expect(result).toEqual({ consume: true });
+    expect(customFactory).toBeUndefined();
+    expect(inputHandler!("\r")).toEqual({ consume: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(customFactory).toBeDefined();
+    expect(customOptions?.overlay ?? false).toBe(false);
     finish!({ status: "completed", text: "x", usage: doneUsage });
   });
 

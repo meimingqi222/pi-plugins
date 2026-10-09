@@ -211,23 +211,24 @@ scrollback cannot describe work that is still in flight:
   longer looks like an idle session; they never occupy a background slot and
   cannot be cancelled by id.
 - **`/subagents`** prints the same listing the model's `subagent_tasks`
-  produces. **`/subagents live`** opens an overlay panel: `↑`/`↓` select
-  (selection follows the record id, so a settling child does not move the
-  cursor onto a different one), `enter` opens a detail view with the recent
-  activity trail and result, `t` folds the child's event log into a readable
-  transcript (assistant text, tool calls, bounded results — no persisted
-  child session needed), `l` drops to a bounded raw-log tail, `k` cancels a
-  running child, and `Esc` backs out one level at a time.
+  produces. **`/subagents live`** switches the main message area to the
+  subagent view. A single child opens directly into its live transcript;
+  with multiple children, `↑`/`↓` select by record id and `enter` opens its
+  transcript. Assistant messages render as Markdown. `↑`/`↓`, Home and
+  PageUp scroll; End resumes following new messages. `d` opens details,
+  `L` opens a bounded raw-log tail, and `k` in the list or details cancels a
+  running child. `Esc` backs out to the list (if there were multiple children),
+  then restores the parent conversation, including messages received while
+  viewing the child. `q` returns to the parent from any view.
 - **`n` / `/subagents notify`** toggles a user-facing completion notification:
   by default only the model is told a child finished; with it on, a toast
   announces each settle (`PI_SUBAGENT_NOTIFY_DONE=1` makes on the default).
 - **`ctrl+shift+a`** opens the panel without typing. Extension shortcuts take
   precedence over user keybindings and conflict loudly in `/hotkeys` output;
   the widget's hint line always shows a working way in.
-- **`PI_SUBAGENT_DOWN_INSPECT=1`** additionally opens the panel on `down` at an
-  empty editor. It is opt-in: that key browses prompt history, and a TUI-level
-  input listener runs before dialog focus, so it can swallow `down` aimed at an
-  open selector.
+- **↓ then Enter** selects and opens the Subagents or Background tasks panel
+  from an empty editor. ↑/↓ switches the selected entry; Esc returns to input.
+  This is enabled by default and leaves dialogs and typed prompts alone.
 The transcript is a fold of the child's own JSON-mode event stream, not a
 resumed session: children still run `--no-session`, so the fold never appears
 in `/resume` and cannot be resumed into a session that bypasses the one-level
@@ -428,3 +429,15 @@ children; existing historical blank pages do not gain transcripts retroactively.
 
 Paseo-specific live transcript notifications require `PI_RPC_CLIENT=paseo`
 in the parent Pi process environment. Generic RPC clients use standard updates.
+
+## Keyboard task navigation
+
+With an empty editor, press ↓ to select **Background tasks** or **Subagents**,
+then ↑/↓ to switch and Enter to switch the main message area to the selected task view. Esc returns to the
+editor. Typed prompts, dialogs and overlays keep their existing keys. The shared
+selector is enabled by default and includes retained results for inspection.
+
+Subagent elapsed time counts active work only: `awaiting a reply` pauses the
+clock, and a reply resumes it without counting the intervening wait. Widget,
+panel and `subagent_tasks` use the same duration. `/subagents live` and
+Ctrl+Shift+A also open the main task view directly.
