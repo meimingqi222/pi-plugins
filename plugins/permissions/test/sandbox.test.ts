@@ -9,7 +9,7 @@ import {
   type SandboxDeps,
 } from "../src/sandbox/index.ts";
 import type { PolicyEnv, SandboxSettings } from "../src/types.ts";
-import { envMac, makeEnv } from "./envs.ts";
+import { envLinux, envMac, makeEnv } from "./envs.ts";
 
 const OFF: SandboxSettings = { enabled: true, network: "on", allowWrite: [], denyRead: [] };
 
@@ -115,4 +115,23 @@ test("bwrap masks credential files with a file rather than tmpfs", () => {
   const args = buildBwrapArgs({ writable: [], denyRead: ['/home/me/.npmrc'], network: 'on' }, () => true, () => false);
   expect(args.join(' ')).toContain('--ro-bind /dev/null /home/me/.npmrc');
   expect(args).not.toContain('--tmpfs');
+});
+
+/**
+ * The shape the extension integration tests inject: `isDirectory` is optional in
+ * `SandboxDeps`, so a stub supplies `exists`/`probe`/`onPath` only. The Linux
+ * branch must still produce a bwrap command instead of falling back to a real
+ * `fs.statSync`, which throws on a denyRead path that `exists` claims is present
+ * and aborts the wrap — running the command outside the sandbox.
+ */
+test("a deps object without isDirectory still wraps on linux", () => {
+  const partial: SandboxDeps = { exists: () => true, probe: () => true, onPath: () => true };
+  const availability = { supported: true, available: true, detail: "bwrap" };
+  const wrapped = wrapSandboxed("npm test", envLinux(), OFF, availability, partial);
+  expect(wrapped).toContain("bwrap");
+  expect(wrapped).toContain("npm test");
+  // An unstatable denyRead path is masked as a file: hiding the credential
+  // matters more than guessing its type, and a file bind fails loudly rather
+  // than leaving the path readable. `wrapSandboxed` sh-quotes every argv.
+  expect(wrapped).toContain("'--ro-bind' '/dev/null' '/home/me/.ssh'");
 });

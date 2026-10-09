@@ -47,9 +47,28 @@ export function sandboxDeps(): SandboxDeps {
   return overriddenDeps ?? defaultDeps();
 }
 
+/**
+ * `isDirectory` is optional in `SandboxDeps`, and the Linux wrap needs it to pick
+ * tmpfs (directory) over a /dev/null file bind (file). Its absence used to reach
+ * the real filesystem through `buildBwrapArgs`' default argument: a `denyRead`
+ * path that `exists` reports but `statSync` cannot stat (a container home, a
+ * TOCTOU race) threw ENOENT, which aborted the whole wrap and — through the
+ * handler's fail-closed catch — re-prompted the user and then ran the command
+ * *outside* the sandbox. Never throw here: an unstatable credential path is
+ * masked as a file, which hides it and fails loudly if it is really a directory.
+ */
+function isDirectoryOrFalse(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function defaultDeps(): SandboxDeps {
   return {
     exists: (p) => fs.existsSync(p),
+    isDirectory: isDirectoryOrFalse,
     probe: (argv) => {
       try {
         return spawnSync(argv[0]!, argv.slice(1), { stdio: "ignore", timeout: 10_000 }).status === 0;
@@ -161,7 +180,7 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
 }
 
 /** bwrap argv (before the `--` command tail). Only existing paths are bound/masked. */
-export function buildBwrapArgs(policy: SandboxPolicy, exists: (p: string) => boolean, isDirectory: (p: string) => boolean = (p) => fs.statSync(p).isDirectory()): string[] {
+export function buildBwrapArgs(policy: SandboxPolicy, exists: (p: string) => boolean, isDirectory: (p: string) => boolean = isDirectoryOrFalse): string[] {
   const args = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"];
   for (const dir of policy.writable) {
     if (exists(dir)) args.push("--bind", dir, dir);
