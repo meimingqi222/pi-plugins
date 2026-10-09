@@ -33,6 +33,9 @@ Thumbs.db
 .tmp/
 *.local
 
+# Playwright CLI scratch (page snapshots and console logs)
+.playwright-cli/
+
 # Subagent evidence and host transcripts
 subagent-logs/
 
