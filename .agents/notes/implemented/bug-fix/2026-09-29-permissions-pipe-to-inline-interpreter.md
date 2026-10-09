@@ -1,6 +1,7 @@
 # Agent Note: A pipe into an inline-program interpreter delivers data, not code
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-permissions-yolo-auto-allow.md
 
 ## Problem
 
@@ -92,3 +93,12 @@ the human or the reviewer to read — the same trade minimax-code documents.
 Proved: stubbed `hasInlineProgram` to `return false` → `bun test plugins/permissions/test/decide.test.ts`
 reported `47 pass, 1 fail` with case 42 failing (`Expected: "allow" / Received: "deny"`)
 while 43/44/45 kept passing, then restored → `48 pass, 0 fail`.
+
+
+## Superseded
+
+The classifier/path-boundary decision still holds. The universal dangerous
+confirmation requirement, including claims that yolo asks or headless yolo
+denies dangerous calls, is replaced by the successor: YOLO allows dangerous
+classifications unless an explicit user rule restricts the call. Ask/auto
+retain guarded confirmation and forbidden operations remain denied.

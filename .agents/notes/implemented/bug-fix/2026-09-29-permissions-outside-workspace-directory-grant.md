@@ -1,6 +1,7 @@
 # Agent Note: Granting one directory from a dangerous outside-workspace delete
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-permissions-yolo-auto-allow.md
 
 ## Problem
 
@@ -93,3 +94,12 @@ Proved: stubbed `grantableDirectory` to `return undefined` →
 `bun test plugins/permissions/test/plugin.test.ts` reported `24 pass, 1 fail`
 with the grant case failing (`Expected: 1 / Received: 2` dialogs), then
 restored → `25 pass, 0 fail`.
+
+
+## Superseded
+
+The classifier/path-boundary decision still holds. The universal dangerous
+confirmation requirement, including claims that yolo asks or headless yolo
+denies dangerous calls, is replaced by the successor: YOLO allows dangerous
+classifications unless an explicit user rule restricts the call. Ask/auto
+retain guarded confirmation and forbidden operations remain denied.

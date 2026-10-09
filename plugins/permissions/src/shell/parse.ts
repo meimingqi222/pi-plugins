@@ -87,18 +87,18 @@ function redirectOp(operator: string): ShellRedirect["op"] {
 }
 
 /** Words that are fully static yield a string; anything dynamic yields undefined. */
-function wordValue(word: Word, visitScript: (script: ParsedScript) => void): string | undefined {
+function wordValue(word: Word, visitScript: (script: ParsedScript) => void, home: string): string | undefined {
   if (!word.parts) return word.value;
   let value = "";
   for (const part of word.parts) {
-    const piece = partValue(part, visitScript);
+    const piece = partValue(part, visitScript, home);
     if (piece === undefined) return undefined;
     value += piece;
   }
   return value;
 }
 
-function partValue(part: WordPart, visitScript: (script: ParsedScript) => void): string | undefined {
+function partValue(part: WordPart, visitScript: (script: ParsedScript) => void, home: string): string | undefined {
   switch (part.type) {
     case "Literal":
     case "SingleQuoted":
@@ -110,7 +110,7 @@ function partValue(part: WordPart, visitScript: (script: ParsedScript) => void):
     case "LocaleString": {
       let value = "";
       for (const child of part.parts) {
-        const piece = partValue(child, visitScript);
+        const piece = partValue(child, visitScript, home);
         if (piece === undefined) return undefined;
         value += piece;
       }
@@ -120,12 +120,15 @@ function partValue(part: WordPart, visitScript: (script: ParsedScript) => void):
     case "ProcessSubstitution":
       if (part.script) visitScript(part.script);
       return undefined;
+    case "SimpleExpansion":
+      return part.text === "$HOME" ? home : undefined;
     case "ParameterExpansion":
-      if (part.operand) wordValue(part.operand, visitScript);
+      if (part.text === "${HOME}") return home;
+      if (part.operand) wordValue(part.operand, visitScript, home);
       return undefined;
     case "BraceExpansion":
     case "ExtendedGlob":
-      if (part.parts) for (const child of part.parts) partValue(child, visitScript);
+      if (part.parts) for (const child of part.parts) partValue(child, visitScript, home);
       return undefined;
     default:
       return undefined;
@@ -284,7 +287,7 @@ export function analyzeShell(input: string, env: PolicyEnv): ShellAnalysis {
         const op = redirectOp(redirect.operator);
         // Keep every redirect: intents only consume file ops, but rules inspect
         // "other" targets too (e.g. `>& /dev/tcp/…` for reverse-shell).
-        const target = redirect.target ? wordValue(redirect.target, visitScript) : undefined;
+        const target = redirect.target ? wordValue(redirect.target, visitScript, env.home) : undefined;
         into.push({ op, target });
       }
     };
@@ -295,7 +298,7 @@ export function analyzeShell(input: string, env: PolicyEnv): ShellAnalysis {
           const redirects: ShellRedirect[] = [];
           collectRedirects(node.redirects, redirects);
           if (!node.name) return;
-          const words = [node.name, ...node.suffix].map((word) => wordValue(word, visitScript));
+          const words = [node.name, ...node.suffix].map((word) => wordValue(word, visitScript, env.home));
           const rawWords = [node.name, ...node.suffix].map((word) => word.text);
           invocations.push({ words, rawWords, redirects, pipeline: pipeline ?? ++pipelineCount });
           return;
@@ -307,7 +310,7 @@ export function analyzeShell(input: string, env: PolicyEnv): ShellAnalysis {
             const inner = node.command;
             if (inner.name) {
               collectRedirects(inner.redirects, redirects);
-              const words = [inner.name, ...inner.suffix].map((word) => wordValue(word, visitScript));
+              const words = [inner.name, ...inner.suffix].map((word) => wordValue(word, visitScript, env.home));
               const rawWords = [inner.name, ...inner.suffix].map((word) => word.text);
               invocations.push({ words, rawWords, redirects, pipeline: pipeline ?? ++pipelineCount });
               return;

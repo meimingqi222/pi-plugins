@@ -1,9 +1,9 @@
 /**
  * tier × mode × rules → Action (§3.3, §5.2).
  *
- * Order matters: forbidden → deny rules → dangerous → mode table →
+ * Order matters: forbidden → deny rules → read-only floor → mode-specific dangerous floor → mode table →
  * ask rules tighten → allow rules lift. User rules can never downgrade
- * dangerous or forbidden tiers.
+ * dangerous in guarded modes or forbidden tiers.
  */
 
 import { ruleMatches, type UserRule } from "./rules.ts";
@@ -27,12 +27,17 @@ export function decide(classification: Classification, mode: Mode, rules: UserRu
     }
   }
 
-  // 3. dangerous always asks — allow rules cannot downgrade it.
-  if (tier === "dangerous") {
+  // Read-only is an enforcement boundary, not a confirmation preference.
+  if (mode === "read-only" && (tier !== "safe" || classification.mutating)) {
+    return { action: "deny", tier, reason: "pi-permissions is in read-only mode", ruleId, allowAlwaysOffered: false };
+  }
+
+  // 3. Guarded modes require confirmation; YOLO bypasses classifier prompts.
+  if (tier === "dangerous" && mode !== "yolo") {
     return { action: "ask", tier, reason, ruleId, allowAlwaysOffered: false };
   }
 
-  // 4. Mode table for safe/grey.
+  // 4. Mode table (YOLO includes dangerous; explicit rules still apply).
   let action: "allow" | "ask" | "deny";
   switch (mode) {
     case "read-only":
@@ -80,5 +85,5 @@ export function decide(classification: Classification, mode: Mode, rules: UserRu
     const matched = rules.find((rule) => rule.kind === "allow" && intents.some((intent) => ruleMatches(rule, intent, env)));
     return { action: "allow", tier, reason, ruleId, matchedRule: matched?.raw, allowAlwaysOffered: true };
   }
-  return { action: "ask", tier, reason, ruleId, allowAlwaysOffered: true, askedByRule: asking.some((index) => askMatched.has(index)) };
+  return { action: "ask", tier, reason, ruleId, allowAlwaysOffered: tier !== "dangerous", askedByRule: asking.some((index) => askMatched.has(index)) };
 }

@@ -30,6 +30,7 @@ export interface SandboxAvailability {
 /** Injectable so tests can fake platforms and probes. */
 export interface SandboxDeps {
   exists(path: string): boolean;
+  isDirectory?(path: string): boolean;
   /** Runs argv directly; returns true when the probe exits 0. */
   probe(argv: string[]): boolean;
   /** PATH lookup for a bare command name. */
@@ -160,13 +161,15 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
 }
 
 /** bwrap argv (before the `--` command tail). Only existing paths are bound/masked. */
-export function buildBwrapArgs(policy: SandboxPolicy, exists: (p: string) => boolean): string[] {
+export function buildBwrapArgs(policy: SandboxPolicy, exists: (p: string) => boolean, isDirectory: (p: string) => boolean = (p) => fs.statSync(p).isDirectory()): string[] {
   const args = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"];
   for (const dir of policy.writable) {
     if (exists(dir)) args.push("--bind", dir, dir);
   }
   for (const p of policy.denyRead) {
-    if (exists(p)) args.push("--tmpfs", p);
+    if (!exists(p)) continue;
+    if (isDirectory(p)) args.push("--tmpfs", p);
+    else args.push("--ro-bind", "/dev/null", p);
   }
   if (policy.network === "off") args.push("--unshare-net");
   args.push("--die-with-parent");
@@ -187,7 +190,7 @@ export function wrapSandboxed(
     return `/usr/bin/sandbox-exec -p ${shQuote(buildSeatbeltProfile(policy))} /bin/bash -c ${shQuote(command)}`;
   }
   if (env.platform === "linux") {
-    const argv = buildBwrapArgs(policy, deps.exists).map(shQuote).join(" ");
+    const argv = buildBwrapArgs(policy, deps.exists, deps.isDirectory).map(shQuote).join(" ");
     return `${argv} -- /bin/bash -c ${shQuote(command)}`;
   }
   return undefined;

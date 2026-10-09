@@ -163,7 +163,7 @@ export function classifyPath(
   }
 
   // 3. grep over a directory that would surface credential contents.
-  if (kind === "read" && tool === "grep") {
+  if (kind === "read" && ["grep", "rg", "egrep", "fgrep"].includes(tool)) {
     const riskyRoot = absPath === env.home || isFilesystemRoot(absPath);
     const coversSecrets = CREDENTIAL_DIRS.some((dir) => isInside(expandPattern(dir, env), absPath, env));
     if (riskyRoot || coversSecrets) {

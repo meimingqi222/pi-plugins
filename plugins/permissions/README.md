@@ -13,15 +13,18 @@ pi install -l ./plugins/permissions
 
 ## Modes
 
-The default mode is `yolo` — the plugin behaves like stock pi except that the
-dangerous/forbidden tiers still apply.
+The default mode is `yolo`: safe, grey and dangerous classifications run
+automatically, without a confirmation dialog or reviewer. Only forbidden
+operations and explicit user ask/deny rules restrict this mode. Choose `ask`
+or `auto` for confirmation of dangerous classifications. Children inherit the
+same policy, so YOLO does not turn an uncertain path into a headless denial.
 
 | tier \ mode | read-only | ask | auto | yolo |
 |---|---|---|---|---|
 | safe, read-only | allow | allow | allow | allow |
 | safe, mutating | **deny** | ask | allow | allow |
 | grey | deny | ask | reviewer model¹ | allow |
-| dangerous | deny | ask | ask | **ask** |
+| dangerous | deny | ask | ask | **allow** |
 | forbidden | deny | deny | deny | deny |
 
 ¹ In `auto`, a grey call first tries the reviewer model (if configured) and
@@ -37,7 +40,7 @@ becomes a denial with an explanation.
 |---|---|---|
 | `safe` | provably harmless | `git status`, reading files, writes inside the workspace |
 | `grey` | cannot be proven harmless | `npm test`, unknown commands, writes outside the workspace |
-| `dangerous` | can cause damage or leaks — **always asks** | `git push --force`, `sudo`, `npm publish`, reading `~/.ssh`, writing `.env` |
+| `dangerous` | can cause damage or leaks — **asks in guarded modes; auto-allows in yolo** | `git push --force`, `sudo`, `npm publish`, reading `~/.ssh`, writing `.env` |
 | `forbidden` | unrecoverable or clearly malicious — **always denied** | `rm -rf /`, `mkfs`, reverse shells, credentials piped to `curl` |
 
 ### Rule ids
@@ -188,12 +191,41 @@ reviewer or the user.
 Known side effect: extensions whose `tool_call` handler runs after this plugin
 see the *rewritten* command (e.g. a bare-`sleep` detector sees the wrapper).
 
+## Approval lifecycle
+
+Read-only rejects non-safe or mutating calls before any approval dialog; an
+internal error cannot offer an override in this mode. Mode commands and the
+status line show the effective mode and its source, including environment
+variables that override a requested session mode.
+
+For static calls, session/project grants retain the existing narrow allow
+rules. Dynamic commands such as `npm test "$SUITE"` cannot become a persistent
+prefix rule: **Allow for this session** instead approves the exact original
+tool input in the same canonical working directory and shell settings. This
+approves the command syntax, not a frozen value of shell variables. Changed
+input or shell settings requires another approval. No permanent grant option
+is offered for these calls, or for an explicit ask rule that an allow rule
+cannot override.
+
+The approval queue includes applying the grant. Waiting requests re-evaluate
+permissions before opening a dialog, so one session grant covers queued
+repeats. Cancellation, session reset/shutdown, mode changes and config reload
+invalidate pending approvals; stale answers cannot run a call or add grants.
+
 ## Delegated children
 
 `pi-agent-runner` sets `PI_AGENT_CHILD=1` in spawned agents. Inside one, the
 plugin inherits the parent's effective mode via `PI_PERMISSIONS_INHERITED_MODE`
 and **never prompts**: anything that would ask is denied with a headless
 explanation, so a subagent cannot hang on a dialog nobody can see.
+
+New children also receive a versioned snapshot of session allow rules,
+exact-call approvals and the session sandbox switch. Grants apply only in the
+parent's canonical working directory; child deny/ask rules, read-only limits
+and forbidden tiers still take precedence. The snapshot is fixed at spawn;
+changes in the parent do not update an already-running child. Invalid,
+wrong-directory or oversized snapshots (over 8 KiB) are ignored rather than
+widening permissions. Raw dynamic tool inputs are hashed before inheritance.
 
 ## Not covered
 
@@ -212,4 +244,13 @@ explanation, so a subagent cannot hang on a dialog nobody can see.
 |---|---|
 | `PI_PERMISSIONS_MODE` | force a mode (below child-inherited, above session/project/global) |
 | `PI_PERMISSIONS_INHERITED_MODE` | written by the parent for delegated children; ignored in the parent |
+| `PI_PERMISSIONS_INHERITED_CONTEXT` | versioned, cwd-scoped session grants and sandbox switch for newly spawned children |
 | `PI_AGENT_CHILD` | set by `pi-agent-runner`; makes every ask a denial |
+
+Shell path policy resolves plain `$HOME` and `${HOME}` expansions, including
+inside double quotes. Dynamic file operands that cannot be resolved require
+approval in guarded modes; yolo automatically allows them. All grep-family commands share credential-root
+checks. `find -delete` uses recursive deletion boundaries, and unresolved
+recursive deletion targets (including xargs input) require approval in guarded
+modes. The classifier retains its tier in yolo; execution policy bypasses
+classifier-generated confirmations.

@@ -64,8 +64,7 @@ export function buildAllowRules(classification: Classification, env: PolicyEnv):
       const command = intent.command;
       // Skip dynamic commands: they cannot be safely generalized.
       if (command.args.includes(undefined)) {
-        rules.add(`${intent.tool}(${command.name}:*)`);
-        continue;
+        return [];
       }
       const firstOperand = command.args.find((arg) => typeof arg === "string" && !arg.startsWith("-") && arg !== command.name);
       rules.add(`${intent.tool}(${firstOperand ? `${command.name} ${firstOperand}` : command.name}:*)`);
@@ -79,41 +78,36 @@ export function buildAllowRules(classification: Classification, env: PolicyEnv):
   return [...rules];
 }
 
-export function createPrompter(): { ask(opts: {
+export interface PromptOptions {
   dangerous: boolean;
   readOnly: boolean;
   toolName: string;
   reason: string;
   summary: string;
   allowRules: string[];
-  /** Directory the user may grant to make this dangerous call ordinary. */
+  allowSession: boolean;
   grantDirectory?: string;
   deps: PromptDeps;
-}): Promise<PromptOutcome> } {
-  let queue: Promise<unknown> = Promise.resolve();
-  const ask = (opts: Parameters<typeof run>[0]): Promise<PromptOutcome> => {
-    const result = queue.then(() => run(opts));
-    queue = result.catch(() => undefined);
-    return result;
-  };
-  return { ask };
+}
 
-  async function run(opts: {
-    dangerous: boolean;
-    readOnly: boolean;
-    toolName: string;
-    reason: string;
-    summary: string;
-    allowRules: string[];
-    grantDirectory?: string;
-    deps: PromptDeps;
-  }): Promise<PromptOutcome> {
+/** Serialize the entire approval transaction, including applying its grant. */
+export function createPrompter() {
+  let queue: Promise<unknown> = Promise.resolve();
+  return {
+    withApproval<T>(task: (ask: typeof run) => Promise<T>): Promise<T> {
+      const result = queue.then(() => task(run));
+      queue = result.catch(() => undefined);
+      return result;
+    },
+  };
+
+  async function run(opts: PromptOptions): Promise<PromptOutcome> {
     const title = `[pi-permissions] ${opts.dangerous ? "DANGEROUS" : "Approve"} ${opts.toolName}\n${opts.reason}\n${opts.summary}`;
     const directoryOption = opts.grantDirectory ? optionAllowDirectory(opts.grantDirectory) : undefined;
     const options = [OPT_ALLOW_ONCE];
-    if (!opts.dangerous) {
+    if (!opts.dangerous && opts.allowSession) {
       options.push(OPT_ALLOW_SESSION);
-      if (!opts.readOnly) options.push(OPT_ALLOW_ALWAYS);
+      if (!opts.readOnly && opts.allowRules.length > 0) options.push(OPT_ALLOW_ALWAYS);
     } else if (directoryOption) {
       // Dangerous calls offer no rule-based grant (a rule cannot lift the tier),
       // but a directory the user vouches for is exactly what additionalDirectories
@@ -122,6 +116,7 @@ export function createPrompter(): { ask(opts: {
     }
     options.push(OPT_DENY, OPT_DENY_FEEDBACK);
     const choice = await opts.deps.select(title, options, { signal: opts.deps.signal });
+    if (opts.deps.signal?.aborted || !choice || !options.includes(choice)) return { outcome: "deny", rules: [] };
     if (choice === OPT_ALLOW_ONCE) return { outcome: "allow-once", rules: opts.allowRules };
     if (choice === OPT_ALLOW_SESSION) return { outcome: "allow-session", rules: opts.allowRules };
     if (choice === OPT_ALLOW_ALWAYS) return { outcome: "allow-always", rules: opts.allowRules };

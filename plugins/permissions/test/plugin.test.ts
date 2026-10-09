@@ -80,7 +80,7 @@ function makePi() {
   };
 }
 
-const ENV_KEYS = ["PI_AGENT_CHILD", "PI_PERMISSIONS_MODE", "PI_PERMISSIONS_INHERITED_MODE", "PI_CODING_AGENT_DIR"] as const;
+const ENV_KEYS = ["PI_AGENT_CHILD", "PI_PERMISSIONS_MODE", "PI_PERMISSIONS_INHERITED_MODE", "PI_PERMISSIONS_INHERITED_CONTEXT", "PI_CODING_AGENT_DIR"] as const;
 
 /**
  * A realpath'd directory the way `projects[<cwd>]` is keyed.
@@ -175,10 +175,27 @@ describe("pi-permissions extension wiring", () => {
     expect(pi.commands.has("permissions")).toBe(true);
   });
 
+  test.each([false, true])("default yolo allows dangerous calls without UI or reviewer (child=%s)", async child => {
+    if (child) {
+      process.env.PI_AGENT_CHILD = "1";
+      process.env.PI_PERMISSIONS_INHERITED_MODE = "yolo";
+    }
+    const ui = freshUi(async () => { throw new Error("YOLO must not prompt"); });
+    const { toolCall, ctx } = setup(ui, { hasUI: !child });
+    for (const command of ["git ls-files -o --exclude-standard | xargs grep -lI 'name'", 'cat "$FILE"', 'git push --force']) {
+      expect(await toolCall({ toolName: "bash", input: { command } })).toBeUndefined();
+    }
+    expect(ui.selectCalls).toHaveLength(0);
+    expect(ctx.registry.calls).toHaveLength(0);
+    if (child) expect(process.env.PI_PERMISSIONS_INHERITED_MODE).toBe("yolo");
+    else expect(ui.statuses["pi-permissions"]).toContain("yolo");
+  });
+
   test("Allow once permits; Deny and dismissal block", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
     const ui = freshUi();
     const { toolCall } = setup(ui);
-    // dangerous in yolo → prompt.
+    // dangerous in ask mode → prompt.
     const dangerous = { toolName: "bash", input: { command: "git push --force" } };
     expect(await toolCall(dangerous)).toBeUndefined();
 
@@ -201,6 +218,7 @@ describe("pi-permissions extension wiring", () => {
   });
 
   test("concurrent calls serialize prompts", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
     const order: string[] = [];
     const ui = freshUi(async (title) => {
       order.push(`start:${title.includes("git push") ? "push" : "reset"}`);
@@ -218,6 +236,7 @@ describe("pi-permissions extension wiring", () => {
 
   test("PI_AGENT_CHILD=1: asks become denials without prompting", async () => {
     process.env.PI_AGENT_CHILD = "1";
+    process.env.PI_PERMISSIONS_INHERITED_MODE = "ask";
     const ui = freshUi();
     const { toolCall } = setup(ui);
     const result = (await toolCall({ toolName: "bash", input: { command: "git push -f" } })) as { block?: boolean; reason?: string };
@@ -227,6 +246,7 @@ describe("pi-permissions extension wiring", () => {
   });
 
   test("dangerous prompts offer no session/always options", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
     const ui = freshUi();
     const { toolCall } = setup(ui);
     await toolCall({ toolName: "bash", input: { command: "git push -f" } });
@@ -259,6 +279,8 @@ describe("pi-permissions extension wiring", () => {
   });
 
   test("dangerous rm outside scratch: granting the directory persists it and silences the next call", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/reviewer" } });
     const grant = cacheDirectory("pi-perm-grant");
     const target = path.join(grant, "data-old");
     const sibling = path.join(grant, "data-new");
@@ -282,12 +304,13 @@ describe("pi-permissions extension wiring", () => {
     const saved = JSON.parse(fs.readFileSync(path.join(dir, "agent", "permissions.json"), "utf8"));
     expect(saved.projects[projectKey(dir)].additionalDirectories).toEqual([directory]);
 
-    // The grant applies to the next call without a reload or a second dialog.
+    // The grant lowers the next call to grey; auto can approve it via the reviewer.
     expect(await toolCall(remove(sibling))).toBeUndefined();
     expect(ui.selectCalls.length).toBe(1);
   });
 
   test("a dangerous call with nothing coherent to grant keeps the plain prompt", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
     const ui = freshUi();
     const { toolCall } = setup(ui);
     await toolCall({ toolName: "bash", input: { command: "git push -f" } });
@@ -295,6 +318,7 @@ describe("pi-permissions extension wiring", () => {
   });
 
   test("global protectedPaths exclusion silences a .env read only", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
     writeGlobalConfig({ protectedPaths: { read: ["!**/.env"], write: [] } });
     const ui = freshUi();
     const { toolCall } = setup(ui);
@@ -319,6 +343,118 @@ describe("pi-permissions extension wiring", () => {
     // Second identical call is allowed by the session rule without a dialog.
     expect(await toolCall(call)).toBeUndefined();
     expect(ui.selectCalls.length).toBe(1);
+  });
+
+  test("read-only rejects dangerous calls and internal errors without approval", async () => {
+    process.env.PI_PERMISSIONS_MODE = "read-only";
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    for (const command of ["git push --force", "npm publish"]) {
+      expect(await toolCall({ toolName: "bash", input: { command } })).toMatchObject({ block: true });
+    }
+    const badInput = { get command(): string { throw new Error("boom"); } };
+    expect(await toolCall({ toolName: "bash", input: badInput })).toMatchObject({ block: true });
+    expect(ui.selectCalls).toHaveLength(0);
+    expect(await toolCall({ toolName: "bash", input: { command: "git status" } })).toBeUndefined();
+  });
+
+  test("mode command displays effective mode and override source", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi();
+    const { pi, ctx } = setup(ui);
+    await pi.commands.get("permissions")!.handler("mode yolo", ctx);
+    expect(ui.statuses["pi-permissions"]).toBe("perm: ask");
+    expect(ui.notifies.at(-1)!.message).toContain("mode: ask");
+    expect(ui.notifies.at(-1)!.message).toContain("PI_PERMISSIONS_MODE");
+    expect(process.env.PI_PERMISSIONS_INHERITED_MODE).toBe("ask");
+    delete process.env.PI_PERMISSIONS_MODE;
+    await pi.commands.get("permissions")!.handler("status", ctx);
+    expect(ui.notifies.at(-1)!.message).toContain("mode: yolo (session)");
+  });
+
+  test("dynamic session approval covers exact input only and offers no persistent rule", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi(async () => "Allow for this session");
+    const { toolCall } = setup(ui);
+    const call = () => ({ toolName: "bash", input: { command: 'npm test "$SUITE"' } });
+    expect(await toolCall(call())).toBeUndefined();
+    expect(ui.selectCalls[0]!.options).not.toContain("Always allow in this project");
+    expect(await toolCall(call())).toBeUndefined();
+    expect(ui.selectCalls).toHaveLength(1);
+    ui.selectImpl = async () => "Deny";
+    expect(await toolCall({ toolName: "bash", input: { command: 'npm test "$OTHER"' } })).toMatchObject({ block: true });
+    expect(await toolCall({ toolName: "bash", input: { command: 'npm publish "$SUITE"' } })).toMatchObject({ block: true });
+    fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".pi", "settings.json"), JSON.stringify({ shellCommandPrefix: "echo prefix" }));
+    expect(await toolCall(call())).toMatchObject({ block: true });
+  });
+
+  test.each(["npm test", 'npm test "$SUITE"'])("queued session approvals recheck before prompting: %s", async command => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return "Allow for this session";
+    });
+    const { toolCall } = setup(ui);
+    const results = await Promise.all([1, 2, 3].map(() => toolCall({ toolName: "bash", input: { command } })));
+    expect(results).toEqual([undefined, undefined, undefined]);
+    expect(ui.selectCalls).toHaveLength(1);
+  });
+
+  test.each(["session_start", "session_shutdown", "read-only", "abort"])("pending approvals cannot outlive %s", async change => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    let release!: (value: string) => void;
+    const ui = freshUi(() => new Promise(resolve => { release = resolve; }));
+    const { pi, ctx, toolCall } = setup(ui);
+    const controller = new AbortController();
+    Object.assign(ctx, { signal: controller.signal });
+    const call = { toolName: "bash", input: { command: "npm test" } };
+    const a = toolCall(call);
+    const b = toolCall(call);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (change === "session_start" || change === "session_shutdown") {
+      for (const handler of pi.handlers.get(change) ?? []) handler({}, ctx);
+    } else if (change === "read-only") {
+      delete process.env.PI_PERMISSIONS_MODE;
+      await pi.commands.get("permissions")!.handler("mode read-only", ctx);
+    } else {
+      controller.abort();
+    }
+    release("Allow for this session");
+    expect(await a).toMatchObject({ block: true });
+    expect(await b).toMatchObject({ block: true });
+    expect(ui.selectCalls).toHaveLength(1);
+  });
+
+  test("explicit ask rules do not offer ineffective session grants", async () => {
+    writeGlobalConfig({ mode: "ask", ask: ["bash(npm:*)"] });
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    expect(ui.selectCalls[0]!.options).not.toContain("Allow for this session");
+    expect(ui.selectCalls[0]!.options).not.toContain("Always allow in this project");
+  });
+
+  test("children inherit scoped session grants and sandbox override but keep deny rules", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi(async () => "Allow for this session");
+    const { toolCall, pi, ctx } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    await toolCall({ toolName: "bash", input: { command: 'npm test "$SUITE"' } });
+    await pi.commands.get("permissions")!.handler("sandbox off", ctx);
+    process.env.PI_AGENT_CHILD = "1";
+    const childUi = freshUi();
+    const child = setup(childUi, { hasUI: false });
+    expect(await child.toolCall({ toolName: "bash", input: { command: "npm test" } })).toBeUndefined();
+    expect(await child.toolCall({ toolName: "bash", input: { command: 'npm test "$SUITE"' } })).toBeUndefined();
+    await child.pi.commands.get("permissions")!.handler("sandbox status", child.ctx);
+    expect(childUi.notifies.at(-1)!.message).toContain("enabled: no (session override)");
+    const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-other-"));
+    const other = setup(freshUi(), { hasUI: false }, otherDir);
+    expect(await other.toolCall({ toolName: "bash", input: { command: "npm test" } })).toMatchObject({ block: true });
+    writeGlobalConfig({ deny: ["bash(npm:*)"] });
+    const denied = setup(freshUi(), { hasUI: false });
+    expect(await denied.toolCall({ toolName: "bash", input: { command: "npm test" } })).toMatchObject({ block: true });
   });
 
   test("handler errors fail closed: prompt with UI, block without", async () => {

@@ -1,6 +1,7 @@
 # Agent Note: Recursive chmod/chown inside scratch space is not a broad permission change
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-permissions-yolo-auto-allow.md
 
 ## Problem
 
@@ -91,3 +92,12 @@ with case 46 failing (`Expected: "allow" / Received: "deny"`), then restored →
 `52 pass, 0 fail`. Also re-ran the classifier over the recorded commands:
 `chmod -R 755 /tmp/perm-verify/readonly-sub` → grey, `chmod -R 755 /usr/local/lib`
 and `chmod 777 /tmp/x` → dangerous.
+
+
+## Superseded
+
+The classifier/path-boundary decision still holds. The universal dangerous
+confirmation requirement, including claims that yolo asks or headless yolo
+denies dangerous calls, is replaced by the successor: YOLO allows dangerous
+classifications unless an explicit user rule restricts the call. Ask/auto
+retain guarded confirmation and forbidden operations remain denied.

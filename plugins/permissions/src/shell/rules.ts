@@ -177,7 +177,7 @@ function hitRmRecursiveForce(command: ShellCommand, env: PolicyEnv): boolean {
   const { values } = operands(command);
   const safeDirs = [env.cwd, ...env.additionalDirs, ...env.tempDirs];
   for (const value of values) {
-    if (value === undefined) continue;
+    if (value === undefined) return true;
     const target = normalizePath(value, env);
     if (target === env.cwd || isInside(`${env.cwd}/.git`, target, env)) return true;
     if (!safeDirs.some((dir) => isInside(target, dir, env))) return true;
@@ -359,7 +359,17 @@ interface Hit {
   reason: string;
 }
 
+function findDeleteCommand(command: ShellCommand): ShellCommand {
+  if (command.name !== "find" || !command.args.includes("-delete")) return command;
+  const start = ["-H", "-L", "-P"].includes(command.args[0] ?? "") ? 1 : 0;
+  const end = command.args.findIndex((arg, index) => index >= start && typeof arg === "string" && (arg.startsWith("-") || arg === "!" || arg === "("));
+  const roots = command.args.slice(start, end < 0 ? undefined : end);
+  const raw = command.rawArgs.slice(start, end < 0 ? undefined : end);
+  return { ...command, name: "rm", args: ["-rf", ...(roots.length ? roots : ["."])], rawArgs: ["-rf", ...(roots.length ? raw : ["."])] };
+}
+
 function forbiddenHit(command: ShellCommand, env: PolicyEnv): Hit | undefined {
+  command = findDeleteCommand(command);
   if (hitRmRoot(command, env)) return { id: "rm-root", tier: "forbidden", reason: "recursive force-delete aimed at a filesystem boundary" };
   if (hitDiskFormat(command)) return { id: "disk-format", tier: "forbidden", reason: "filesystem format command" };
   if (hitDiskWrite(command)) return { id: "disk-write", tier: "forbidden", reason: "direct write to a block device" };
@@ -369,6 +379,7 @@ function forbiddenHit(command: ShellCommand, env: PolicyEnv): Hit | undefined {
 }
 
 function dangerousHit(command: ShellCommand, env: PolicyEnv): Hit | undefined {
+  command = findDeleteCommand(command);
   if (hitRmRecursiveForce(command, env)) return { id: "rm-recursive-force", tier: "dangerous", reason: "rm -rf on the workspace root, .git, or outside the workspace" };
   if (hitGitDestructive(command)) return { id: "git-destructive", tier: "dangerous", reason: "destructive git operation (force push / reset --hard / clean -f / ...)" };
   if (hitPrivilegeEscalation(command)) return { id: "privilege-escalation", tier: "dangerous", reason: "privilege escalation (sudo/doas/su/runas)" };
@@ -471,12 +482,17 @@ export function evaluateShell(analysis: ShellAnalysis, raw: string, env: PolicyE
 
     const extracted = extractPathIntents(command, env);
     for (const intent of extracted.intents) {
-      const verdict = classifyPath(intent.kind as "read" | "write", intent.path!, command.rawName, env, config);
+      const verdict = classifyPath(intent.kind as "read" | "write", intent.path!, command.name, env, config);
       const graded: GradedIntent = { ...intent, sourceIndex: execIndex[execIndex.length - 1], tier: verdict.tier, ruleId: verdict.ruleId, reason: verdict.reason, mutating: intent.kind === "write" };
       intents.push(graded);
       bump(verdict.tier, verdict.ruleId, verdict.reason);
     }
-    if (extracted.unresolved) bump("grey", undefined, "dynamic path in command arguments");
+    if (extracted.unresolved) {
+      execIntent.tier = tierRank(execIntent.tier) < tierRank("dangerous") ? "dangerous" : execIntent.tier;
+      execIntent.ruleId ??= "dynamic-path";
+      execIntent.reason ??= "cannot determine whether the path is sensitive";
+      bump("dangerous", "dynamic-path", "cannot determine whether the path is sensitive");
+    }
   }
 
   // Pipeline composition rules need command indexes, which map onto exec intents.

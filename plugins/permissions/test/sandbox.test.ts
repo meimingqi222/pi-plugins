@@ -15,6 +15,7 @@ const OFF: SandboxSettings = { enabled: true, network: "on", allowWrite: [], den
 
 const deps = (over: Partial<SandboxDeps> = {}): SandboxDeps => ({
   exists: () => true,
+  isDirectory: (p) => !p.endsWith(".npmrc") && !p.endsWith("auth.json") && !p.endsWith("config.json"),
   probe: () => true,
   onPath: () => false,
   ...over,
@@ -78,7 +79,7 @@ describe("buildSeatbeltProfile", () => {
 
 describe("bwrap args", () => {
   test("binds only existing writable paths, masks existing deny paths", () => {
-    const args = buildBwrapArgs({ writable: ["/work/app", "/gone"], denyRead: ["/home/me/.ssh"], network: "off" }, (p) => p !== "/gone");
+    const args = buildBwrapArgs({ writable: ["/work/app", "/gone"], denyRead: ["/home/me/.ssh"], network: "off" }, (p) => p !== "/gone", () => true);
     expect(args.slice(0, 4)).toEqual(["bwrap", "--ro-bind", "/", "/"]);
     expect(args.join(" ")).toContain("--bind /work/app /work/app");
     expect(args.join(" ")).not.toContain("/gone");
@@ -108,4 +109,10 @@ describe("wrapSandboxed", () => {
     const win = makeEnv({ platform: "win32", home: "C:/Users/me", cwd: "C:/work/app", tempDirs: [] });
     expect(wrapSandboxed("ls", win, OFF, { supported: false, available: false, detail: "policy only" }, deps())).toBeUndefined();
   });
+});
+
+test("bwrap masks credential files with a file rather than tmpfs", () => {
+  const args = buildBwrapArgs({ writable: [], denyRead: ['/home/me/.npmrc'], network: 'on' }, () => true, () => false);
+  expect(args.join(' ')).toContain('--ro-bind /dev/null /home/me/.npmrc');
+  expect(args).not.toContain('--tmpfs');
 });

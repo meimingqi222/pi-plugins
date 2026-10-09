@@ -3,7 +3,8 @@
  *
  * Four tiers (safe / grey / dangerous / forbidden) × four modes
  * (read-only / ask / auto / yolo, default yolo). Forbidden is always denied
- * and dangerous always asks — no mode or rule can downgrade them. Delegated
+ * and dangerous asks in guarded modes; YOLO allows it unless explicit rules
+ * ask or deny. Delegated
  * children (PI_AGENT_CHILD=1) cannot be asked; their asks become denials.
  */
 
@@ -19,6 +20,7 @@ import { createReviewer, type Reviewer } from "./reviewer.ts";
 import { detectSandbox, resolveSandboxPolicy, sandboxDeps, wrapSandboxed, type SandboxAvailability } from "./sandbox/index.ts";
 import { parseRule, type UserRule } from "./rules.ts";
 import { buildAllowRules, createPrompter, describeInput, summarizeInput } from "./prompt.ts";
+import { approvalKey, decodeSessionContext, encodeSessionContext, INHERITED_CONTEXT_ENV } from "./session-context.ts";
 import type { Classification, Mode, PolicyEnv } from "./types.ts";
 
 const MODES = new Set<Mode>(["read-only", "ask", "auto", "yolo"]);
@@ -65,6 +67,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
   let merged: MergedConfig | undefined;
   let sessionMode: Mode | undefined;
   let sessionRules: UserRule[] = [];
+  let exactCalls = new Set<string>();
+  let policyRevision = 0;
+  let policyAbort = new AbortController();
+  const invalidateApprovals = (): void => {
+    policyRevision += 1;
+    policyAbort.abort();
+    policyAbort = new AbortController();
+  };
   let reviewer: Reviewer | undefined | null = null; // null = not yet created
   let sandboxOverride: boolean | undefined;
   let sandboxAvailability: SandboxAvailability | undefined;
@@ -139,19 +149,34 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
   const state = (ctx: ExtensionContext): { env: PolicyEnv; merged: MergedConfig } =>
     env && merged ? { env, merged } : loadState(ctx);
 
-  /** §5.2 #6: inherited(child) > PI_PERMISSIONS_MODE > session > project > global > yolo. */
-  const resolveMode = (mergedConfig: MergedConfig): Mode => {
+  /** One resolver for enforcement, display and child inheritance. */
+  const effectiveMode = (mergedConfig: MergedConfig): { mode: Mode; source: string } => {
     if (isChild()) {
       const inherited = process.env.PI_PERMISSIONS_INHERITED_MODE;
-      return MODES.has(inherited as Mode) ? (inherited as Mode) : "yolo";
+      return { mode: MODES.has(inherited as Mode) ? inherited as Mode : "yolo", source: "inherited (child)" };
     }
     const envMode = process.env.PI_PERMISSIONS_MODE;
-    if (MODES.has(envMode as Mode)) return envMode as Mode;
-    if (sessionMode) return sessionMode;
-    if (mergedConfig.projectMode) return mergedConfig.projectMode;
-    if (mergedConfig.globalMode) return mergedConfig.globalMode;
-    return "yolo";
+    if (MODES.has(envMode as Mode)) return { mode: envMode as Mode, source: "PI_PERMISSIONS_MODE" };
+    if (sessionMode) return { mode: sessionMode, source: "session" };
+    if (mergedConfig.projectMode) return { mode: mergedConfig.projectMode, source: "project" };
+    if (mergedConfig.globalMode) return { mode: mergedConfig.globalMode, source: "global" };
+    return { mode: "yolo", source: "default" };
   };
+  const resolveMode = (config: MergedConfig): Mode => effectiveMode(config).mode;
+
+  const publishContext = (): void => {
+    if (isChild() || !env || !merged) return;
+    process.env.PI_PERMISSIONS_INHERITED_MODE = resolveMode(merged);
+    const encoded = encodeSessionContext({
+      version: 1, cwd: env.cwd, rules: sessionRules.map(rule => rule.raw),
+      exactCalls: [...exactCalls], sandboxOverride,
+    });
+    if (encoded) process.env[INHERITED_CONTEXT_ENV] = encoded;
+    else delete process.env[INHERITED_CONTEXT_ENV];
+  };
+
+  const callKey = (ctx: ExtensionContext, tool: string, input: Record<string, unknown>): string =>
+    approvalKey(tool, input, canonicalCwd(ctx.cwd), shellSettings(ctx.cwd));
 
   const setStatus = (ctx: ExtensionContext, mode: Mode): void => {
     if (isChild() || !ctx.hasUI) return;
@@ -163,10 +188,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     }
   };
 
-  const shellSettings = (cwd: string): { dialect: ShellDialect; commandPrefix?: string } => {
+  const shellSettings = (cwd: string): { dialect: ShellDialect; shellPath?: string; commandPrefix?: string } => {
     try {
       const settings = SettingsManager.create(cwd, getAgentDir());
-      return { dialect: shellDialect(settings.getShellPath()), commandPrefix: settings.getShellCommandPrefix() };
+      const shellPath = settings.getShellPath();
+      return { dialect: shellDialect(shellPath), shellPath, commandPrefix: settings.getShellCommandPrefix() };
     } catch {
       return { dialect: "bash" };
     }
@@ -187,40 +213,65 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     });
   };
 
-  const decideFor = (ctx: ExtensionContext, classification: Classification) => {
+  const decideFor = (ctx: ExtensionContext, classification: Classification, key?: string) => {
     const { env: policyEnv, merged: mergedConfig } = state(ctx);
     const mode = resolveMode(mergedConfig);
-    if (!isChild()) {
-      // Children spawned after this inherit the effective mode (§6.2).
-      try {
-        process.env.PI_PERMISSIONS_INHERITED_MODE = mode;
-      } catch {
-        // Read-only env: skip silently.
-      }
-    }
+    publishContext();
     const rules = [
       ...mergedConfig.rules.map((rule) => parseRule(rule.text, rule.kind, rule.source)),
       ...sessionRules,
     ];
-    return { decision: decide(classification, mode, rules, policyEnv), mode };
+    const decision = decide(classification, mode, rules, policyEnv);
+    if (key && exactCalls.has(key) && decision.action === "ask" && decision.tier !== "dangerous" && !decision.askedByRule) {
+      return { decision: { ...decision, action: "allow" as const, reason: "exact call approved for this session" }, mode };
+    }
+    return { decision, mode };
   };
 
   pi.on("session_start", (_event, ctx) => {
+    invalidateApprovals();
     sessionMode = undefined;
     sessionRules = [];
+    exactCalls = new Set();
     sandboxOverride = undefined;
-    const { merged: mergedConfig } = loadState(ctx);
+    const { env: policyEnv, merged: mergedConfig } = loadState(ctx);
+    if (isChild()) {
+      const inherited = decodeSessionContext(process.env[INHERITED_CONTEXT_ENV], policyEnv.cwd);
+      if (inherited) {
+        sessionRules = inherited.rules.map(text => parseRule(text, "allow", "session"));
+        exactCalls = new Set(inherited.exactCalls);
+        sandboxOverride = inherited.sandboxOverride;
+      }
+    }
+    publishContext();
     setStatus(ctx, resolveMode(mergedConfig));
   });
 
+  pi.on("session_shutdown", () => {
+    invalidateApprovals();
+    sessionRules = [];
+    exactCalls.clear();
+    if (!isChild()) {
+      delete process.env[INHERITED_CONTEXT_ENV];
+      delete process.env.PI_PERMISSIONS_INHERITED_MODE;
+    }
+  });
+
   pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
+    const toolEvent = event as unknown as { toolName: string; input: Record<string, unknown> };
+    const revision = policyRevision;
+    const signal = ctx.signal ? AbortSignal.any([ctx.signal, policyAbort.signal]) : policyAbort.signal;
+    const stale = (): boolean => revision !== policyRevision || signal.aborted;
+    const staleResult = (): ToolCallEventResult => ({ block: true, reason: "Blocked: permission request cancelled or policy changed; retry under the current policy." });
     try {
+      if (stale()) return staleResult();
       const classification = classify(ctx, event.toolName, event.input as Record<string, unknown>);
-      const { decision, mode } = decideFor(ctx, classification);
+      const key = callKey(ctx, event.toolName, event.input as Record<string, unknown>);
+      const { decision, mode } = decideFor(ctx, classification, key);
       setStatus(ctx, mode);
 
       if (decision.action === "allow") {
-        applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
+        applySandbox(toolEvent);
         return undefined;
       }
 
@@ -244,7 +295,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
       let reason = decision.reason;
       if (mode === "auto" && decision.tier === "grey" && !decision.askedByRule) {
         if (event.toolName === "bash" && merged && sandboxUsable(merged) && !networkExfilShaped(classification)) {
-          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
+          applySandbox(toolEvent);
           return undefined;
         }
         const active = reviewerFor(ctx, merged!);
@@ -257,10 +308,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
             // long commands and erase the block structure of embedded code.
             toolInput: describeInput(event.toolName, event.input as Record<string, unknown>),
             staticAnalysis: reason,
-            signal: ctx.signal,
+            signal,
           });
+          if (stale() || resolveMode(merged!) !== mode || callKey(ctx, event.toolName, event.input as Record<string, unknown>) !== key) return staleResult();
           if (verdict?.verdict === "allow") {
-            applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
+            applySandbox(toolEvent);
             return undefined;
           }
           if (verdict) reason = `${reason} — reviewer: ${verdict.reason}`;
@@ -280,66 +332,86 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
         };
       }
 
-      const allowRules = decision.allowAlwaysOffered ? buildAllowRules(classification, env!) : [];
-      const outcome = await prompter.ask({
-        dangerous: decision.tier === "dangerous",
-        readOnly: mode === "read-only",
-        toolName: event.toolName,
-        reason,
-        summary: summarizeInput(event.toolName, event.input as Record<string, unknown>),
-        allowRules,
-        ...(grantDirectory ? { grantDirectory } : {}),
-        deps: { select: (t, o, d) => ctx.ui.select(t, o, d), input: (t, p, d) => ctx.ui.input(t, p, d), signal: ctx.signal },
-      });
+      return await prompter.withApproval(async ask => {
+        if (stale() || callKey(ctx, event.toolName, event.input as Record<string, unknown>) !== key) return staleResult();
+        const currentClassification = classify(ctx, event.toolName, event.input as Record<string, unknown>);
+        const current = decideFor(ctx, currentClassification, key);
+        if (current.decision.action === "deny") return { block: true, reason: current.decision.reason, ...(current.decision.tier === "forbidden" ? { terminate: true } : {}) };
+        if (current.decision.action === "allow") {
+          applySandbox(toolEvent);
+          return undefined;
+        }
+        const allowRules = current.decision.allowAlwaysOffered ? buildAllowRules(currentClassification, env!) : [];
+        const outcome = await ask({
+          dangerous: current.decision.tier === "dangerous",
+          readOnly: current.mode === "read-only",
+          toolName: event.toolName,
+          reason,
+          summary: summarizeInput(event.toolName, event.input as Record<string, unknown>),
+          allowRules,
+          allowSession: !current.decision.askedByRule,
+          ...(grantDirectory ? { grantDirectory } : {}),
+          deps: { select: (t, o, d) => ctx.ui.select(t, o, d), input: (t, p, d) => ctx.ui.input(t, p, d), signal },
+        });
 
-      switch (outcome.outcome) {
-        case "allow-once":
-          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
-          return undefined;
-        case "allow-session":
-          for (const text of outcome.rules) sessionRules.push(parseRule(text, "allow", "session"));
-          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
-          return undefined;
-        case "allow-always": {
-          for (const text of outcome.rules) {
-            try {
-              appendProjectAllowRule(globalFile(), env!.cwd, text);
-              sessionRules.push(parseRule(text, "allow", "session"));
-            } catch (error) {
+        if (stale() || resolveMode(merged!) !== current.mode || callKey(ctx, event.toolName, event.input as Record<string, unknown>) !== key) return staleResult();
+        // Config and classification may have changed while the dialog was open.
+        const after = decideFor(ctx, classify(ctx, event.toolName, event.input as Record<string, unknown>), key);
+        if (after.decision.action === "deny") return { block: true, reason: after.decision.reason, ...(after.decision.tier === "forbidden" ? { terminate: true } : {}) };
+        if (after.decision.tier !== current.decision.tier || after.decision.askedByRule !== current.decision.askedByRule) return staleResult();
+        switch (outcome.outcome) {
+          case "allow-once":
+            applySandbox(toolEvent);
+            return undefined;
+          case "allow-session":
+            if (outcome.rules.length === 0) exactCalls.add(key);
+            for (const text of outcome.rules) sessionRules.push(parseRule(text, "allow", "session"));
+            publishContext();
+            applySandbox(toolEvent);
+            return undefined;
+          case "allow-always": {
+            for (const text of outcome.rules) {
               try {
-                ctx.ui.notify(`pi-permissions: could not persist the rule (${String(error)}); allowed once.`, "warning");
-              } catch {
-                // ignore
+                appendProjectAllowRule(globalFile(), env!.cwd, text);
+                sessionRules.push(parseRule(text, "allow", "session"));
+              } catch (error) {
+                try {
+                  ctx.ui.notify(`pi-permissions: could not persist the rule (${String(error)}); allowed once.`, "warning");
+                } catch {
+                  // ignore
+                }
               }
             }
+            publishContext();
+            applySandbox(toolEvent);
+            return undefined;
           }
-          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
-          return undefined;
-        }
-        case "allow-directory": {
-          if (outcome.directory) {
-            try {
-              appendAdditionalDirectory(globalFile(), env!.cwd, outcome.directory);
-              loadState(ctx); // pick the new directory up for the next call
-            } catch (error) {
+          case "allow-directory": {
+            if (outcome.directory) {
               try {
-                ctx.ui.notify(
-                  `pi-permissions: could not persist ${outcome.directory} (${String(error)}); allowed once.`,
-                  "warning",
-                );
-              } catch {
-                // ignore
+                appendAdditionalDirectory(globalFile(), env!.cwd, outcome.directory);
+                loadState(ctx); // pick the new directory up for the next call
+                publishContext();
+              } catch (error) {
+                try {
+                  ctx.ui.notify(
+                    `pi-permissions: could not persist ${outcome.directory} (${String(error)}); allowed once.`,
+                    "warning",
+                  );
+                } catch {
+                  // ignore
+                }
               }
             }
+            applySandbox(toolEvent);
+            return undefined;
           }
-          applySandbox(event as unknown as { toolName: string; input: Record<string, unknown> });
-          return undefined;
+          case "deny": {
+            const feedback = outcome.feedback ? ` — user said: ${outcome.feedback}` : "";
+            return { block: true, reason: `Denied by the user: ${reason}${feedback}` };
+          }
         }
-        case "deny": {
-          const feedback = outcome.feedback ? ` — user said: ${outcome.feedback}` : "";
-          return { block: true, reason: `Denied by the user: ${reason}${feedback}` };
-        }
-      }
+      });
     } catch (error) {
       // Fail closed: ask if possible, deny otherwise; never let a plugin bug
       // silently execute or crash pi.
@@ -348,15 +420,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
       } catch {
         // ignore
       }
-      const canAsk = ctx.hasUI && !isChild();
+      const canAsk = ctx.hasUI && !isChild() && !stale() && merged && resolveMode(merged) !== "read-only";
       if (canAsk) {
         try {
-          const choice = await ctx.ui.select(
-            `[pi-permissions] internal error — approve anyway?\n${String(error)}`,
-            ["Allow once", "Deny"],
-            { signal: ctx.signal },
-          );
-          if (choice === "Allow once") return undefined;
+          return await prompter.withApproval(async ask => {
+            if (stale() || !merged || resolveMode(merged) === "read-only") return staleResult();
+            const outcome = await ask({
+              dangerous: true, readOnly: false, toolName: event.toolName,
+              reason: `internal error — approve anyway? ${String(error)}`, summary: "",
+              allowRules: [], allowSession: false,
+              deps: { select: (t, o, d) => ctx.ui.select(t, o, d), input: (t, p, d) => ctx.ui.input(t, p, d), signal },
+            });
+            if (outcome.outcome === "allow-once" && !stale() && resolveMode(merged) !== "read-only") return undefined;
+            return { block: true, reason: `Blocked by pi-permissions (internal error): ${String(error)}` };
+          });
         } catch {
           // fall through to deny
         }
@@ -374,17 +451,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
       const mode = resolveMode(mergedConfig);
       if (!sub || sub === "status") {
-        const source = isChild()
-          ? "inherited (child)"
-          : process.env.PI_PERMISSIONS_MODE && MODES.has(process.env.PI_PERMISSIONS_MODE as Mode)
-            ? "PI_PERMISSIONS_MODE"
-            : sessionMode
-              ? "session"
-              : mergedConfig.projectMode
-                ? "project"
-                : mergedConfig.globalMode
-                  ? "global"
-                  : "default";
+        const { source } = effectiveMode(mergedConfig);
+        setStatus(ctx, mode);
+        publishContext();
         const invalid = mergedConfig.rules
           .map((rule) => parseRule(rule.text, rule.kind, rule.source))
           .filter((rule) => !rule.valid)
@@ -395,7 +464,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
             `project trusted: ${mergedConfig.projectTrusted}\n` +
             `global: ${globalFile()}\n` +
             `project: ${projectFile(ctx.cwd)}\n` +
-            `rules: ${mergedConfig.rules.length} (+${sessionRules.length} session)${invalid.length ? `\ninvalid: ${invalid.join(", ")}` : ""}`,
+            `rules: ${mergedConfig.rules.length} (+${sessionRules.length} session, ${exactCalls.size} exact calls)${invalid.length ? `\ninvalid: ${invalid.join(", ")}` : ""}`,
           "info",
         );
         return;
@@ -408,16 +477,22 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
           ctx.ui.notify("Usage: /permissions mode <read-only|ask|auto|yolo> [--save]", "warning");
           return;
         }
+        invalidateApprovals();
         sessionMode = wanted;
+        let saved = false;
         if (save) {
           try {
             saveGlobalMode(globalFile(), wanted);
+            saved = true;
           } catch (error) {
             ctx.ui.notify(`pi-permissions: could not save mode (${String(error)})`, "warning");
           }
         }
-        setStatus(ctx, wanted);
-        ctx.ui.notify(`pi-permissions mode: ${wanted}${save ? " (saved globally)" : " (this session)"}`, "info");
+        const effective = effectiveMode(mergedConfig);
+        publishContext();
+        setStatus(ctx, effective.mode);
+        const override = effective.mode !== wanted ? `; requested ${wanted} is overridden by ${effective.source}` : "";
+        ctx.ui.notify(`pi-permissions mode: ${effective.mode} (${effective.source})${saved ? "; saved globally" : ""}${override}`, "info");
         return;
       }
 
@@ -426,6 +501,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
           ...mergedConfig.rules.map((rule) => `${rule.kind.padEnd(5)} ${rule.source.padEnd(13)} ${rule.text}`),
           ...sessionRules.map((rule) => `${rule.kind.padEnd(5)} ${"session".padEnd(13)} ${rule.raw}`),
         ];
+        if (exactCalls.size > 0) lines.push(`session: ${exactCalls.size} exact-call approval(s), scoped to cwd and shell settings`);
         ctx.ui.notify(lines.length ? `pi-permissions rules:\n${lines.join("\n")}` : "pi-permissions: no rules configured", "info");
         return;
       }
@@ -444,7 +520,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
           inputObj = tool === "bash" || tool === "powershell" ? { command: payload } : { path: payload };
         }
         const classification = classify(ctx, tool, inputObj);
-        const { decision } = decideFor(ctx, classification);
+        const { decision } = decideFor(ctx, classification, callKey(ctx, tool, inputObj));
         ctx.ui.notify(
           `${decision.action} / ${decision.tier}${decision.ruleId ? ` / ${decision.ruleId}` : ""}${decision.matchedRule ? ` / ${decision.matchedRule}` : ""}\n${decision.reason}`,
           "info",
@@ -457,6 +533,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
         const action = rest.find((arg) => arg !== "--save");
         const save = rest.includes("--save");
         if (action === "on" || action === "off") {
+          invalidateApprovals();
           sandboxOverride = action === "on";
           if (save) {
             try {
@@ -465,6 +542,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
               ctx.ui.notify(`pi-permissions: could not save sandbox setting (${String(error)})`, "warning");
             }
           }
+          publishContext();
           setStatus(ctx, mode);
           ctx.ui.notify(`pi-permissions sandbox: ${action}${save ? " (saved globally)" : " (this session)"}`, "info");
           return;
@@ -487,7 +565,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
       }
 
       if (sub === "reload") {
+        invalidateApprovals();
         loadState(ctx);
+        publishContext();
         const after = merged!;
         setStatus(ctx, resolveMode(after));
         ctx.ui.notify("pi-permissions: configuration reloaded", "info");
