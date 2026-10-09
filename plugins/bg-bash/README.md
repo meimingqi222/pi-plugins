@@ -70,7 +70,9 @@ execution to *during* it.
   a result does not remove its durable completion entry or log.
 - **Durable metadata.** Session entries record start and terminal state,
   without copying the command or stdout. Completed jobs remain queryable after
-  restoring a session. A formerly running job becomes `interrupted` when
+  restoring a session; command titles are recovered from matching Bash tool
+  results already in the current branch. Older records without those results
+  show `Background job`. A formerly running job becomes `interrupted` when
   tracking resumes; an expired log is reported as unavailable.
 - **Compact TUI.** A completion is drawn as one status line, with a log pointer
   when expanded. The status entry does not enter model context. Older sessions'

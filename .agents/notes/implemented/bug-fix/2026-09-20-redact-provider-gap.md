@@ -1,6 +1,7 @@
 # Agent Note: Redact the outbound Jev payload, not just the provider payload
 
 Status: implemented
+Partly-superseded-by: 2026-10-09-jev-required-redaction-default.md
 
 ## Problem
 
@@ -128,3 +129,7 @@ around the service → "propagates engine errors instead of failing open" failed
 as expected; separately removed the startup notice → its test failed as
 expected. Reverted all three and the full suite passed (195 tests across both
 plugins).
+
+## Superseded
+
+The handshake and error propagation remain current. The standalone-by-default policy and v1 default-mode claims are replaced by active-v2 redaction by default, with explicit upload opt-out.

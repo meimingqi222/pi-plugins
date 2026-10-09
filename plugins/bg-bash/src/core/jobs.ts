@@ -18,6 +18,8 @@ export interface JobRecord {
 	endedAt?: number;
 	exitCode: number | null;
 	logPath?: string;
+	/** Recovered from an existing tool result; not duplicated in session records. */
+	command?: string;
 }
 
 export interface Job {
@@ -112,7 +114,7 @@ export class JobRegistry {
 		if (sequence) this.next = Math.max(this.next, Number(sequence[1]) + 1);
 		this.jobs.set(record.id, {
 			id: record.id,
-			command: "(restored job)",
+			command: record.command ?? "Background job",
 			cwd: "",
 			mode: record.mode,
 			status: record.status === "running" ? "interrupted" : record.status,

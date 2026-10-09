@@ -171,3 +171,12 @@ describe("createAceClient", () => {
     expect(String(authorization)).toBe("Bearer t0ken");
   });
 });
+
+test('permanent 400 and 404 responses are not retried', async () => {
+  for (const status of [400, 404]) {
+    const { impl, callCount } = recordingFetch([() => jsonResponse({}, status)]);
+    const client = createAceClient({ ...baseOptions, fetchImpl: impl });
+    await expect(client.findMissing(['hash'], new AbortController().signal)).rejects.toThrow(`HTTP ${status}`);
+    expect(callCount()).toBe(1);
+  }
+});

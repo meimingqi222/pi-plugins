@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BG_BASH_COMPLETION_ENTRY, BG_BASH_STATE_ENTRY, recordsFromBranch } from "../src/pi/records.ts";
+import { JobRegistry } from "../src/core/jobs.ts";
 
 let oldDir: string | undefined;
 let logDir: string;
@@ -29,4 +30,18 @@ test("session record replay keeps the latest state without trusting an outside l
 	expect(records).toHaveLength(1);
 	expect(records[0].status).toBe("exited");
 	expect(records[0].logPath).toBeUndefined();
+});
+
+test("restored jobs recover their command from the matching bash result in the current branch", () => {
+	const record = { schema: 1, id: "bg001", mode: "background", status: "exited", startedAt: 1, endedAt: 2, exitCode: 0 };
+	const records = recordsFromBranch([
+		{ type: "custom", customType: BG_BASH_COMPLETION_ENTRY, data: record },
+		{ type: "message", message: { role: "toolResult", toolName: "bash", details: { jobId: "bg001", command: "bun run typecheck" } } },
+		{ type: "message", message: { role: "toolResult", toolName: "read", details: { jobId: "bg001", command: "wrong command" } } },
+	]);
+	const registry = new JobRegistry();
+	registry.restore(records[0]!);
+	expect(registry.get("bg001")?.command).toBe("bun run typecheck");
+	registry.restore({ ...record, id: "bg002", schema: 1, mode: "background", status: "exited" });
+	expect(registry.get("bg002")?.command).toBe("Background job");
 });

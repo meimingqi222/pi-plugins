@@ -138,7 +138,7 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     id: "private-key",
     category: "asymmetric-private-key",
     title: "Asymmetric Private Key",
-    pattern: String.raw`-----\s*?BEGIN[ A-Z0-9_-]*?PRIVATE KEY(?: BLOCK)?\s*?-----\s*([A-Za-z0-9=+/\s]+)\s*-----\s*?END[ A-Z0-9_-]*? PRIVATE KEY(?: BLOCK)?\s*?-----`,
+    pattern: String.raw`-----\s*?BEGIN[ A-Z0-9_-]*?PRIVATE KEY(?: BLOCK)?\s*?-----\s*([A-Za-z0-9=+/]+(?:\s+[A-Za-z0-9=+/]+)*)\s*-----\s*?END[ A-Z0-9_-]*? PRIVATE KEY(?: BLOCK)?\s*?-----`,
     keywords: ["-----"],
     caseInsensitive: true,
   },

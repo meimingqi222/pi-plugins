@@ -138,7 +138,7 @@ export function createAceClient(options: AceClientOptions): AceClient {
         }
       } catch (error) {
         if (signal.aborted) throw signal.reason ?? new Error("aborted");
-        if (isFatalAceError(error)) throw error;
+        if (isFatalAceError(error) || (error instanceof AceApiError && error.status >= 400 && error.status < 500 && error.status !== 429)) throw error;
         lastError = error;
       } finally {
         attemptSignal.dispose();

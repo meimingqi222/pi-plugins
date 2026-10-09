@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { startCommand, waitForTermination } from "../src/runner/run.ts";
@@ -102,4 +105,24 @@ describe("startCommand", () => {
 		expect(outcome.timedOut).toBe(false);
 		expect(outcome.exitCode).toBe(0);
 	}, 15000);
+
+	test("refuses to write a log through a symlink", async () => {
+		// The reader already refuses a symlinked log path (see tasks-tool.ts), and
+		// the writer must too: a job's logPath is reported back to the model, so
+		// the path is predictable. Following a planted link would let a command
+		// truncate any file the pi process can write, without the protected-write
+		// prompt that a direct write would raise.
+		const dir = mkdtempSync(join(tmpdir(), "bg-bash-log-"));
+		try {
+			const target = join(dir, "target.txt");
+			writeFileSync(target, "do not truncate");
+			const link = join(dir, "job.log");
+			symlinkSync(target, link);
+			const running = startCommand({ command: "echo leaked", cwd: dir, logPath: link });
+			await running.result;
+			expect(readFileSync(target, "utf8")).toBe("do not truncate");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

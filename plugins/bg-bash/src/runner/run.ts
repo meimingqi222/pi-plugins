@@ -6,7 +6,7 @@
  * detach from abort when it moves to the background.
  */
 
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
+import { constants, createWriteStream, mkdirSync, openSync, type WriteStream } from "node:fs";
 import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess } from "node:child_process";
@@ -23,6 +23,18 @@ const EXIT_STDIO_GRACE_MS = 100;
  * otherwise keep the outcome pending for the life of the descendant.
  */
 const EXIT_STDIO_DEADLINE_MS = 5000;
+
+/**
+ * Flags for opening a job's log file.
+ *
+ * `O_NOFOLLOW` is absent on Windows, where a symlink needs privileges and the
+ * string form is all that is available; anywhere else a link at the log path is
+ * a refusal (`ELOOP`) rather than a file to write through.
+ */
+const WRITE_FLAGS: string | number =
+	constants.O_NOFOLLOW === undefined
+		? "w"
+		: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
 
 export interface StartCommandOptions {
 	command: string;
@@ -146,7 +158,14 @@ function openLog(path: string): WriteStream | undefined {
 		mkdirSync(dirname(path), { recursive: true });
 		// "w", not "a": a log path is unique to one job in one session, so an
 		// existing file is stale output from an earlier session, not history.
-		const stream = createWriteStream(path, { flags: "w" });
+		//
+		// O_NOFOLLOW for the same reason the reader refuses a symlinked log
+		// (see tasks-tool.ts): a job's logPath is reported back to the model, so
+		// the path is predictable, and following a planted link would truncate
+		// whatever it points at without the protected-write prompt. The descriptor
+		// is opened here rather than by the stream so the refusal is atomic — an
+		// lstat-then-open check could be raced by a link planted in between.
+		const stream = createWriteStream(path, { fd: openSync(path, WRITE_FLAGS) });
 		// An asynchronous stream error (ENOSPC, deleted directory) would
 		// otherwise surface as an uncaught exception and take down the host.
 		stream.on("error", () => stream.destroy());

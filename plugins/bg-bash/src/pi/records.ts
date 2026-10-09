@@ -56,12 +56,23 @@ function safeLogPath(path: string, id: string): boolean {
 
 export function recordsFromBranch(entries: readonly unknown[]): JobRecord[] {
 	const latest = new Map<string, JobRecord>();
+	const commands = new Map<string, string>();
 	for (const entry of entries) {
 		if (!entry || typeof entry !== "object") continue;
-		const item = entry as { type?: unknown; customType?: unknown; data?: unknown };
+		const item = entry as { type?: unknown; customType?: unknown; data?: unknown; message?: unknown };
+		if (item.type === "message" && item.message && typeof item.message === "object") {
+			const message = item.message as { role?: unknown; toolName?: unknown; details?: unknown };
+			if (message.role === "toolResult" && message.toolName === "bash" && message.details && typeof message.details === "object") {
+				const details = message.details as { jobId?: unknown; command?: unknown };
+				if (typeof details.jobId === "string" && typeof details.command === "string" && details.command.trim()) {
+					commands.set(details.jobId, details.command);
+				}
+			}
+		}
 		if (item.type !== "custom" || (item.customType !== BG_BASH_STATE_ENTRY && item.customType !== BG_BASH_COMPLETION_ENTRY)) continue;
 		const record = parseRecord(item.data);
 		if (record) latest.set(record.id, record);
 	}
-	return [...latest.values()].sort((a, b) => a.startedAt - b.startedAt);
+	return [...latest.values()].map(record => ({ ...record, ...(commands.has(record.id) ? { command: commands.get(record.id) } : {}) }))
+		.sort((a, b) => a.startedAt - b.startedAt);
 }
