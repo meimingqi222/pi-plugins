@@ -179,10 +179,10 @@ does not modify Paseo source. Older versions use plain text. The companion is
 independent of the Pi extensions and is installed separately.
 
 Background status defaults to passive messages delivered at a safe turn
-boundary. On a host that supports RPC notifications, set
-`PI_RPC_PROGRESS_TRANSPORT=notify` in the parent Pi environment for immediate
-background updates. Foreground subagent progress streams through tool updates.
-See the companion documentation for installation and version limits.
+boundary. A blocking subagent call streams a live card instead, because its
+partial result carries the same status while the child runs. Foreground
+subagent progress also streams through tool updates. See the companion
+documentation for installation and version limits.
 
 ## Regression notes
 

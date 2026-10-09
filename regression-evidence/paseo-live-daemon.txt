@@ -1,0 +1,23 @@
+# Paseo daemon  timeline for a real Pi agent (5cdf1a0d-4246-4548-8eff-9a3b1bc9b9f1)
+# `card` is the output of the companion's shipped transformStatusToolCall for that item.
+
+T+  4024ms row name=subagent status=running detail=sub_agent custom=
+         text="[Subagent call_00_2skyekgjioq1njxzbz2tldmt] running\nRun the shell command s… (general)\nRun the shell command: "
+         card={"kind":"Subagent","id":"call_00_2skyekgjioq1njxzbz2tldmt","title":"Run the shell command s… (general)","status":"running","description":"Run the shell command: sleep 12 && echo child-done — then reply with its exact output.","activity":"starting","metric":"0 tools completed"}
+T+ 22173ms row name=subagent status=running detail=sub_agent custom=
+         text="[Subagent call_00_2skyekgjioq1njxzbz2tldmt] running\nRun the shell command s… (general)\nRun the shell command: "
+         card={"kind":"Subagent","id":"call_00_2skyekgjioq1njxzbz2tldmt","title":"Run the shell command s… (general)","status":"running","description":"Run the shell command: sleep 12 && echo child-done — then reply with its exact output.","activity":"thinking","metric":"1 tools completed"}
+T+ 23204ms row name=subagent status=completed detail=sub_agent custom=
+         text="```\nchild-done\n```\n\nRan `sleep 12 && echo child-done` (12s sleep, then echo). Exact stdout was `child-done` — "
+         card=none (native row)
+T+ 23205ms row name=subagent-update status=completed detail=plain_text custom=subagent-update
+         text="[Subagent call_00_2skyekgjioq1njxzbz2tldmt] running\nRun the shell command s… (general)\nRun the shell command: "
+         card={"kind":"Subagent","id":"call_00_2skyekgjioq1njxzbz2tldmt","title":"Run the shell command s… (general)","status":"running","description":"Run the shell command: sleep 12 && echo child-done — then reply with its exact output.","activity":"starting","metric":"0 tools completed"}
+T+ 23205ms row name=subagent-update status=completed detail=plain_text custom=subagent-update
+         text="[Subagent call_00_2skyekgjioq1njxzbz2tldmt] running\nRun the shell command s… (general)\nRun the shell command: "
+         card={"kind":"Subagent","id":"call_00_2skyekgjioq1njxzbz2tldmt","title":"Run the shell command s… (general)","status":"running","description":"Run the shell command: sleep 12 && echo child-done — then reply with its exact output.","activity":"thinking","metric":"1 tools completed"}
+T+ 23205ms row name=subagent-update status=completed detail=plain_text custom=subagent-update
+         text="[Subagent call_00_2skyekgjioq1njxzbz2tldmt] completed\nRun the shell command s… (general)\nRun the shell command"
+         card={"kind":"Subagent","id":"call_00_2skyekgjioq1njxzbz2tldmt","title":"Run the shell command s… (general)","status":"completed","description":"Run the shell command: sleep 12 && echo child-done — then reply with its exact output.","activity":"completed","metric":"1 tools completed"}
+
+probe agent id: 5cdf1a0d-4246-4548-8eff-9a3b1bc9b9f1

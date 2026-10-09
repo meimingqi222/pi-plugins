@@ -29,6 +29,17 @@ still auto-retry, auto-compact, or drain a queued prompt before
   later reply turns drew down one budget — an old lane's next turn could be
   killed with time it never spent.
 
+The 2026-10-09 incident exposed a second confusion between task completion and
+process exit. Two review lanes delivered completed answers at 09:27:43 (UTC+8),
+then changed to failed at 09:32:58. Their raw logs contained 72/73 matched tool
+start/end pairs, final assistant messages with stop reason `stop`, and one
+`agent_settled` each; there was no later turn or background tool launch.
+The five-minute idle keepalive called `end()`, which sent SIGTERM. The resulting
+exit 143 was mapped as a new task failure and overwrote the settled answer.
+The previous fake-child regression never emitted close 143, hiding this path.
+The keepalive callback also lacked a fresh idle-state check, and stdin could
+still accept a reply after termination had begun.
+
 ## Decision
 
 **Turn boundaries move to `agent_settled`, each settled turn delivers its own
@@ -68,6 +79,16 @@ result, and the wall clock becomes per-turn.**
   and mid-turn timeouts still deliver). `onCommandError` lands on
   `lane.lastCommandError`, shown by `formatBackground`/`show`; an idle lane
   with a result reads "answered … — awaiting a reply".
+- Idle retirement preserves a snapshot of the last settled turn, including its
+  failure reason when that turn failed. This applies only to an explicit idle
+  `end()`: unexpected exits, active cancellation, timeout and stall still use
+  the normal outcome mapping. A new `agent_start` clears the old snapshot.
+- Keepalive callbacks check timer identity, session generation, running state
+  and the same idle timestamp. They call `end({ onlyIfIdle: true })`, whose
+  transport guard refuses retirement during an active turn or after a prompt
+  was admitted but before `agent_start` arrives. Termination closes command
+  admission immediately, so a racing reply cannot be acknowledged into a
+  process that is already being reaped.
 - The goal-spend lease still finishes at final settle — per-turn delivery must
   not bill a goal twice.
 
@@ -85,6 +106,12 @@ result, and the wall clock becomes per-turn.**
   does). Kept, plus an explicit clear at `agent_start`: `error`-type events set
   it mid-turn without a `message_end`, and the per-turn contract needs a clean
   slate per turn regardless of which event produced the failure.
+
+- **Ignore every exit 143.** Rejected: an unexpected SIGTERM must remain a
+  failure. Only retirement explicitly initiated while idle preserves the
+  settled result.
+- **Fix only the Paseo card status.** Rejected: the incorrect failure lives in
+  the registry and parent transcript too; rendering cannot repair it.
 
 ## Consequences
 
@@ -144,3 +171,43 @@ fixes: a `wait` on a re-activated busy lane resolved instantly with the stale
 previous answer, and a textless second turn re-reported turn one's text —
 each new test failed once against the unfixed code and passes now.
 After the fix the same command reports 31 pass, 0 fail.
+
+
+2026-10-09 retirement verification:
+
+- `plugins/agent-runner/test/rpc-child.test.ts` — idle cleanup exit 143/137/null
+  preserves completion, settled failure keeps its original reason, unexpected
+  143 still fails, active end/explicit terminate cancel, and idle-only end
+  refuses active work and admitted replies awaiting `agent_start`. Replies
+  sent after retirement starts are refused.
+- `plugins/subagent/test/rpc-retirement.test.ts` — the real RPC transport runs
+  through the registry and host publisher with a short keepalive and a fake
+  process that exits 143 on SIGTERM. Completion survives retirement without a
+  failed update or duplicate result. A reply stays alive before `agent_start`
+  and during its active turn beyond the previous keepalive deadline.
+
+Proved: before the retirement fix, the runner suite reported 28 pass / 3 fail
+(completion on cleanup exit 143/137, and active end classified as failure).
+Temporarily disabling the retirement-outcome branch made both cross-layer tests
+fail (0 pass / 2 fail), including the literal exit-143 failure; the branch was
+then restored. The additional command-admission assertion failed in all three
+idle cleanup cases before its guard (0 pass / 3 fail). With the complete fix,
+`bun test plugins/agent-runner/test/rpc-child.test.ts plugins/subagent/test/lane-reply.test.ts plugins/subagent/test/rpc-retirement.test.ts`
+reports 53 pass / 0 fail.
+
+The active/pending guard was also verified independently: removing the idle-only
+guard made the active-turn assertion receive SIGTERM (0 pass / 1 fail); removing
+only the pending-reply check made the admitted-reply assertion receive SIGTERM
+(0 pass / 1 fail). Both mutations were reverted. The focused suite subsequently
+passed 53 tests before concurrent run-core edits introduced a duplicate
+readTokenUsage export, which blocked the later full-workspace test run and
+subagent imports; the runner alone still passed all 32 tests. This unrelated
+loader failure is not a green full-workspace validation.
+
+Final validation: the concurrent duplicate export was subsequently corrected;
+the 53-test focused suite and full-workspace typecheck passed again, and the
+notes verifier passed. Full-workspace test retries remained red in unrelated
+concurrent changes (bg-bash notification batching on one run, then paste-image
+candidate-path expectations on the final run). The wider subagent suite was
+176 pass / 1 fail at its Paseo RPC client opt-in test. The retirement regression
+passed; these wider failures are reported rather than overwritten or suppressed.

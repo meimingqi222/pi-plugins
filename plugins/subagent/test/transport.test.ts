@@ -34,7 +34,7 @@ describe("transport selection", () => {
 				throw new Error("foreground must not spawn RPC children");
 			},
 		})(pi);
-		const result = await tools[0]!.execute!("call-1", { agent: "explore", task: "Check it" }, undefined, undefined, ctx);
+		const result = await tools[0]!.execute!("call-1", { agent: "explore", task: "Check it", background: false }, undefined, undefined, ctx);
 		expect(result.details.status).toBe("completed");
 		expect(executorCalls).toBe(1);
 		expect(rpcCalls).toBe(0);

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": { "pi-subagent": "workspace:*" },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"

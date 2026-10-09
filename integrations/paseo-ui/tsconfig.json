@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "jsx": "react-jsx" },
-  "include": ["index.client.tsx", "client/**/*.ts", "client/**/*.tsx", "shared/**/*.ts", "test/**/*.ts", "test/**/*.tsx"]
+  "include": ["index.client.tsx", "index.server.ts", "server/**/*.ts", "client/**/*.ts", "client/**/*.tsx", "shared/**/*.ts", "test/**/*.ts", "test/**/*.tsx"]
 }

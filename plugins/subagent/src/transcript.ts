@@ -14,12 +14,15 @@
  * the whole run.
  */
 
-import { readText } from "pi-agent-runner";
-import type { FleetTheme } from "./fleet.ts";
+interface TranscriptTheme {
+	fg(color: string, text: string): string;
+}
 
 export type TranscriptBlockKind = "assistant" | "thinking" | "tool" | "error" | "note";
 
 export interface TranscriptBlock {
+	/** Stable identity when the reader supplies absolute event positions. */
+	id?: string;
 	kind: TranscriptBlockKind;
 	/** Assistant message text, the thinking excerpt, or the tool's one-line call. */
 	text: string;
@@ -56,19 +59,21 @@ function boundText(value: string, max: number): string {
 	return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-/** `readText` accepts the same content shapes executor uses for `finalText`. */
+/** Evidence parsing stays independent of the executor and the TUI runtime. */
 function contentText(content: unknown): string {
-	try {
-		return readText(content);
-	} catch {
-		return "";
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (isRecord(part) && part.type === "text" && typeof part.text === "string") parts.push(part.text);
 	}
+	return parts.join("\n");
 }
 
 /** A one-line `name(args)` for a tool call; the args themselves are metadata, not output. */
-function toolCallLine(name: string, args: unknown): string {
+function toolCallLine(name: string, args: unknown, limit = ARGS_PREVIEW_CHARS): string {
 	if (!isRecord(args)) return name;
-	const preview = flat(JSON.stringify(args));
+	const preview = flat(JSON.stringify(args), limit);
 	return preview === "{}" ? name : `${name} ${preview}`;
 }
 
@@ -80,25 +85,48 @@ interface PendingTool {
 /**
  * Fold raw JSONL lines into transcript blocks. Lines that are not JSON events
  * (a truncation marker, a torn tail) become a `note`, never a crash.
+ * Optional eventIds are absolute log positions supplied by a bounded reader;
+ * omitting them preserves the terminal consumer's original block shape.
  */
-export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): FoldedTranscript {
+export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean, limits: { text?: number; thinking?: number; result?: number; args?: number } = {}, eventIds?: readonly string[]): FoldedTranscript {
+	const TEXT_LIMIT = limits.text ?? TEXT_PREVIEW_CHARS;
+	const THINKING_LIMIT = limits.thinking ?? THINKING_PREVIEW_CHARS;
+	const RESULT_LIMIT = limits.result ?? RESULT_PREVIEW_CHARS;
 	const blocks: TranscriptBlock[] = [];
 	const pendingTools = new Map<string, PendingTool>();
 	// In-flight assistant stream: text and thinking deltas accumulate until
 	// `message_end` replaces them with the authoritative message.
 	const streamText = new Map<number, string>();
 	const streamThinking = new Map<number, string>();
+	let eventId = "";
+	let streamOrigin: string | undefined;
+	const messageId = (message: Record<string, unknown> | undefined): string | undefined =>
+		typeof message?.timestamp === "number" ? `message:${message.timestamp}` : undefined;
+	const push = (block: TranscriptBlock, suffix: string, origin = eventId): void => {
+		if (eventIds) block.id = `${origin}:${suffix}`;
+		blocks.push(block);
+	};
+	const pushTool = (block: TranscriptBlock, id: string): void => {
+		push(block, "tool", id ? `tool:${id}` : eventId);
+	};
 
 	const flushStream = (): void => {
 		const thinking = [...streamThinking.values()].join("");
 		const text = [...streamText.entries()].sort(([a], [b]) => a - b).map(([, v]) => v).join("");
-		if (thinking) blocks.push({ kind: "thinking", text: boundText(thinking, THINKING_PREVIEW_CHARS), live: true });
-		if (text) blocks.push({ kind: "assistant", text: boundText(text, TEXT_PREVIEW_CHARS), live: true });
+		if (eventIds) {
+			for (const [index, value] of streamThinking) push({ kind: "thinking", text: boundText(value, THINKING_LIMIT), live: true }, `thinking:${index}`, streamOrigin);
+			for (const [index, value] of [...streamText.entries()].sort(([a], [b]) => a - b)) push({ kind: "assistant", text: boundText(value, TEXT_LIMIT), live: true }, `assistant:${index}`, streamOrigin);
+		} else {
+			if (thinking) push({ kind: "thinking", text: boundText(thinking, THINKING_LIMIT), live: true }, "thinking");
+			if (text) push({ kind: "assistant", text: boundText(text, TEXT_LIMIT), live: true }, "assistant");
+		}
 		streamText.clear();
 		streamThinking.clear();
+		streamOrigin = undefined;
 	};
 
-	for (const line of lines) {
+	for (const [lineIndex, line] of lines.entries()) {
+		eventId = eventIds?.[lineIndex] ?? `line:${lineIndex}`;
 		let event: unknown;
 		try {
 			event = JSON.parse(line);
@@ -107,15 +135,22 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
 		}
 		if (!isRecord(event) || typeof event.type !== "string") {
 			if (event === "evidence_truncated" || (isRecord(event) && event.type === "evidence_truncated")) {
-				blocks.push({ kind: "note", text: "log truncated — earlier output is on disk only" });
+				push({ kind: "note", text: "log truncated — earlier output is on disk only" }, "note");
 			}
 			continue;
 		}
 
 		switch (event.type) {
+			case "message_start": {
+				const message = isRecord(event.message) ? event.message : undefined;
+				if (message?.role === "assistant") streamOrigin = messageId(message) ?? eventId;
+				break;
+			}
 			case "message_update": {
 				const update = isRecord(event.assistantMessageEvent) ? event.assistantMessageEvent : undefined;
 				if (!update) break;
+				const partial = isRecord(update.partial) ? update.partial : undefined;
+				streamOrigin = messageId(partial) ?? streamOrigin ?? eventId;
 				if (update.type === "text_delta" && typeof update.contentIndex === "number" && typeof update.delta === "string") {
 					streamText.set(update.contentIndex, (streamText.get(update.contentIndex) ?? "") + update.delta);
 				} else if (update.type === "thinking_delta" && typeof update.contentIndex === "number" && typeof update.delta === "string") {
@@ -124,26 +159,29 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
 				break;
 			}
 			case "message_end": {
-				flushStream();
 				const message = isRecord(event.message) ? event.message : undefined;
 				if (!message || message.role !== "assistant") break;
+				const origin = messageId(message) ?? streamOrigin ?? eventId;
+				streamOrigin = undefined;
+				streamText.clear();
+				streamThinking.clear();
 				const content = Array.isArray(message.content) ? message.content : [];
-				for (const part of content) {
+				for (const [index, part] of content.entries()) {
 					if (!isRecord(part)) continue;
 					if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-						blocks.push({ kind: "assistant", text: boundText(part.text, TEXT_PREVIEW_CHARS) });
+						push({ kind: "assistant", text: boundText(part.text, TEXT_LIMIT) }, `assistant:${index}`, origin);
 					} else if (part.type === "thinking" && typeof (part as { thinking?: unknown }).thinking === "string") {
-						blocks.push({ kind: "thinking", text: boundText(String((part as { thinking: unknown }).thinking), THINKING_PREVIEW_CHARS) });
+						push({ kind: "thinking", text: boundText(String((part as { thinking: unknown }).thinking), THINKING_LIMIT) }, `thinking:${index}`, origin);
 					} else if (part.type === "toolCall") {
 						const name = typeof part.name === "string" ? part.name : "tool";
 						const id = typeof part.id === "string" ? part.id : "";
-						const block: TranscriptBlock = { kind: "tool", name, text: toolCallLine(name, part.arguments) };
-						blocks.push(block);
+						const block: TranscriptBlock = { kind: "tool", name, text: toolCallLine(name, part.arguments, limits.args) };
+						pushTool(block, id);
 						if (id) pendingTools.set(id, { block, name });
 					}
 				}
 				if (typeof message.errorMessage === "string" && message.errorMessage) {
-					blocks.push({ kind: "error", text: boundText(message.errorMessage, TEXT_PREVIEW_CHARS) });
+					push({ kind: "error", text: boundText(message.errorMessage, TEXT_LIMIT) }, "error", origin);
 				}
 				break;
 			}
@@ -153,9 +191,17 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
 				const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
 				if (id && pendingTools.has(id)) break;
 				const name = typeof event.toolName === "string" ? event.toolName : "tool";
-				const block: TranscriptBlock = { kind: "tool", name, text: toolCallLine(name, event.args) };
-				blocks.push(block);
+				const block: TranscriptBlock = { kind: "tool", name, text: toolCallLine(name, event.args, limits.args) };
+				pushTool(block, id);
 				if (id) pendingTools.set(id, { block, name });
+				break;
+			}
+			case "tool_execution_update": {
+				const pending = typeof event.toolCallId === "string" ? pendingTools.get(event.toolCallId) : undefined;
+				if (pending) {
+					pending.block.result = boundText(contentText(isRecord(event.partialResult) ? event.partialResult.content : event.partialResult), RESULT_LIMIT);
+					pending.block.live = true;
+				}
 				break;
 			}
 			case "tool_execution_end": {
@@ -165,8 +211,9 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
 				const resultText = contentText(isRecord(event.result) ? (event.result as { content?: unknown }).content : event.result);
 				const isError = event.isError === true;
 				const block: TranscriptBlock = pending?.block ?? { kind: "tool", name, text: name };
-				if (!pending) blocks.push(block);
-				block.result = boundText(resultText, RESULT_PREVIEW_CHARS) || (isError ? "(failed)" : "(done)");
+				if (!pending) pushTool(block, id);
+				block.result = boundText(resultText, RESULT_LIMIT) || (isError ? "(failed)" : "(done)");
+				delete block.live;
 				block.isError = isError;
 				if (id) pendingTools.delete(id);
 				break;
@@ -174,11 +221,11 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
 			case "error": {
 				flushStream();
 				const message = isRecord(event.error) ? contentText((event.error as { content?: unknown }).content) : "";
-				blocks.push({ kind: "error", text: boundText(message || flat(JSON.stringify(event)), TEXT_PREVIEW_CHARS) });
+				push({ kind: "error", text: boundText(message || flat(JSON.stringify(event)), TEXT_LIMIT) }, "error");
 				break;
 			}
 			case "evidence_truncated": {
-				blocks.push({ kind: "note", text: "log truncated — earlier output is on disk only" });
+				push({ kind: "note", text: "log truncated — earlier output is on disk only" }, "note");
 				break;
 			}
 			default:
@@ -193,7 +240,7 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean): F
  * Render folded blocks for the panel's transcript view. Assistant and thinking
  * text is sanitised here too — a child's output is untrusted terminal input.
  */
-export function renderTranscript(folded: FoldedTranscript, theme: FleetTheme): string[] {
+export function renderTranscript(folded: FoldedTranscript, theme: TranscriptTheme): string[] {
 	const lines: string[] = [];
 	if (folded.earlierDataOmitted) {
 		lines.push(theme.fg("muted", "  (earlier log omitted — this is the bounded tail)"), "");

@@ -69,3 +69,56 @@ test("TUI progress stays out of chat and RPC partial results use the same progre
     expect(messages.at(-1)!.details.description).toContain("thinking");
   } finally { state.clear(); }
 });
+
+test("foreground progress updates the live tool without appending visible running messages", () => {
+  const { state, lane, messages } = harness(0);
+  const updates: unknown[] = [];
+  lane.kind = "foreground";
+  try {
+    const options = { visible: true, hostId: "spawn-call", onUpdate: (update: unknown) => updates.push(update) };
+    state.progress(lane, options);
+    lane.progress = { ...lane.progress!, phase: "tool", activeTool: "read src.ts", completedTools: 3 };
+    state.progress(lane, options);
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("3 tools completed") }] });
+    expect(messages).toHaveLength(2);
+    expect(messages.every(message => !message.display && message.content === "")).toBe(true);
+    expect(messages[1]!.details.description).toContain("read src.ts");
+    lane.status = "completed";
+    state.publish(lane, "spawn-call");
+    expect(messages.at(-1)).toMatchObject({ display: true, content: expect.stringContaining("completed"), details: { status: "completed" } });
+  } finally { state.clear(); }
+});
+
+test("foreground partial results expose only the raw log basename for the plugin output panel", () => {
+  const { lane } = harness(0);
+  const messages: unknown[] = [];
+  const updates: unknown[] = [];
+  const state = new HostSubagentState({ sendMessage: message => { messages.push(message); } } as Pick<ExtensionAPI, "sendMessage">, () => "/private/logs/session-sa001.jsonl", 0);
+  lane.kind = "foreground";
+  try {
+    state.progress(lane, { visible: true, hostId: "spawn-call", onUpdate: update => updates.push(update) });
+    expect(updates[0]).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("[Pi transcript: session-sa001.jsonl]") }] });
+    expect(JSON.stringify(updates)).not.toContain("/private/logs");
+    expect(messages[0]).toMatchObject({ display: false, content: "" });
+  } finally { state.clear(); }
+});
+
+test("Paseo notifications require an explicit RPC client opt-in", () => {
+  const previous = process.env.PI_RPC_CLIENT;
+  try {
+    for (const client of [undefined, 'paseo']) {
+      if (client === undefined) delete process.env.PI_RPC_CLIENT;
+      else process.env.PI_RPC_CLIENT = client;
+      const { state, lane } = harness(0);
+      const notes: string[] = [];
+      state.liveFile = () => '/tmp/live-transcript.jsonl';
+      state.progress(lane, { ctx: { mode: 'rpc', ui: { notify(text: string) { notes.push(text); } } } as any });
+      expect(notes.filter((text) => text.startsWith('PASEO_GOTGENES_CHILD_SESSION'))).toHaveLength(client ? 1 : 0);
+      state.clear();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PI_RPC_CLIENT;
+    else process.env.PI_RPC_CLIENT = previous;
+  }
+});

@@ -1,0 +1,30 @@
+      at <anonymous> (/Users/me/work/code/pi-plugins/integrations/paseo-ui/test/status.test.ts:32:71)
+(fail) a custom status message renders as a card on hosts old and new [0.37ms]
+34 | });
+35 | 
+36 | test("a running subagent tool call streams the same card while the child works", () => {
+37 |   const work: HostWork = { kind: "subagent", id: "call_00_o8y9", title: "deploy checks (explore)", status: "running", description: "Run the deploy checks", activity: "thinking", metric: "3 tools completed" };
+38 |   const live = transformStatusToolCall({ phase: "streaming", item: subagentToolCall("running", formatHostWork(work)) });
+39 |   expect(live?.items[0]).toMatchObject({ type: "plugin", kind: "pi-work-status", version: 1, data: { id: "call_00_o8y9", status: "running", activity: "thinking", metric: "3 tools completed" } });
+                              ^
+error: expect(received).toMatchObject(expected)
+
+Matcher error: received value must be a non-null object
+
+      at <anonymous> (/Users/me/work/code/pi-plugins/integrations/paseo-ui/test/status.test.ts:39:26)
+(fail) a running subagent tool call streams the same card while the child works [0.09ms]
+(pass) tool rows that are not status keep Paseo's native renderer [0.04ms]
+(pass) unrelated, incomplete and unknown-version text keeps Paseo's native renderer [0.07ms]
+(pass) terminal failed stays terminal in history replay [0.03ms]
+(pass) terminal aborted stays terminal in history replay [0.01ms]
+(pass) terminal exited stays terminal in history replay
+(pass) terminal timedout stays terminal in history replay
+(pass) terminal paused stays terminal in history replay
+(pass) terminal budget_limited stays terminal in history replay [0.02ms]
+(pass) terminal blocked stays terminal in history replay
+(pass) task inspection cards hide diagnostic paths and preserve successful answers and control output [1.20ms]
+
+ 14 pass
+ 2 fail
+ 30 expect() calls
+Ran 16 tests across 1 file. [34.00ms]

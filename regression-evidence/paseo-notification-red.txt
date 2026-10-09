@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+test/contribution.test.ts:
+40 |   return { client, targets, renderers };
+41 | }
+42 | 
+43 | test("the Paseo app client accepts every timeline transformer this companion registers", () => {
+44 |   const host = fakeHost();
+45 |   expect(() => contribute(host.client as never)).not.toThrow();
+                                                          ^
+error: expect(received).not.toThrow()
+
+Error name: "Error"
+Error message: "Timeline transformer pi-work-notification has invalid item type: notification"
+
+      at <anonymous> (/Users/me/work/code/pi-plugins/integrations/paseo-ui/test/contribution.test.ts:45:54)
+(fail) the Paseo app client accepts every timeline transformer this companion registers [0.71ms]
+
+ 0 pass
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [19.00ms]

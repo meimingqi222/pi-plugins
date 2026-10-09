@@ -1,10 +1,10 @@
 {
 	"name": "pi-subagent",
 	"version": "0.1.0",
-	"description": "Delegate a single task to an isolated subagent: one child pi process, its own context window, its answer back in the calling turn.",
+	"description": "Delegate a single task to an isolated subagent: background execution with automatic answer delivery by default, or explicit blocking execution.",
 	"type": "module",
 	"main": "./src/index.ts",
-	"exports": { ".": "./src/index.ts" },
+	"exports": { ".": "./src/index.ts", "./transcript": "./src/transcript.ts", "./logs": "./src/logs.ts" },
 	"files": ["src", "README.md", "ATTRIBUTION.md"],
 	"pi": { "extensions": ["./src/index.ts"] },
 	"scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },

@@ -289,7 +289,7 @@ describe("foreground concurrency", () => {
 		const call = (id: string, task: string, signal?: AbortSignal, sessionId = "session-a") =>
 			tools[0]!.execute!(
 				id,
-				{ agent: "explore", task },
+				{ agent: "explore", task, background: false },
 				signal,
 				(update: any) => {
 					const text = update?.content?.[0]?.text;

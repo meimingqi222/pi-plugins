@@ -16,15 +16,19 @@ const usage = {
   totalTokens: 0,
 };
 
-test.each(["foreground", "background"] as const)(
+test.each(["foreground", "background", "default"] as const)(
   "%s RPC launch reports readable progress before the child finishes",
   async (kind) => {
+    const logDir = mkdtempSync(join(tmpdir(), "pi-paseo-launch-"));
+    const oldLogDir = process.env.PI_SUBAGENT_LOG_DIR;
+    process.env.PI_SUBAGENT_LOG_DIR = logDir;
     const tools: Array<{ execute: (...args: unknown[]) => Promise<unknown> }> = [];
     const messages: Array<{ content: string; display: boolean; details: { id: string; status: string } }> = [];
     const listeners = new Map<string, () => void>();
     let finish!: (result: AgentRunResult) => void;
     let started!: () => void;
     let taskDeadline: number | undefined;
+    let observe: RpcChildInput["onEvent"];
     const ready = new Promise<void>((resolve) => { started = resolve; });
     const done = new Promise<AgentRunResult>((resolve) => { finish = resolve; });
     const pi = {
@@ -35,14 +39,15 @@ test.each(["foreground", "background"] as const)(
     } as unknown as ExtensionAPI;
     subagentExtension({
       discover: () => [{ name: "review", description: "review", systemPrompt: "review", filePath: "review.md" }],
-      executor: async (input) => { taskDeadline = input.timeoutMs; started(); return done; },
+      executor: async (input) => { taskDeadline = input.timeoutMs; observe = input.onEvent; started(); return done; },
       spawnRpcChild: async (input) => {
         taskDeadline = input.timeoutMs;
+        observe = input.onEvent;
         started();
         return { pid: 1, done, send: () => true, end: () => {}, terminate: () => finish({ status: "aborted", usage }) };
       },
     })(pi);
-    const call = tools[0]!.execute("live-call", { subagent_type: "review", prompt: "inspect", timeout: 1800, background: kind === "background" }, undefined, undefined, {
+    const call = tools[0]!.execute("live-call", { subagent_type: "review", prompt: "inspect", timeout: 1800, ...(kind === "default" ? {} : { background: kind === "background" }) }, undefined, undefined, {
       cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "live-session" }, isIdle: () => false,
     });
     try {
@@ -53,11 +58,22 @@ test.each(["foreground", "background"] as const)(
       expect(progress!.details.status).toBe("running");
       if (kind === "foreground") expect(progress!.details.id).toBe("live-call");
       else expect(progress!.details.id).toMatch(/^sa-/u);
+      if (kind !== "foreground") {
+        const launched = await call as { content: Array<{ text: string }> };
+        const file = launched.content[0]!.text.match(/^Output file: (.+)$/mu)?.[1];
+        expect(file).toBeDefined();
+        expect(readFileSync(file!, "utf8")).toContain("inspect");
+        observe?.({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "read-live", name: "read", arguments: { path: "live-source.ts" } }] } });
+        expect(readFileSync(file!, "utf8")).toContain("live-source.ts");
+      }
     } finally {
       finish({ status: "completed", text: "done", usage });
       await call;
       await new Promise((resolve) => setTimeout(resolve, 0));
       listeners.get("session_shutdown")?.();
+      if (oldLogDir === undefined) delete process.env.PI_SUBAGENT_LOG_DIR;
+      else process.env.PI_SUBAGENT_LOG_DIR = oldLogDir;
+      rmSync(logDir, { recursive: true, force: true });
     }
   },
 );
@@ -282,7 +298,7 @@ test.each(["completed", "failed", "thrown"] as const)(
     try {
       const result = await tools[0]!.execute(
         "foreground-spawn",
-        { subagent_type: "review", prompt: "inspect" },
+        { subagent_type: "review", prompt: "inspect", background: false },
         undefined,
         undefined,
         {

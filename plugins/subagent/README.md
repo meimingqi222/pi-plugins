@@ -19,11 +19,12 @@ one:
 | Question | *do this one thing, here* | *do this large piece of work now* |
 | Shape | one delegated task | a script that batches many |
 | Context | one isolated child | N isolated children |
-| Result | in this tool call by default; completion message in background mode | a background message when it settles |
+| Result | task ID immediately by default; completion message when it settles; explicit foreground mode returns the answer in the call | a background message when it settles |
 | Consent | none needed | explicit opt-in by rule |
 
-`subagent` is the single-task path. It waits by default when the next step needs
-the answer, or returns a task ID immediately when `background: true` is set.
+`subagent` is the single-task path. It runs in the background by default and
+returns a task ID immediately. Set `background: false` explicitly when the next
+step needs the answer and the call must block until completion.
 `pi-workflow` exists for work too wide or too structured for
 that, and is deliberately gated behind an explicit opt-in because a fan-out is a
 spend decision. Use `subagent` for one delegated task; use a workflow for many.
@@ -46,7 +47,7 @@ Reload pi to load the updated schema. Old recorded launches are not rewritten.
   "subagent_type": "explore",        // built in; no agent file needed
   "prompt": "Find every place the session store is read, and summarise the callers.",
   "model": "provider/model", // optional; overrides this call's agent definition
-  "background": true         // optional; return a task ID immediately
+  "background": true         // optional; defaults to true; false blocks for the answer
 }
 ```
 
@@ -116,8 +117,10 @@ process exits: the lane then reads as answered-awaiting-reply, and `show`
 and `wait` already carry its text. Automatic delivery follows the parent's
 boundaries described above. An idle lane settles on its own after a
 keep-alive window (5 minutes, `PI_SUBAGENT_KEEPALIVE_MS`) — the window only
-keeps the process warm for replies; ending it does not re-deliver an answer
-already sent, and a failure mid-turn still reports. Idle lanes hold no
+keeps the process warm for replies; ending it preserves the settled task outcome
+and does not re-deliver an answer already sent. Retirement rechecks idle state
+and cannot end an active turn or an admitted reply awaiting startup. A failure
+mid-turn still reports. Idle lanes hold no
 capacity slot, so a parked lane never blocks a launch. A reply that starts
 a new turn must reclaim a slot first; at the concurrency cap it is refused
 without sending the prompt or changing the idle lane. Retry once a busy lane
@@ -392,7 +395,23 @@ belongs there, and both consumers get it.
 
 ## Paseo child pages
 
-Paseo receives `outputFile` on a terminal `subagent-update`. The file is a
+With the optional [Paseo companion](../../integrations/paseo-ui/README.md),
+foreground progress and background launch cards open a plugin-owned live
+output screen. It reads raw event deltas and partial tool results while the
+child is running, without waiting for the native child-page attachment. Update
+both plugins and reload Pi to enable the entry on new cards. The native child
+page behavior described below is unchanged.
+
+RPC background launches expose an `Output file:` at startup. On Paseo hosts
+with child-file following, the page receives completed assistant messages,
+tool calls and results while the child works. The private file is append-only
+and bounded, with one file per turn; follow-up turns announce a fresh path
+through the existing host runtime notification.
+
+Foreground calls report live activity through their parent's partial tool
+result. Paseo currently registers a foreground child file only when that
+blocking call returns, so its separate child page remains unavailable mid-run.
+Paseo receives `outputFile` on a terminal `subagent-update`. That file is a
 bounded pi-message JSONL snapshot containing the task, completed assistant
 messages (including thinking and tool calls), tool results, and the final
 answer or failure/cancellation reason. Both foreground and background calls
@@ -406,3 +425,6 @@ Each snapshot stays below Paseo's 2 MiB/200-item read limits; long content is
 truncated and older entries may be omitted. Snapshot files share the raw log
 folder's seven-day/200-file cleanup policy. Reload pi before launching new
 children; existing historical blank pages do not gain transcripts retroactively.
+
+Paseo-specific live transcript notifications require `PI_RPC_CLIENT=paseo`
+in the parent Pi process environment. Generic RPC clients use standard updates.

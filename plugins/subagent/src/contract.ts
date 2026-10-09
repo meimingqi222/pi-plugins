@@ -15,7 +15,7 @@ export const SUBAGENT_DESCRIPTION = [
 	"Delegate one task to a named subagent running in its own pi process with its own context window.",
 	formatAgentGuidance(),
 	"User-defined agents in ~/.pi/agent/agents/*.md add names or replace built-ins.",
-	"By default the call waits for the answer. Set background=true for independent work; a task ID returns immediately and an unread answer is delivered at a safe parent turn boundary.",
+	"By default the child runs in the background: a task ID returns immediately and an unread answer is delivered at a safe parent turn boundary. Set background=false explicitly to block this call until the answer is ready.",
 	"Parallel background children must own disjoint files; otherwise serialize them.",
 	"Completion arrives automatically at a safe turn boundary; do not poll subagent_tasks in a loop — use its wait action when you need to block on a task.",
 	"Returning a settled answer through show, wait, or log consumes its pending notification, not a later reply's answer.",
@@ -25,7 +25,7 @@ export const SUBAGENT_DESCRIPTION = [
 
 export const SUBAGENT_GUIDELINES: string[] = [
 	"Use `subagent` for a single self-contained task that benefits from its own context window.",
-	"Omit `background` when the next step needs the answer. Set `background=true` when you can continue independent work; use `subagent_tasks` to inspect, wait on, or cancel it.",
+	"Omit `background` (or set it to true) for background execution. Set `background=false` explicitly when the next step needs the answer and this call must block; use `subagent_tasks` to inspect, wait on, or cancel background work.",
 	"A subagent starts fresh: include the goal, the relevant paths, and the shape of the answer you want. It cannot see this conversation.",
 	"Parallel background children must own disjoint files; give each its file boundary in the task.",
 	"Agents are named definitions on disk; an unknown name lists the available ones.",

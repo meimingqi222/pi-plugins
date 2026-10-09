@@ -1,4 +1,5 @@
 import { HostTranscript } from "./host-transcript.ts";
+import { basename } from "node:path";
 import { formatHostWork, type HostWork, type HostWorkContext } from "pi-run-core";
 import { Type, type Static } from "typebox";
 import type {
@@ -37,6 +38,11 @@ interface ProgressOptions {
 
 function laneWork(lane: Lane, id = lane.id, status = lane.status): HostWork {
   return { kind: "subagent", id, title: `${lane.alias} (${lane.agent})`, status, description: lane.task, activity: status === "running" ? progressActivity(lane) : displayFailure(lane.errorMessage ?? lane.result?.details.errorMessage ?? status), metric: `${lane.progress?.completedTools ?? 0} tools completed` };
+}
+
+function statusText(lane: Lane, id: string, status = lane.status, logPath = lane.logPath): string {
+  const text = formatHostWork(laneWork(lane, id, status));
+  return logPath ? `${text}\n[Pi transcript: ${basename(logPath)}]` : text;
 }
 
 interface PendingProgress {
@@ -162,6 +168,18 @@ export class HostSubagentState {
     { revision: string; path: string }
   >();
   private readonly transcripts = new Map<string, HostTranscript>();
+  private readonly liveAnnouncements = new Map<string, string>();
+  /** Attach the background spawn result before it returns, so Paseo can follow immediately. */
+  liveFile(lane: Lane): string | undefined {
+    const logPath = this.logPath(lane);
+    if (!logPath) return;
+    let transcript = this.transcripts.get(lane.id);
+    if (!transcript) {
+      transcript = new HostTranscript();
+      this.transcripts.set(lane.id, transcript);
+    }
+    return transcript.startLive(logPath, lane.task);
+  }
   observe(id: string, event: unknown): void {
     let transcript = this.transcripts.get(id);
     if (!transcript) {
@@ -196,7 +214,7 @@ export class HostSubagentState {
       if (!this.publish(current, hostId, pending.options.visible)) return;
       try {
         pending.options.onUpdate?.({
-          content: [{ type: "text", text: formatHostWork(laneWork(current, hostId)) }],
+          content: [{ type: "text", text: statusText(current, hostId, current.status, this.logPath(current)) }],
           details: { agent: current.agent, status: "running", usage: emptySubagentUsage(), output: "", progress: current.progress },
         });
       } catch { /* A renderer cannot fail a child run. */ }
@@ -222,6 +240,17 @@ export class HostSubagentState {
         ? (lane.result?.details.status ?? lane.status)
         : lane.status;
     if (nativeStatus !== "running") this.cancelProgress(lane.id);
+    const ctx = this.surfaces.get(lane.id)?.ctx;
+    if (nativeStatus === "running" && lane.kind === "background" && ctx?.mode === "rpc" && process.env.PI_RPC_CLIENT === "paseo") {
+      const file = this.liveFile(lane);
+      if (file && ctx.ui && this.liveAnnouncements.get(lane.id) !== file) {
+        try {
+          // Paseo's existing adapter consumes this notification without adding a visible row.
+          ctx.ui.notify(`PASEO_GOTGENES_CHILD_SESSION ${JSON.stringify({ agentId: hostId, file })}`, "info");
+          this.liveAnnouncements.set(lane.id, file);
+        } catch { /* The spawn result also carries the initial file; a later tick can retry. */ }
+      }
+    }
     const description = nativeStatus === "running" ? progressDescription(lane) : lane.task;
     const revision = `${nativeStatus}:${lane.resultRevision ?? 0}:${description}`;
     if (this.last.get(lane.id) === revision) return false;
@@ -246,15 +275,15 @@ export class HostSubagentState {
         this.pendingFiles.set(lane.id, { revision, path: outputFile });
     }
     try {
-      const content = visible ? formatHostWork(laneWork(lane, hostId, nativeStatus)) : "";
-      const ctx = this.surfaces.get(lane.id)?.ctx;
-      const notify = visible && process.env.PI_RPC_PROGRESS_TRANSPORT === "notify" && ctx?.ui;
+      const showStatus = visible && !(nativeStatus === "running" && this.surfaces.get(lane.id)?.onUpdate);
+      const content = showStatus ? statusText(lane, hostId, nativeStatus, logPath) : "";
+      const notify = showStatus && process.env.PI_RPC_PROGRESS_TRANSPORT === "notify" && ctx?.ui;
       if (notify) notify.notify(content, nativeStatus === "failed" ? "warning" : "info");
       this.pi.sendMessage(
         {
           customType: "subagent-update",
           content: notify ? "" : content,
-          display: visible && !notify,
+          display: showStatus && !notify,
           details: {
             id: hostId,
             ...(outputFile ? { outputFile } : {}),
@@ -280,5 +309,6 @@ export class HostSubagentState {
     this.surfaces.clear();
     this.transcripts.clear();
     this.pendingFiles.clear();
+    this.liveAnnouncements.clear();
   }
 }

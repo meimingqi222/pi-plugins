@@ -1,0 +1,20 @@
+# Raw Pi RPC stream (what Paseo's daemon receives) for one foreground subagent call.
+# Captured with `pi --mode rpc --no-session` in this repository, 2026-10-08.
+# Command: prompt -> subagent tool, subagent_type=explore, task 'sleep 6 && echo child-done'.
+
+T+975ms extension_ui_request notify "pi-redact: 112 patterns — enabled"
+T+979ms extension_ui_request notify "Jev compact v0.1.0 loaded (threshold 0.5, keep recent 6)"
+T+979ms extension_ui_request notify "Jev compact: pi-redact detected — Jev payloads are redacted before upload"
+T+1534ms agent_start
+T+1534ms turn_start
+T+4335ms tool_execution_start name=subagent
+T+4340ms tool_execution_update name=subagent partialResult.content[0].text="[Subagent call_00_o8y9laucgwe2mplbp1w5pmvg] running\nRun the shell command s… (explore)\nRun the shell command: sleep 6 && echo child-done — then reply with its exact output.\nstarting\n0 tools completed"
+T+6345ms tool_execution_update name=subagent partialResult.content[0].text="[Subagent call_00_o8y9laucgwe2mplbp1w5pmvg] running\nRun the shell command s… (explore)\nRun the shell command: sleep 6 && echo child-done — then reply with its exact output.\nthinking\n0 tools completed"
+T+9172ms tool_execution_end name=subagent (child finished)
+T+9173ms turn_end
+T+9173ms custom(subagent-update) display=true content="[Subagent call_00_o8y9laucgwe2mplbp1w5pmvg] running\nRun the shell command s… (explore)\nRun the shell command: sleep 6 && echo child-done — then reply with its exact output.\nstarting\n0 tools completed"
+T+9173ms custom(subagent-update) display=true content="[Subagent call_00_o8y9laucgwe2mplbp1w5pmvg] running\nRun the shell command s… (explore)\nRun the shell command: sleep 6 && echo child-done — then reply with its exact output.\nthinking\n0 tools completed"
+T+9173ms custom(subagent-update) display=true content="[Subagent call_00_o8y9laucgwe2mplbp1w5pmvg] completed\nRun the shell command s… (explore)\nRun the shell command: sleep 6 && echo child-done — then reply with its exact output.\ncompleted\n0 tools completed"
+T+9174ms turn_start
+T+13252ms turn_end
+T+13252ms agent_end

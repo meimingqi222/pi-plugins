@@ -47,7 +47,7 @@ export const SubagentParams = Type.Object({
     Type.String({ description: "Model override as provider/modelId. Omit to inherit the current session's model." }),
   ),
   background: Type.Optional(
-    Type.Boolean({ description: "Return a task ID immediately and continue independent work. Omit or false to wait for the answer in this call." }),
+    Type.Boolean({ default: true, description: "Defaults to true: return a task ID immediately and continue independent work. Set false explicitly to block this call until the answer is ready." }),
   ),
   alias: Type.Optional(Type.String({ description: ALIAS_PARAM_DESCRIPTION })),
   timeout: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_SUBAGENT_TIMEOUT_SECONDS, description: `Total task deadline in seconds (1–${MAX_SUBAGENT_TIMEOUT_SECONDS}, default ${DEFAULT_SUBAGENT_TIMEOUT_SECONDS} or PI_SUBAGENT_TIMEOUT_SECONDS). Includes all model and tool time; activity does not reset it. Split broad reviews into focused tasks, or explicitly budget a longer task.` })),

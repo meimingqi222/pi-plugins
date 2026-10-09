@@ -27,6 +27,7 @@ import { discoverAgents, formatAgentNames } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import { WAIT_TIMEOUT_DEFAULT_SECONDS, WAIT_TIMEOUT_MAX_SECONDS } from "./contract.ts";
 import { readSubagentLog, subagentLogPath, SUBAGENT_LOG_MAX_BYTES, SUBAGENT_LOG_MAX_LINES, sweepSubagentLogs } from "./logs.ts";
+import { basename } from "node:path";
 import {
   SUBAGENT_DESCRIPTION,
   SUBAGENT_GUIDELINES,
@@ -364,7 +365,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       promptGuidelines: SUBAGENT_GUIDELINES,
       parameters: SubagentParams,
       async execute(toolCallId, params, signal, onUpdate, ctx) {
-        if (params.background) {
+        if (params.background !== false) {
           if (signal?.aborted) {
             return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
           }
@@ -422,9 +423,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                     }
                     clearIdleTimer(id);
                     if (idle) {
+                      const idleSince = registry.get(sessionId, id)?.idleSince;
                       const timer = setTimeout(() => {
+                        if (idleTimers.get(id) !== timer) return;
                         idleTimers.delete(id);
-                        liveChildren.get(id)?.end();
+                        const current = registry.get(sessionId, id);
+                        if (generation !== launchedIn || current?.status !== "running" || current.idleSince === undefined || current.idleSince !== idleSince) return;
+                        liveChildren.get(id)?.end({ onlyIfIdle: true });
                       }, keepAliveMs);
                       timer.unref?.();
                       idleTimers.set(id, timer);
@@ -458,8 +463,12 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             // that swapped the extension in mid-session.
             if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
             reporter.sync();
+            // The child starts on a later microtask; expose its file before returning the handle.
+            const rawLog = subagentLogPath(record.id, sessionId);
+            registry.setLogPath(record.id, rawLog);
+            const outputFile = ctx.mode === "rpc" ? hostState.liveFile(record) : undefined;
             return {
-              content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check, wait, reply to, or cancel it.` }],
+              content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check, wait, reply to, or cancel it.${outputFile ? `\nOutput file: ${outputFile}\n[Pi transcript: ${basename(rawLog)}]` : ""}` }],
               details: { agent: record.agent, status: "running" as const, taskId: record.id, usage: emptySubagentUsage(), output: "" },
             };
           } catch (error) {
