@@ -33,9 +33,8 @@ describe("killAgentTree", () => {
       const pid = child.pid;
       expect(typeof pid).toBe("number");
       expect(alive(pid!)).toBe(true);
-      killAgentTree(pid);
-      // The Windows path does not wait for the taskkill it spawns, so poll rather
-      // than assert immediately; on POSIX the group SIGKILL has already landed.
+      await killAgentTree(pid);
+      // Cleanup has completed; allow the OS a short window to reap the child.
       const deadline = Date.now() + 5_000;
       while (alive(pid!) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       expect(alive(pid!)).toBe(false);

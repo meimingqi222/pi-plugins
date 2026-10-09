@@ -158,7 +158,7 @@ describe("spawnRpcChild", () => {
 		await handle.done;
 	});
 
-	test("agent_end does not settle the run; end() does, mapping to completed", async () => {
+	test("agent_end does not settle the run; idle end after agent_settled preserves completion", async () => {
 		const child = new FakeChild();
 		const handle = await spawnRpcChild(
 			{ prompt: "Task: hi", cwd: "/tmp" },
@@ -174,6 +174,7 @@ describe("spawnRpcChild", () => {
 		// The turn ended; the run must not have — done is still pending.
 		const raced = await Promise.race([handle.done.then(() => "settled"), new Promise((r) => setTimeout(() => r("pending"), 50))]);
 		expect(raced).toBe("pending");
+		child.writeLine({ type: "agent_settled" });
 		handle.end();
 		child.writeLine({ type: "response" }); // protocol ack lines are dropped
 		const result = await handle.done;
@@ -523,4 +524,77 @@ test("raw transcript observers run before RPC turn settlement and cannot fail a 
   expect((await handle.done).status).toBe("completed");
   expect(settledCount).toBe(2);
   expect(events).toHaveLength(2);
+});
+
+describe("RPC idle retirement preserves the settled task outcome", () => {
+  async function fixture() {
+    const child = new FakeChild();
+    const handle = await spawnRpcChild({ prompt: "review", cwd: tmpdir() }, { spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST });
+    child.writeLine({ type: "agent_start" });
+    child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "review complete" }], stopReason: "stop", usage: doneUsage } });
+    child.writeLine({ type: "agent_settled" });
+    return { child, handle };
+  }
+
+  test.each([143, 137, null])("idle end preserves completion when cleanup exits with %s", async exit => {
+    const { child, handle } = await fixture();
+    child.stderr.write("cleanup diagnostic");
+    handle.end();
+    expect(handle.send({ type: "prompt", message: "too late to resume" })).toBe(false);
+    child.emit("close", exit);
+    expect(await handle.done).toMatchObject({ status: "completed", text: "review complete", stopReason: "stop" });
+    expect((await handle.done).errorMessage).toBeUndefined();
+  });
+
+  test("idle retirement preserves a settled failure reason instead of replacing it with 143", async () => {
+    const { child, handle } = await fixture();
+    child.writeLine({ type: "agent_start" });
+    child.writeLine({ type: "message_end", message: { role: "assistant", content: [], errorMessage: "Provider rejected request", stopReason: "error" } });
+    child.writeLine({ type: "agent_settled" });
+    handle.end(); child.emit("close", 143);
+    expect(await handle.done).toMatchObject({ status: "failed", errorMessage: "Provider rejected request" });
+  });
+
+  test("unexpected idle exit 143 remains a failure", async () => {
+    const { child, handle } = await fixture();
+    child.emit("close", 143);
+    expect(await handle.done).toMatchObject({ status: "failed", errorMessage: "The agent exited with code 143." });
+  });
+
+  test("end during a new active turn cancels instead of reusing the previous answer", async () => {
+    const { child, handle } = await fixture();
+    child.writeLine({ type: "agent_start" });
+    handle.end(); child.emit("close", 143);
+    expect(await handle.done).toMatchObject({ status: "aborted", text: "" });
+  });
+
+  test("explicit termination after turn settle is still cancellation", async () => {
+    const { child, handle } = await fixture();
+    handle.terminate(); child.emit("close", 143);
+    expect((await handle.done).status).toBe("aborted");
+  });
+});
+
+
+test("idle-only retirement cannot kill an active turn or an admitted reply awaiting agent_start", async () => {
+  const child = new FakeChild();
+  const handle = await spawnRpcChild({ prompt: "review", cwd: tmpdir() }, { spawnFn: fakeSpawn(child), invocation: { command: "pi", args: [] }, ...FAST });
+  try {
+    child.writeLine({ type: "agent_start" });
+    handle.end({ onlyIfIdle: true });
+    expect(child.killedSignal).toBeUndefined();
+    child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first answer" }], usage: doneUsage } });
+    child.writeLine({ type: "agent_settled" });
+    expect(handle.send({ type: "prompt", message: "continue working" })).toBe(true);
+    handle.end({ onlyIfIdle: true });
+    expect(child.killedSignal).toBeUndefined();
+    child.writeLine({ type: "agent_start" });
+    handle.end({ onlyIfIdle: true });
+    expect(child.killedSignal).toBeUndefined();
+    child.writeLine({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second answer" }], usage: doneUsage } });
+    child.writeLine({ type: "agent_settled" });
+    handle.end({ onlyIfIdle: true });
+    child.emit("close", 143);
+    expect(await handle.done).toMatchObject({ status: "completed", text: "second answer" });
+  } finally { handle.terminate(); await handle.done; }
 });

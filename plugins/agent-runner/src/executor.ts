@@ -632,7 +632,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         /** Declared budgets of the tool calls in flight, keyed by call id; see `trackDeclaredTimeouts`. */
         const declaredBudgets = new Map<string, number>();
         let terminationRequested = false;
-        let forceKilled = false;
+        let killPromise: Promise<void> | undefined;
         let terminationTimer: ReturnType<typeof setTimeout> | undefined;
         let drainTimer: ReturnType<typeof setTimeout> | undefined;
         let exitCode: number | null = null;
@@ -712,17 +712,16 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           }, TERMINATION_GRACE_MS);
         }
 
-        function kill(): void {
-          if (forceKilled) return;
-          forceKilled = true;
-          killAgentTree(child.pid);
+        function kill(): Promise<void> {
+          killPromise ??= killAgentTree(child.pid);
+          return killPromise;
         }
 
         function boundDrain(): void {
           if (!drainTimer && !settled) drainTimer = setTimeout(finish, STDIO_GRACE_MS);
         }
 
-        function finish(): void {
+        async function finish(): Promise<void> {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
@@ -730,7 +729,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           if (terminationTimer) clearTimeout(terminationTimer);
           if (drainTimer) clearTimeout(drainTimer);
           input.signal?.removeEventListener("abort", onAbort);
-          kill();
+          await kill();
           child.stdout?.destroy();
           child.stderr?.destroy();
           child.unref();

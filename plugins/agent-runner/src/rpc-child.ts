@@ -125,8 +125,8 @@ export interface RpcChild {
 	readonly done: Promise<AgentRunResult>;
 	/** Queue a stdin command. Returns false when stdin is already gone (dead or draining). */
 	send(command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string; streamingBehavior?: "steer" | "followUp" }): boolean;
-	/** Graceful finish: terminate the child, resolve `done` with the normal outcome mapping. */
-	end(): void;
+	/** Retire an idle child with its settled outcome; ending active work cancels it. */
+	end(options?: { onlyIfIdle?: boolean }): void;
 	/** Hard stop: resolve `done` as an abort and kill the process. */
 	terminate(): void;
 }
@@ -210,8 +210,11 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 		/** False between `agent_settled` and the next `agent_start`, when silence is expected. */
 		let turnActive = true;
 		let endRequested = false;
+		let resumePending = false;
+		let lastSettledTurn: AgentRunResult | undefined;
+		let retirementOutcome: AgentRunResult | undefined;
 		let terminationRequested = false;
-		let forceKilled = false;
+		let killPromise: Promise<void> | undefined;
 		let stdinOpen = Boolean(child.stdin && !child.stdin.destroyed);
 		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
 		let drainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -289,17 +292,16 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			}, terminationGraceMs);
 		}
 
-		function kill(): void {
-			if (forceKilled) return;
-			forceKilled = true;
-			killAgentTree(child.pid ?? undefined);
+		function kill(): Promise<void> {
+			killPromise ??= killAgentTree(child.pid ?? undefined);
+			return killPromise;
 		}
 
 		function boundDrain(): void {
 			if (!drainTimer && !settled) drainTimer = setTimeout(finish, stdioGraceMs);
 		}
 
-		function finish(): void {
+		async function finish(): Promise<void> {
 			if (settled) return;
 			settled = true;
 			clearTurnTimer();
@@ -307,13 +309,15 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			if (terminationTimer) clearTimeout(terminationTimer);
 			if (drainTimer) clearTimeout(drainTimer);
 			input.signal?.removeEventListener("abort", onAbort);
-			kill();
+			await kill();
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			child.unref();
 
-			const outcome = mapRunOutcome({
+			const outcome = retirementOutcome && !killedBy && !turnActive
+				? retirementOutcome
+				: mapRunOutcome({
 				killedBy,
 				stalledForMs,
 				lastEventLabel,
@@ -351,12 +355,16 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			}
 		};
 
-		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string; streamingBehavior?: "steer" | "followUp" }): boolean =>
+		const send = (command: { type: "prompt" | "steer" | "follow_up" | "abort"; message?: string; streamingBehavior?: "steer" | "followUp" }): boolean => {
+			if (terminationRequested || endRequested) return false;
 			// A prompt always carries `followUp`: without it pi throws "Agent is
 			// already processing" when the command lands inside the agent_end→
 			// agent_settled window (retry, compaction, queued work) instead of
 			// queueing it.
-			write(command.type === "prompt" ? { streamingBehavior: "followUp", ...command } : command);
+			const accepted = write(command.type === "prompt" ? { streamingBehavior: "followUp", ...command } : command);
+			if (accepted && command.type === "prompt" && !turnActive) resumePending = true;
+			return accepted;
+		};
 
 		/**
 		 * Answer an extension dialog instead of letting the child wait forever.
@@ -397,6 +405,7 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 						?? (typeof event.command === "string" ? event.command : "unknown");
 					if (id !== undefined) pendingCommands.delete(id);
 					if (event.success === false) {
+						if (command === "prompt") resumePending = false;
 						const error = typeof event.error === "string" ? event.error : "command rejected";
 						try { input.onCommandError?.({ command, error }); } catch { /* observers cannot fail a child run */ }
 					}
@@ -407,6 +416,9 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				// results all key off `agent_settled`.
 				if (event.type === "agent_start") {
 					turnActive = true;
+					resumePending = false;
+					lastSettledTurn = undefined;
+					retirementOutcome = undefined;
 					// A fresh turn clears the previous turn's leftovers: a lane
 					// that recovered must not report a stale failure, and a turn
 					// that produced no text must not re-report the last answer.
@@ -417,19 +429,15 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 				} else if (event.type === "agent_settled") {
 					turnActive = false;
 					clearTurnTimer();
+					lastSettledTurn = state.errorMessage
+						? { status: "failed", errorMessage: state.errorMessage, text: state.finalText, usage: { ...state.usage } }
+						: {
+							status: "completed", text: state.finalText, usage: { ...state.usage },
+							...(state.model ? { model: state.model } : {}),
+							...(state.stopReason ? { stopReason: state.stopReason } : {}),
+						};
 					input.onIdleChange?.(true);
-					if (input.onTurnSettled) {
-						const turn: AgentRunResult = state.errorMessage
-							? { status: "failed", errorMessage: state.errorMessage, text: state.finalText, usage: state.usage }
-							: {
-								status: "completed",
-								text: state.finalText,
-								usage: state.usage,
-								...(state.model ? { model: state.model } : {}),
-								...(state.stopReason ? { stopReason: state.stopReason } : {}),
-							};
-						try { input.onTurnSettled(turn); } catch { /* observers cannot fail a child run */ }
-					}
+					try { input.onTurnSettled?.({ ...lastSettledTurn, usage: { ...lastSettledTurn.usage } }); } catch { /* observers cannot fail a child run */ }
 				}
 				applyEvent(state, event);
 				const activity = readAgentActivity(event);
@@ -467,12 +475,16 @@ export async function spawnRpcChild(input: RpcChildInput, options: SpawnRpcChild
 			pid: child.pid ?? undefined,
 			done,
 			send,
-			end() {
+			end(options = {}) {
 				if (settled || endRequested) return;
+				const idle = !turnActive && !resumePending && lastSettledTurn !== undefined;
+				if (options.onlyIfIdle && !idle) return;
 				endRequested = true;
-				// Ask pi to stop its in-flight turn first; the process termination
-				// follows on the same SIGTERM path a timeout uses.
-				send({ type: "abort" });
+				if (idle && !killedBy) retirementOutcome = lastSettledTurn;
+				else {
+					killedBy ??= "abort";
+					write({ type: "abort" });
+				}
 				requestTerminate();
 			},
 			terminate() {

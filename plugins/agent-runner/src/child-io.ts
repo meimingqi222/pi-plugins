@@ -158,10 +158,15 @@ export function mapRunOutcome(input: {
 	parse?: (text: string) => unknown;
 }): AgentRunResult {
 	const { state } = input;
-	if (state.errorMessage === undefined && input.stderr?.trim()) {
+	const exitedWithFailure = input.exitCode !== null && input.exitCode !== undefined && input.exitCode !== 0;
+	// Ambient extensions load in the child, so a startup warning on stderr is
+	// routine. It is a verdict only where nothing else can be: a run that
+	// replied and exited 0 succeeded, whatever it wrote to stderr, and
+	// promoting that text to `errorMessage` discards the answer it produced.
+	if (state.errorMessage === undefined && input.stderr?.trim() && (exitedWithFailure || !state.finalText.trim())) {
 		state.errorMessage = input.stderr.trim().slice(0, 2_000);
 	}
-	if (state.errorMessage === undefined && input.exitCode !== null && input.exitCode !== undefined && input.exitCode !== 0) {
+	if (state.errorMessage === undefined && exitedWithFailure) {
 		state.errorMessage = `The agent exited with code ${input.exitCode}.`;
 	}
 	if (input.killedBy) {
