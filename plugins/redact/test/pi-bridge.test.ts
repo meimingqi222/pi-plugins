@@ -59,6 +59,35 @@ describe("pi-bridge redactJson", () => {
     expect(hits).toBe(0);
   });
 
+  test.each([
+    ["chat object", { type: "image_url", image_url: { url: `data:image/png;base64,${FX.AWS_ACCESS_KEY_ID}` } }],
+    ["chat string", { type: "image_url", image_url: `data:image/png;base64,${FX.AWS_ACCESS_KEY_ID}` }],
+    ["responses", { type: "input_image", image_url: `data:image/png;base64,${FX.AWS_ACCESS_KEY_ID}` }],
+  ] as const)("preserves inline image data URLs in provider payloads: %s", (_label, image) => {
+    // Valid Base64 can accidentally contain a credential-shaped sequence.
+    expect(redactor.string(FX.AWS_ACCESS_KEY_ID)).not.toBe(FX.AWS_ACCESS_KEY_ID);
+    const input = { content: [image, { type: "text", text: GHP }] };
+    const { value, hits } = redactJson(input, redactor) as { value: typeof input; hits: number };
+
+    expect(hits).toBe(1);
+    expect(value.content[0]).toBe(image);
+    expect(value.content[1]).toEqual({ type: "text", text: "[REDACTED:github-pat]" });
+    expect(redactJson(image, redactor)).toEqual({ value: image, hits: 0 });
+  });
+
+  test("still redacts remote image URLs and non-image data URLs", () => {
+    const input = {
+      image_url: { url: `https://example.com/image.png?key=${GHP}` },
+      text: `data:text/plain,${GHP}`,
+      mixedText: `data:image/png;base64,AAAA ${GHP}`,
+    };
+    const { value, hits } = redactJson(input, redactor) as { value: typeof input; hits: number };
+    expect(hits).toBe(3);
+    expect(value.image_url.url).not.toContain(GHP);
+    expect(value.text).not.toContain(GHP);
+    expect(value.mixedText).not.toContain(GHP);
+  });
+
   test("tolerates non-plain objects without dropping them", () => {
     class Marker {
       constructor(readonly secret: string) {}

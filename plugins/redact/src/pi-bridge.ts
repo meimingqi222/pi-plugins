@@ -59,6 +59,11 @@ export function redactJson(
   inProgress: WeakSet<object> = new WeakSet(),
 ): DeepRedactResult {
   if (typeof value === "string") {
+    // Providers encode ImageContent as data URLs. Scanning the binary bytes
+    // can mistake a Base64 sequence for a credential and corrupt the image.
+    if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]*={0,2}$/i.test(value)) {
+      return { value, hits: 0 };
+    }
     const next = redactor.string(value);
     if (typeof next === "string" && next !== value) {
       return { value: next, hits: 1 };

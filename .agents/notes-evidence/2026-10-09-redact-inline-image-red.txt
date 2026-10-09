@@ -1,0 +1,60 @@
+bun test v1.4.2 (744846f84)
+
+plugins/redact/test/pi-bridge.test.ts:
+(pass) pi-bridge redactJson > redacts strings nested in objects and arrays [0.48ms]
+(pass) pi-bridge redactJson > preserves references for unchanged branches (copy-on-write) [0.06ms]
+(pass) pi-bridge redactJson > leaves base64 image payloads alone [0.03ms]
+(pass) pi-bridge redactJson > leaves isImage/content payloads alone [0.01ms]
+67 |     // Valid Base64 can accidentally contain a credential-shaped sequence.
+68 |     expect(redactor.string(FX.AWS_ACCESS_KEY_ID)).not.toBe(FX.AWS_ACCESS_KEY_ID);
+69 |     const input = { content: [image, { type: "text", text: GHP }] };
+70 |     const { value, hits } = redactJson(input, redactor) as { value: typeof input; hits: number };
+71 |
+72 |     expect(hits).toBe(1);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 2
+
+      at <anonymous> (plugins/redact/test/pi-bridge.test.ts:72:18)
+(fail) pi-bridge redactJson > preserves inline image data URLs in provider payloads: chat object [0.32ms]
+67 |     // Valid Base64 can accidentally contain a credential-shaped sequence.
+68 |     expect(redactor.string(FX.AWS_ACCESS_KEY_ID)).not.toBe(FX.AWS_ACCESS_KEY_ID);
+69 |     const input = { content: [image, { type: "text", text: GHP }] };
+70 |     const { value, hits } = redactJson(input, redactor) as { value: typeof input; hits: number };
+71 |
+72 |     expect(hits).toBe(1);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 2
+
+      at <anonymous> (plugins/redact/test/pi-bridge.test.ts:72:18)
+(fail) pi-bridge redactJson > preserves inline image data URLs in provider payloads: chat string [0.06ms]
+67 |     // Valid Base64 can accidentally contain a credential-shaped sequence.
+68 |     expect(redactor.string(FX.AWS_ACCESS_KEY_ID)).not.toBe(FX.AWS_ACCESS_KEY_ID);
+69 |     const input = { content: [image, { type: "text", text: GHP }] };
+70 |     const { value, hits } = redactJson(input, redactor) as { value: typeof input; hits: number };
+71 |
+72 |     expect(hits).toBe(1);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 2
+
+      at <anonymous> (plugins/redact/test/pi-bridge.test.ts:72:18)
+(fail) pi-bridge redactJson > preserves inline image data URLs in provider payloads: responses [0.08ms]
+(pass) pi-bridge redactJson > still redacts remote image URLs and non-image data URLs [0.05ms]
+(pass) pi-bridge redactJson > tolerates non-plain objects without dropping them [0.05ms]
+(pass) pi-bridge redactJson > survives cycles by not recursing into class instances [0.05ms]
+(pass) pi-bridge redactJson > returns same reference when nothing matches [0.04ms]
+(pass) pi-bridge redactJson > handles null/undefined/number roots [0.02ms]
+(pass) pi-bridge redactJson > redacts a realistic pi provider payload [0.18ms]
+
+ 10 pass
+ 3 fail
+ 33 expect() calls
+Ran 13 tests across 1 file. [9.00ms]
