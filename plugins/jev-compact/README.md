@@ -149,14 +149,12 @@ Details worth knowing:
   **arguments**. A tool result's contents are replaced by `ok, N chars (omitted)`
   in the Jev state, so they never reach TypeSafe in the first place.
 
-By default, this plugin also works alone: without a compatible `pi-redact` service,
-it uploads **unredacted** text. An installed but paused `pi-redact` likewise
-returns the original text. Set `JEV_COMPACT_REQUIRE_REDACT=true` to require an
-active version-2 redaction service before **each** Jev request. If it is absent,
-paused, or throws, Jev sends nothing and pi uses its default summarizer instead.
-An older version-1 service remains usable in the default mode, but cannot prove
-its active state and therefore does not satisfy strict mode. Neither mode can
-guarantee removal of secrets the redaction patterns do not recognize.
+By default, every Jev upload requires an active version-2 `pi-redact` service.
+If it is absent, paused, or throws, Jev sends nothing and pi uses its built-in
+summarizer. Set `JEV_COMPACT_REQUIRE_REDACT=false` only to explicitly allow
+unredacted uploads. That opt-out also permits older version-1 services, which
+cannot prove their active state. Neither mode guarantees removal of secrets
+that the redaction patterns do not recognize.
 
 The startup notice describes the observed state; the strict check also happens
 at upload time, so loading `pi-redact` later can enable Jev without a restart:
@@ -266,9 +264,9 @@ headroom, enough for the worst observed error.
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | — | The Jev/System One key. Highest priority, but not the only source; see [Install](#install). |
 | `JEV_COMPACT` | `true` | Set `false` to disable the extension. |
-| `JEV_COMPACT_REQUIRE_REDACT` | `false` | Require active pi-redact v2 before uploading to TypeSafe; otherwise use pi's built-in summary. |
+| `JEV_COMPACT_REQUIRE_REDACT` | `true` | Require active pi-redact v2 before uploading to TypeSafe; otherwise use pi's built-in summary. |
 | `JEV_COMPACT_MODEL` | `jev-latest` | Jev model name. |
-| `JEV_COMPACT_THRESHOLD` | `0.5` | Keep probability cutoff. Lower keeps more; higher discards more. Clamped to 0–1. |
+| `JEV_COMPACT_THRESHOLD` | `0.2` | Keep probability cutoff. Lower keeps more; higher discards more. Clamped to 0–1. |
 | `JEV_COMPACT_PRESERVE_RECENT` | `6` | Newest messages never touched. |
 | `JEV_COMPACT_TRUNCATE_HEAD` | `300` | Characters kept of a dropped result. |
 | `JEV_COMPACT_MAX_STATE_TOKENS` | `28000` | Size of one state **window**. A longer conversation is split into several. |
@@ -302,11 +300,10 @@ pi, which rewrites the whole summary and actually shrinks it. This is the intend
 behaviour, not a failure: a Jev pass there would swap a structured summary for a
 near-identical verbatim transcript.
 
-Jev's answers are sharply bimodal in practice — across 354 real decisions the
-median `keepResult` was 0.140 and the maximum 0.200, none reaching the 0.5 keep
-cutoff — so the ratio is decided by the input's composition more than by Jev's
-judgement. Read the threshold as "is there enough deletable output here to be
-worth it".
+Across 354 recorded decisions, median `keepResult` was 0.140 and the maximum
+was 0.200. The default keep cutoff is therefore 0.2: the highest-scored results
+in that sample can survive. A cutoff of 0.5 discarded every candidate result
+in that sample; the scores are not calibrated as ordinary probabilities.
 
 ### Retry behavior
 
@@ -445,12 +442,10 @@ At matched reduction the difference is not marginal:
 - Morph needs ratio 0.9 — **9%** reduction, i.e. almost no compaction — to get
   close, and at 66% it has discarded **every user message** (0/7).
 
-One caveat worth stating plainly: Jev's default threshold is effectively "drop
-almost all tool output". The `keepResult` probabilities cluster low
-(median 0.140, max 0.200 over 354 real decisions, none reaching the 0.5 cutoff),
-so thresholds from 0.5 to 0.95 behave identically. That is upstream behaviour,
-and it is the right trade for re-derivable output — but lower
-`JEV_COMPACT_THRESHOLD` if you need specific results retained.
+The default threshold is now 0.2, matching the measured variant above. It kept
+more result detail at a 52% reduction in that benchmark. Set
+`JEV_COMPACT_THRESHOLD=0.5` to opt into the aggressive variant; in the recorded
+sample, thresholds from 0.5 to 0.95 behaved identically.
 
 ## Development
 

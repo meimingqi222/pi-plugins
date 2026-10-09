@@ -1063,3 +1063,8 @@ describe('long conversations are windowed, not shrunk', () => {
     expect(peak).toBe(2);
   });
 });
+
+test('the calibrated default can retain a measured 0.200 result', () => {
+  const options = resolveOptions({});
+  expect(decideCall({ id: 'candidate', tool: 'read', pinned: false }, { keepCall: 0.2, keepResult: 0.2 }, options).action).toBe('keep');
+});

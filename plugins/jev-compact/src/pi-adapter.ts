@@ -114,6 +114,13 @@ function resultTextOf(content: string | PiContentBlock[] | undefined): string {
  * mutation.
  */
 export function toEngineMessages(messages: readonly PiMessage[]): Message[] {
+  const callIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === 'toolCall' && typeof block.id === 'string') callIds.add(block.id);
+    }
+  }
   const results = new Map<string, { text: string; isError: boolean }>();
   for (const message of messages) {
     if (message.role === 'toolResult' && message.toolCallId) {
@@ -135,7 +142,13 @@ export function toEngineMessages(messages: readonly PiMessage[]): Message[] {
     // A tool result is folded onto the call that produced it, below. It must
     // NOT also fall through to the generic text path, or every tool output would
     // appear twice: once as `[Tool result]:` and again as `[User]:`.
-    if (message.role === 'toolResult') continue;
+    if (message.role === 'toolResult') {
+      if (!message.toolCallId || !callIds.has(message.toolCallId)) {
+        const text = resultTextOf(message.content);
+        if (text.trim()) out.push({ role: 'user', text: `[Tool result: ${message.toolName ?? 'unknown'}]\n${text}`, toolUses: [] });
+      }
+      continue;
+    }
     if (message.role === 'assistant') {
       const blocks = Array.isArray(message.content) ? message.content : [];
       const toolUses: ToolUse[] = [];

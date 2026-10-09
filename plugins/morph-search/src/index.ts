@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { CompactClient, WarpGrepClient, type WarpGrepResult } from "@morphllm/morphsdk";
+import { WarpGrepClient, type WarpGrepResult } from "@morphllm/morphsdk";
 import {
   convertToLlm,
   serializeConversation,
@@ -8,7 +8,9 @@ import {
   DEFAULT_MAX_LINES,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "./config.ts";
+import { loadConfig, type MorphSearchConfig } from "./config.ts";
+import { installRedactBridge } from "./redact.ts";
+import { compactWithSignal } from "./compact.ts";
 
 const githubRepo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
@@ -62,8 +64,14 @@ export function compactMessagesFromText(text: string): Array<{ role: string; con
 
 export default function morphSearch(pi: ExtensionAPI): void {
   // Config is loaded at registration; /reload applies changes without a process restart.
-  const config = loadConfig();
+  let config: MorphSearchConfig | undefined;
+  let configError: unknown;
+  try { config = loadConfig(); } catch (error) { configError = error; }
+  if (configError) {
+    pi.on("session_start", (_event, ctx) => ctx.ui.notify(`Morph search configuration error: ${String(configError)}`, "warning"));
+  }
   const client = () => {
+    if (!config) throw configError;
     if (!config.apiKey) throw new Error("Morph apiKey is missing in ~/.pi/agent/morph-search.json");
     return new WarpGrepClient({ morphApiKey: config.apiKey, morphApiUrl: config.baseUrl, timeout: config.searchTimeoutMs });
   };
@@ -108,9 +116,12 @@ export default function morphSearch(pi: ExtensionAPI): void {
     },
   });
 
-  if (config.compact.enabled) {
+  if (config?.compact.enabled) {
+    const compactConfig = config;
+    const redactor = installRedactBridge(pi);
     pi.on("session_before_compact", async (event) => {
-      if (!config.apiKey) return;
+      if (event.signal.aborted) return { cancel: true };
+      if (!compactConfig.apiKey) return;
       const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore, previousSummary } = event.preparation;
       const text = serializeConversation(convertToLlm([...messagesToSummarize, ...turnPrefixMessages]));
       const messages = compactMessagesFromText(text);
@@ -119,17 +130,18 @@ export default function morphSearch(pi: ExtensionAPI): void {
       if (previousSummary?.trim()) messages.unshift({ role: "user", content: previousSummary });
       if (messages.length === 0) return;
       try {
-        const result = await new CompactClient({ morphApiKey: config.apiKey, morphApiUrl: config.baseUrl, timeout: config.compact.timeoutMs }).compact({
-          messages,
-          compressionRatio: config.compact.ratio,
-          preserveRecent: config.compact.preserveRecent,
-        });
+        const result = await compactWithSignal({ apiKey: compactConfig.apiKey, baseURL: compactConfig.baseUrl, timeout: compactConfig.compact.timeoutMs }, {
+          messages: redactor.redact(messages),
+          compressionRatio: compactConfig.compact.ratio,
+          preserveRecent: compactConfig.compact.preserveRecent,
+        }, event.signal);
         const summary = result.messages?.length === messages.length
           ? result.messages.map((message) => message.content).join("\n\n")
           : result.output;
         if (!summary?.trim()) return;
         return { compaction: { summary, firstKeptEntryId, tokensBefore } };
       } catch {
+        if (event.signal.aborted) return { cancel: true };
         return; // Let pi's default compaction run.
       }
     });

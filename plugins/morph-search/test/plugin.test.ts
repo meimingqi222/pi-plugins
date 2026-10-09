@@ -128,3 +128,7 @@ test("pi loader accepts the extension and exposes only the two search tools", as
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("invalid config keeps search tools registered for a diagnosable execution error", () => {
+  expect(registration({ searchTimeoutMs: 1 }).tools).toEqual(['warpgrep_codebase_search', 'warpgrep_github_search']);
+});

@@ -260,3 +260,9 @@ describe('serializeEngineMessages', () => {
     expect(text).not.toContain('[Tool result]:');
   });
 });
+
+test('an orphan tool result survives projection without a fabricated call', () => {
+  const messages = toEngineMessages([{ role: 'toolResult', toolCallId: 'outside', toolName: 'read', content: 'critical evidence' }]);
+  expect(serializeEngineMessages(messages)).toContain('critical evidence');
+  expect(collectToolCalls(messages, 0)).toHaveLength(0);
+});

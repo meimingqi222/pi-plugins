@@ -247,14 +247,15 @@ describe('pi-redact + pi-jev-compact integration', () => {
     const soloRun = loadExtensions([jevCompact]);
     try {
       await runSessionStart(soloRun);
-      expect(soloRun.notes.some((n) => n.includes('pi-redact not detected'))).toBe(true);
-      expect(soloRun.notes.some((n) => n.includes('sent unredacted'))).toBe(true);
+      expect(soloRun.notes.some((n) => n.includes('requires pi-redact'))).toBe(true);
+      expect(soloRun.notes.some((n) => n.includes('sent unredacted'))).toBe(false);
     } finally {
       soloRun.restore();
     }
   });
 
-  test('without pi-redact the payload is uploaded unredacted (pre-bridge baseline)', async () => {
+  test('explicit opt-out allows an unredacted upload without pi-redact', async () => {
+    process.env.JEV_COMPACT_REQUIRE_REDACT = 'false';
     // Pins the gap the bridge closes, so the test cannot pass vacuously by the
     // secret never having been in the payload at all.
     const loaded = loadExtensions([jevCompact]);
@@ -328,4 +329,11 @@ describe('pi-redact + pi-jev-compact integration', () => {
     expect(REDACT_DISCOVERY_CHANNEL).toBe('pi-redact:service-request');
     expect(REDACT_SERVICE_CHANNEL).toBe('pi-redact:service');
   });
+});
+
+test('default upload policy refuses an absent redactor', async () => {
+  delete process.env.JEV_COMPACT_REQUIRE_REDACT;
+  const loaded = loadExtensions([jevCompact]);
+  try { await runCompact(loaded); expect(loaded.sent).toHaveLength(0); }
+  finally { loaded.restore(); }
 });

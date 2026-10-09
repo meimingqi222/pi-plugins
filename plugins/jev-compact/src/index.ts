@@ -124,7 +124,7 @@ function envProbability(name: string, fallback: number): number {
 function config() {
   return {
     enabled: envFlag('JEV_COMPACT', true),
-    requireRedact: envFlag('JEV_COMPACT_REQUIRE_REDACT', false),
+    requireRedact: envFlag('JEV_COMPACT_REQUIRE_REDACT', true),
     // Below this reduction the pass is not worth taking: it would replace pi's
     // rewritten summary with a near-identical verbatim transcript. Deferring to
     // pi is right there, because pi actually shrinks the text.
@@ -144,18 +144,15 @@ function config() {
     // it. 0.3 is the line between the two: it admits a session that is at least
     // roughly half deletable output.
     //
-    // Jev's answers are sharply bimodal in practice — across 354 real decisions
-    // the median `keepResult` was 0.140 and the maximum 0.200, none reaching the
-    // 0.5 keep cutoff — so in practice the ratio is set by the input's
-    // composition rather than by Jev's judgement. The threshold is therefore
-    // best read as "is there enough deletable output here to be worth it".
+    // This reduction threshold measures how much output the pass removed.
+    // The separate keep cutoff defaults to 0.2, calibrated to recorded scores.
     minReduction: envProbability('JEV_COMPACT_MIN_REDUCTION', 0.3),
     maxAttempts: Math.max(1, Math.floor(envNumber('JEV_COMPACT_MAX_ATTEMPTS', 4))),
     retryBaseMs: envNumber('JEV_COMPACT_RETRY_BASE_MS', 300),
     model: process.env.JEV_COMPACT_MODEL || DEFAULT_MODEL,
     baseUrl: process.env.JEV_COMPACT_BASE_URL,
     options: {
-      keepThreshold: envProbability('JEV_COMPACT_THRESHOLD', 0.5),
+      keepThreshold: envProbability('JEV_COMPACT_THRESHOLD', 0.2),
       preserveRecentMessages: envNumber('JEV_COMPACT_PRESERVE_RECENT', 6),
       // A *window* size, not a whole-conversation budget: `chunkState` splits a
       // long session into several windows of at most this size, so the number can

@@ -29,7 +29,7 @@ import type {
 
 export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   goal: '',
-  keepThreshold: 0.5,
+  keepThreshold: 0.2,
   preserveRecentMessages: 6,
   // One window of state. Jev's ceiling is 32k for `state` plus the longest
   // question (docs.typesafe.ai/models).

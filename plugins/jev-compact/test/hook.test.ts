@@ -183,9 +183,12 @@ async function runCompact(
 let server: FakeJevServer;
 let savedKey: string | undefined;
 let savedAgentDir: string | undefined;
+let savedRequireRedact: string | undefined;
 let sandboxDir: string;
 
 beforeEach(() => {
+  savedRequireRedact = process.env.JEV_COMPACT_REQUIRE_REDACT;
+  process.env.JEV_COMPACT_REQUIRE_REDACT = "false";
   savedKey = process.env.TYPESAFE_API_KEY;
   savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   // The key resolver also consults `auth.json` and `jev-compact.json` in the pi
@@ -199,6 +202,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (savedRequireRedact === undefined) delete process.env.JEV_COMPACT_REQUIRE_REDACT;
+  else process.env.JEV_COMPACT_REQUIRE_REDACT = savedRequireRedact;
   server.restore();
   rmSync(sandboxDir, { recursive: true, force: true });
   if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
