@@ -1062,6 +1062,22 @@ describe('long conversations are windowed, not shrunk', () => {
     expect(requests).toBeGreaterThan(2);
     expect(peak).toBe(2);
   });
+
+  test('a failed job stops launching further requests', async () => {
+    // `Promise.all` rejects on the first failure but does not stop the sibling
+    // workers; they used to keep pulling jobs and uploading a full state to
+    // Jev. Four workers may start before the failure is observed, and no more.
+    const jev = fakeJev({}, { defaultAnswer: 0, failOnRequest: 1 });
+    await expect(
+      compact(transcript(120), jev, {
+        preserveRecentMessages: 0,
+        maxStateTokens: 1_000,
+        maxRequestTokens: 1_500,
+        maxConcurrentRequests: 4,
+      }),
+    ).rejects.toThrow(/Jev request failed/);
+    expect(jev.calls.length).toBeLessThanOrEqual(4);
+  });
 });
 
 test('the calibrated default can retain a measured 0.200 result', () => {

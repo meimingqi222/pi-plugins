@@ -162,6 +162,13 @@ capped at `maxPerSession` real calls per session. Two backends:
   prompt; the call is `DATA`, never instructions), e.g.
   `"anthropic/claude-haiku-4-5"`.
 
+The reviewer payload (`toolInput`, the user's last message, the static
+analysis) is redacted with pi-redact before it leaves the process. The Jev
+backend is fail-closed: if pi-redact is not loaded, paused, or throws, the
+reviewer returns no verdict and the call is asked instead. Set
+`PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT=0` to allow the unredacted Jev upload
+for a deployment that accepts that risk.
+
 Set `reviewer.model` to `"none"` to disable the reviewer entirely. The section
 honours the usual trust rules: a project's `reviewer` config only applies when
 the project is trusted.

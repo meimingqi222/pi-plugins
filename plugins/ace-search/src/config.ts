@@ -38,13 +38,23 @@ export const DEFAULT_TEXT_EXTENSIONS: readonly string[] = [
   ".dockerfile", ".makefile", ".cmake",
 ];
 
-/** Name-level excludes acemcp compiles into its matcher at startup. */
+/**
+ * Name-level excludes acemcp compiles into its matcher at startup.
+ *
+ * A leading `/` is this client's root anchor. `vendor`, `env`, `target`, `bin`
+ * and `obj` are build/vendor directories at a project root, but they are also
+ * ordinary source directory names (`src/env`, `src/bin`, `src/target`). Bare
+ * names excluded them at any depth, which silently indexed nothing for Go,
+ * Elixir, Rust and Java layouts. Root-anchoring the ambiguous names trades a
+ * little build-output noise for not losing source trees; `dist`/`build` stay
+ * unanchored because those are outputs at every depth.
+ */
 export const DEFAULT_EXCLUDE_PATTERNS: readonly string[] = [
-  ".git", "node_modules", "__pycache__", "vendor",
-  ".venv", "venv", ".env", "env",
+  ".git", "node_modules", "__pycache__", "/vendor",
+  ".venv", "venv", ".env", "/env",
   ".pytest_cache", ".mypy_cache", ".tox", ".eggs",
   "dist", "build", ".idea", ".vscode",
-  ".gradle", "target", "bin", "obj",
+  ".gradle", "/target", "/bin", "/obj",
   "htmlcov", ".svn", ".hg",
   ".DS_Store", "Thumbs.db",
   "*.pyc", "*.pyo", "*.pyd",

@@ -820,40 +820,6 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     keywords: ["cnv"],
   },
   {
-    id: "api-key",
-    category: "unknown",
-    title: "Unknown API Key",
-    // End boundary is "not a value char" so keys glued to Chinese/CJK punctuation
-    // still match (e.g. "api_key=xxx我问的").
-    pattern: String.raw`(?:[a-z0-9_ .,-]{0,25}api[-_](?:key|token)(?!length|count|max|min|maxlength|_length|_count|_min|_maxlength)[a-z0-9_ .,-]{0,25})\s*(?:=|>|:=|\|\|:|<=|=>|:)\s*['"]?((?!.*(?:api|key|secret|foo|example|dummy|password|12345|abcde|placeholder|fake|token))[a-z0-9+/_-]{6,128})['"]?(?![a-z0-9+/_-])`,
-    keywords: ["api-key", "api_key", "api-token", "api_token"],
-    caseInsensitive: true,
-  },
-  {
-    id: "webhook-secret",
-    category: "unknown",
-    title: "Unknown Webhook Secret",
-    pattern: String.raw`(?:[a-z0-9_ .,-]{0,25}webhook[-_]secret(?!length|count|max|min|maxlength|_length|_count|_min|_maxlength)[a-z0-9_ .,-]{0,25})\s*(?:=|>|:=|\|\|:|<=|=>|:)\s*['"]?((?!.*(?:api|key|secret|foo|example|dummy|password|12345|abcde|placeholder|fake|token|webhook))[a-z0-9+/=_-]{6,128})['"]?(?![a-z0-9+/=_-])`,
-    keywords: ["webhook-secret", "webhook_secret"],
-    caseInsensitive: true,
-  },
-  {
-    id: "secret-value",
-    category: "unknown",
-    title: "Unknown API Key",
-    pattern: String.raw`(?:[a-z0-9_ .,-]{0,25}[-_](?:secret)(?!length|count|max|min|maxlength|_length|_count|_min|_maxlength)[a-z0-9_ .,-]{0,25})\s*(?:=|>|:=|\|\|:|<=|=>|:)\s*['"]?((?!.*(?:api|key|secret|foo|example|dummy|password|12345|abcde|placeholder|fake|token))[a-z0-9+/_-]{6,128})['"]?(?![a-z0-9+/_-])`,
-    keywords: ["secret"],
-    caseInsensitive: true,
-  },
-  {
-    id: "password",
-    category: "unknown",
-    title: "Unknown Password",
-    pattern: String.raw`(?:[a-z0-9_ .,-]{0,25}password(?!length|count|max|min|maxlength|_length|_count|_min|_maxlength)[a-z0-9_ .,-]{0,25})\s*(?:=|>|:=|\|\|:|<=|=>|:)\s*['"]?((?!.*(?:api|key|secret|foo|example|dummy|string|password|12345|abcde|placeholder|fake|token|password|pass|pwd))[a-z0-9+/=_-]{6,128})['"]?(?![a-z0-9+/=_-])`,
-    keywords: ["password"],
-    caseInsensitive: true,
-  },
-  {
     id: "sk-secret",
     category: "unknown",
     title: "Unknown SK Secret",
@@ -861,8 +827,49 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     // keys glued to Chinese text or punctuation still match:
     //   "sk-xxx我输入了什么？"  "key=sk-xxx"  "sk-xxx，"
     // Still avoids matching identifiers like "mysk-..." or trailing alnum.
+    // Kept before `env-credential` so a value with the vendor prefix is
+    // labelled by the more specific rule.
     pattern: String.raw`(?<![a-z0-9])(sk(?:[-_][a-z0-9]{1,10})?[-_][a-z0-9]{10,99})(?![a-z0-9])`,
     caseInsensitive: true,
     keywords: ["sk-", "sk_"],
+  },
+  {
+    id: "env-credential",
+    category: "unknown",
+    title: "Credential-shaped environment assignment",
+    // A credential assignment (`NAME=value`, `"name": "value"`) where the name
+    // marks the value as a secret.
+    //
+    // The four rules this replaced were wrong in ways that stayed green:
+    //  - The placeholder check was `(?!.*(?:api|key|secret|…))` *inside* the
+    //    capture, so it scanned the rest of the line. A trailing comment
+    //    (`API_KEY=… # api key for prod`) vetoed the match, and `.*` at every
+    //    start position made the rule quadratic on a long line.
+    //  - The name shape only covered `api_key`/`api-token`/`*_secret`, so
+    //    `GITHUB_TOKEN`, `ACCESS_TOKEN`, `apiKey`, `APIKEY` and `PRIVATE_KEY`
+    //    never reached a rule at all.
+    //
+    // Every quantifier below is bounded, and the placeholder lookahead sees only
+    // the candidate value (<=128 chars), so cost is linear in the payload.
+    // `(?![A-Za-z])` after bare `token` keeps `tokenizer` out; the metric-suffix
+    // lookahead keeps `max_tokens`/`token_count` out.
+    pattern: String.raw`(?<![A-Za-z0-9_.-])(?![A-Za-z0-9_.-]*(?:count|length|limit|size|max|min|budget|threshold|usage|tokens)[A-Za-z0-9_.-]*)["']?[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|access[_-]?key|secret|password|passwd|pwd|[A-Za-z0-9_.-]{1,64}[_-]token|token(?![A-Za-z]))[A-Za-z0-9_.-]{0,64}["']?\s*[:=]\s*((?:["'](?![^"'\n]*(?:example|placeholder|dummy|fake|sample|changeme|redacted))[^"'\n]{6,128}["']|(?![A-Za-z0-9+/_=-]*(?:example|placeholder|dummy|fake|sample|changeme|redacted|string|number|boolean|unknown|undefined|null|true|false))[A-Za-z0-9+/_=-]{6,128}))(?![A-Za-z0-9+/_.=([{-])`,
+    keywords: [
+      "token", "secret", "password", "passwd", "pwd",
+      "apikey", "api_key", "api-key", "api_token", "api-token",
+      "private_key", "private-key", "access_key", "access-key",
+    ],
+    caseInsensitive: true,
+  },
+  {
+    id: "url-credential",
+    category: "unknown",
+    title: "Password embedded in a URL",
+    // `postgres://user:password@host/db` is the highest-value leak shape in a
+    // real .env dump and no vendor rule sees it. Group 1 is the password, so
+    // the scheme and user survive in the output.
+    pattern: String.raw`(?<![A-Za-z0-9])(?:[a-z][a-z0-9+.-]{1,20}:\/\/)[^\s:@/]{1,64}:([^\s/@]{6,128})@`,
+    keywords: ["://"],
+    caseInsensitive: true,
   },
 ];

@@ -44,6 +44,13 @@ export interface AttachEnv {
 	 * too large, or not an image pi would accept. Must not throw.
 	 */
 	load(filePath: string): Promise<LoadedImage | undefined>;
+	/**
+	 * Raw size of `filePath` in bytes, or `undefined` when it is not a readable
+	 * file. Used to refuse an attachment *before* paying for the read: checking
+	 * the base64 length after `load()` bounds what is retained, not the I/O and
+	 * transient allocation the cap exists to bound.
+	 */
+	size(filePath: string): Promise<number | undefined>;
 }
 
 export interface AttachResult {
@@ -92,6 +99,14 @@ async function loadSafely(env: AttachEnv, filePath: string): Promise<LoadedImage
 	}
 }
 
+async function sizeSafely(env: AttachEnv, filePath: string): Promise<number | undefined> {
+	try {
+		return await env.size(filePath);
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Replace every resolvable image reference with a numbered placeholder and
  * return the matching image content. Text with no resolvable reference comes
@@ -105,16 +120,33 @@ export async function attachImageReferences(text: string, env: AttachEnv, existi
 	const images: InlineImage[] = [];
 	const replacements: Array<{ reference: ImageReference; placeholder: string }> = [];
 	let totalBytes = 0;
+	// Once the aggregate budget is full, stop opening further references. A
+	// `break` out of the candidate loop alone still reads every later reference.
+	let exhausted = false;
 
 	for (const reference of references) {
-		if (existingImageCount + images.length >= DEFAULT_MAX_IMAGES) break;
+		if (exhausted || existingImageCount + images.length >= DEFAULT_MAX_IMAGES) break;
 		for (const candidate of candidatePaths(reference.expression, env)) {
-			const loaded = await loadSafely(env, candidate);
-			if (loaded === undefined) continue;
 			let index = numbers.get(candidate);
 			if (index === undefined) {
+				// Refuse before `load()`: stat is cheap, and reading a 31 MiB image
+				// just to discard its base64 is the cost this cap is meant to avoid.
+				const declared = await sizeSafely(env, candidate);
+				if (declared === undefined) continue;
+				if (totalBytes + declared > DEFAULT_MAX_TOTAL_BYTES) {
+					exhausted = true;
+					break;
+				}
+			}
+			const loaded = await loadSafely(env, candidate);
+			if (loaded === undefined) continue;
+			if (index === undefined) {
 				const bytes = Math.floor(loaded.base64.length * 3 / 4) - (loaded.base64.endsWith("==") ? 2 : loaded.base64.endsWith("=") ? 1 : 0);
-				if (totalBytes + bytes > DEFAULT_MAX_TOTAL_BYTES) break;
+				// Re-check: the file may have grown between stat and read.
+				if (totalBytes + bytes > DEFAULT_MAX_TOTAL_BYTES) {
+					exhausted = true;
+					break;
+				}
 				totalBytes += bytes;
 				index = existingImageCount + numbers.size + 1;
 				numbers.set(candidate, index);

@@ -39,22 +39,90 @@ export function formatResults(result: WarpGrepResult): string {
   }).join("\n\n");
 }
 
-export function compactMessagesFromPi(input: Parameters<typeof convertToLlm>[0]): Array<{ role: string; content: string }> {
-  const messages: Array<{ role: string; content: string }> = [];
-  for (const message of convertToLlm(input)) {
-    const role = message.role === "toolResult" ? "tool" : message.role;
-    const content = typeof message.content === "string" ? message.content : message.content.map(block => {
-      if (block.type === "text") return block.text;
-      if (block.type === "thinking") return `[Assistant thinking]: ${block.thinking}`;
-      if (block.type === "toolCall") {
-        const args = Object.entries(block.arguments).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", ");
-        return `[Assistant tool calls]: ${block.name}(${args})`;
-      }
-      return "";
-    }).filter(Boolean).join("\n");
-    if (content.trim()) messages.push({ role, content });
+/** The subset of pi's LLM message shape this converter reads. */
+interface ContentBlock {
+  type: string;
+  text?: string;
+  thinking?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+}
+type LlmMessage =
+  | { role: "user"; content: string | ContentBlock[] }
+  | { role: "assistant"; content: ContentBlock[] }
+  | { role: "toolResult"; content: ContentBlock[] };
+
+const TOOL_RESULT_MAX_CHARS = 2000;
+
+function textOf(content: string | ContentBlock[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text!)
+    .join("\n");
+}
+
+function truncateToolResult(text: string): string {
+  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${text.length - TOOL_RESULT_MAX_CHARS} more characters truncated]`;
+}
+
+/**
+ * Convert pi's structured messages to the role/text pairs Morph's compaction
+ * endpoint expects.
+ *
+ * This replaces a round-trip through `serializeConversation` followed by a
+ * line-prefix parser. The parser treated any line in a tool result that began
+ * with `[User]:` (or another marker) as a fresh message with a caller-chosen
+ * role — a prompt-injection primitive that survived compaction by
+ * construction. Reading the structured messages removes the ambiguity: a tool
+ * result is always one `tool` message, whatever its body contains.
+ */
+export function compactMessages(messages: readonly LlmMessage[]): Array<{ role: string; content: string }> {
+  const out: Array<{ role: string; content: string }> = [];
+  for (const message of messages) {
+    if (message.role === "user") {
+      const text = textOf(message.content);
+      if (text.trim()) out.push({ role: "user", content: text });
+      continue;
+    }
+    if (message.role === "assistant") {
+      const thinking = message.content
+        .filter((block) => block.type === "thinking" && typeof block.thinking === "string")
+        .map((block) => block.thinking!)
+        .join("\n");
+      const text = textOf(message.content);
+      const calls = message.content
+        .filter((block) => block.type === "toolCall")
+        .map((block) => {
+          const args = block.arguments ?? {};
+          const rendered = Object.entries(args)
+            .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+            .join(", ");
+          return `${block.name ?? "tool"}(${rendered})`;
+        })
+        .join("; ");
+      // One message per section, matching what the parser produced before.
+      if (thinking.trim()) out.push({ role: "assistant", content: thinking });
+      if (text.trim()) out.push({ role: "assistant", content: text });
+      if (calls) out.push({ role: "assistant", content: calls });
+      continue;
+    }
+    if (message.role === "toolResult") {
+      const text = textOf(message.content);
+      if (text.trim()) out.push({ role: "tool", content: truncateToolResult(text) });
+    }
   }
-  return messages;
+  return out;
+}
+
+/**
+ * Upstream-compatible entry point: accept pi's AgentMessage[] and convert.
+ * The conversion itself lives in `compactMessages`, which the tests exercise
+ * directly with LLM-shaped messages.
+ */
+export function compactMessagesFromPi(input: Parameters<typeof convertToLlm>[0]): Array<{ role: string; content: string }> {
+  return compactMessages(convertToLlm(input) as LlmMessage[]);
 }
 
 export default function morphSearch(pi: ExtensionAPI): void {

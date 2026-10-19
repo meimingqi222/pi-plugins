@@ -16,6 +16,7 @@ import { mergeConfig, appendProjectAllowRule, appendAdditionalDirectory, saveGlo
 import { decide } from "./decide.ts";
 import { createPolicyEnv } from "./env.ts";
 import { isInside } from "./paths.ts";
+import { installRedactBridge } from "./redact.ts";
 import { createReviewer, type Reviewer } from "./reviewer.ts";
 import { detectSandbox, resolveSandboxPolicy, sandboxDeps, wrapSandboxed, type SandboxAvailability } from "./sandbox/index.ts";
 import { parseRule, type UserRule } from "./rules.ts";
@@ -79,6 +80,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
   let sandboxOverride: boolean | undefined;
   let sandboxAvailability: SandboxAvailability | undefined;
   const prompter = createPrompter();
+  // Discovered once at load; the reviewer resolves the live service per call so
+  // load order between pi-redact and this plugin does not matter.
+  const redactBridge = installRedactBridge(pi);
 
   const globalFile = (): string => path.join(getAgentDir(), "permissions.json");
   const projectFile = (cwd: string): string => path.join(cwd, ".pi", "permissions.json");
@@ -141,7 +145,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
         } catch {
           // No UI to warn on.
         }
-      });
+      }, { bridge: redactBridge });
     }
     return reviewer;
   };

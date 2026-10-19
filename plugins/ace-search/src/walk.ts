@@ -300,10 +300,16 @@ export function createExcludeMatcher(
   const names: string[] = [];
   const wildcards: string[] = [];
   const paths: string[] = [];
+  // A leading `/` anchors to the project root. A bare name excludes a segment
+  // at any depth (acemcp's rule), which is right for `node_modules` but wrong
+  // for `env`/`target`/`vendor`: it silently dropped `src/env/index.ts` and
+  // `src/target/handler.rs`, so those directories were never indexed.
+  const rootAnchored: string[] = [];
   for (const raw of patterns) {
     const pattern = raw.trim();
     if (!pattern) continue;
-    if (pattern.includes("/")) paths.push(pattern.replace(/^\.\//, "").replace(/\/+$/, ""));
+    if (pattern.startsWith("/")) rootAnchored.push(pattern.slice(1).replace(/\/+$/, ""));
+    else if (pattern.includes("/")) paths.push(pattern.replace(/^\.\//, "").replace(/\/+$/, ""));
     else if (pattern.includes("*")) wildcards.push(pattern);
     else names.push(pattern);
   }
@@ -319,6 +325,9 @@ export function createExcludeMatcher(
       for (const segment of segments) {
         if (nameSet.has(segment)) return true;
         if (wildcards.some((pattern) => matchWildcard(segment, pattern))) return true;
+      }
+      if (rootAnchored.length > 0 && rootAnchored.some((pattern) => matchWildcard(segments[0]!, pattern))) {
+        return true;
       }
       // A path pattern is anchored at the project root, like .gitignore.
       // Un-anchoring it would exclude a nested `packages/desktop/dist-foo`

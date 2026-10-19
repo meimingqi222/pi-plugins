@@ -113,6 +113,86 @@ function pathIntent(kind: "read" | "write", target: string | undefined, rawTarge
 }
 
 /**
+ * Operands of an in-place `sed`, with the option bundle and the script skipped.
+ *
+ * `sed -i 's/x/y/' file` and macOS's `sed -i '' 's/x/y/' file` both have to
+ * yield just `file`. `nonOptionArgs` cannot be used here because it treats the
+ * value of `-e`/`-f` as an operand and does not know that `-i` may take a
+ * backup suffix as a separate word.
+ */
+function sedInPlaceOperands(command: ShellCommand): (string | undefined)[] | undefined {
+  let inPlace = false;
+  let scriptOption = false;
+  const operands: (string | undefined)[] = [];
+  for (let index = 0; index < command.args.length; index += 1) {
+    const arg = command.args[index];
+    if (arg === undefined) {
+      operands.push(undefined);
+      continue;
+    }
+    if (arg === "--") {
+      operands.push(...command.args.slice(index + 1));
+      break;
+    }
+    if (arg === "-i" || arg === "--in-place") {
+      inPlace = true;
+      // macOS accepts a backup suffix as the next word; GNU attaches it.
+      if (command.args[index + 1] === "") index += 1;
+      continue;
+    }
+    if (arg.startsWith("--in-place=")) {
+      inPlace = true;
+      continue;
+    }
+    if (arg.startsWith("-i") && !arg.startsWith("--")) {
+      inPlace = true;
+      continue;
+    }
+    if (arg === "-e" || arg === "--expression" || arg === "-f" || arg === "--file") {
+      scriptOption = true;
+      index += 1;
+      continue;
+    }
+    if ((arg.startsWith("-e") || arg.startsWith("-f")) && arg.length > 2 && !arg.startsWith("--")) {
+      scriptOption = true;
+      continue;
+    }
+    if (arg !== "-" && arg.startsWith("-")) continue;
+    operands.push(arg);
+  }
+  if (!inPlace) return undefined;
+  // Without -e/-f the first operand is the script expression, not a file.
+  return scriptOption ? operands : operands.slice(1);
+}
+
+/** Operands of `tar`, with old-style bundles (`czf`) and options removed. */
+function tarOperands(command: ShellCommand): { operands: (string | undefined)[]; letters: string } {
+  const operands: (string | undefined)[] = [];
+  const bundles: string[] = [];
+  let bundleSeen = false;
+  for (const arg of command.args) {
+    if (arg === undefined) {
+      operands.push(undefined);
+      continue;
+    }
+    if (arg === "--") continue;
+    if (arg !== "-" && arg.startsWith("-")) {
+      if (/^-[A-Za-z]+$/.test(arg)) bundles.push(arg.slice(1));
+      bundleSeen = true;
+      continue;
+    }
+    // Old-style `tar czf …`: the first bare word is the option bundle.
+    if (!bundleSeen && /^[A-Za-z]+$/.test(arg)) {
+      bundles.push(arg);
+      bundleSeen = true;
+      continue;
+    }
+    operands.push(arg);
+  }
+  return { operands, letters: bundles.join("") };
+}
+
+/**
  * Path intents for one unwrapped command. The caller assigns `sourceIndex`.
  * Dynamic targets set `unresolved` instead of producing an intent.
  */
@@ -138,6 +218,47 @@ export function extractPathIntents(command: ShellCommand, env: PolicyEnv): Extra
   } else if (command.name === "ln") {
     // Only the link name is created; treat the last operand as the write target.
     if (args.length > 0) pathIntent("write", args[args.length - 1], args[args.length - 1] ?? "?", command, env, out);
+  } else if (command.name === "sed") {
+    // `sed -i` is the shortest route around a protected-write rule that only
+    // understands redirects and `tee`: `sed -i '…' ~/.bashrc` rewrites the
+    // file in place with no redirect at all.
+    const targets = sedInPlaceOperands(command);
+    if (targets) for (const arg of targets) pathIntent("write", arg, arg ?? "?", command, env, out);
+  } else if (command.name === "patch") {
+    // `patch FILE < diff` edits FILE in place; a second operand is the patch.
+    if (args.length > 0) pathIntent("write", args[0], args[0] ?? "?", command, env, out);
+    if (args.length > 1) pathIntent("read", args[1], args[1] ?? "?", command, env, out);
+  } else if (command.name === "dd") {
+    for (const arg of command.args) {
+      if (typeof arg !== "string") continue;
+      if (arg.startsWith("if=")) pathIntent("read", arg.slice(3), arg, command, env, out);
+      else if (arg.startsWith("of=")) pathIntent("write", arg.slice(3), arg, command, env, out);
+    }
+  } else if (command.name === "tar") {
+    // `tar czf - ~/.ssh` reads the credential directory; `tar xf archive`
+    // writes into the working directory. The archive itself is a write when
+    // creating and a read when extracting.
+    const { operands, letters } = tarOperands(command);
+    const extracting = /[xX]/.test(letters);
+    const creating = /[cC]/.test(letters);
+    if (extracting) {
+      if (operands.length > 0) pathIntent("read", operands[0], operands[0] ?? "?", command, env, out);
+    } else if (creating) {
+      // `-` is an archive written to stdout, not a path.
+      if (operands.length > 0 && operands[0] !== "-") {
+        pathIntent("write", operands[0], operands[0] ?? "?", command, env, out);
+      }
+      for (const arg of operands.slice(1)) pathIntent("read", arg, arg ?? "?", command, env, out);
+    } else {
+      for (const arg of operands) pathIntent("read", arg, arg ?? "?", command, env, out);
+    }
+  } else if (command.name === "zip") {
+    // `zip -r out.zip ~/.aws`: archive is the write, sources are reads.
+    if (args.length > 0) pathIntent("write", args[0], args[0] ?? "?", command, env, out);
+    for (const arg of args.slice(1)) pathIntent("read", arg, arg ?? "?", command, env, out);
+  } else if (command.name === "unzip") {
+    if (args.length > 0) pathIntent("read", args[0], args[0] ?? "?", command, env, out);
+    for (const arg of args.slice(1)) pathIntent("write", arg, arg ?? "?", command, env, out);
   } else if (WRITE_TARGETS.has(command.name)) {
     for (const arg of args) pathIntent("write", arg, arg ?? "?", command, env, out);
   }

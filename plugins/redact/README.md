@@ -42,7 +42,7 @@ The extension has no runtime dependencies beyond pi itself — the whole engine 
 | Infrastructure | Docker config, JWT, npm, PyPI, RubyGems, Pulumi, Age, SendGrid |
 | Monitoring | Grafana, New Relic, Databricks, Dynatrace |
 | Other | HubSpot, Intercom, Mailchimp, Mailgun, Typeform, Todoist, Canva |
-| Generic | `api-key`, `webhook-secret`, `password`, `sk-secret`, private keys |
+| Generic | `env-credential` (`*_TOKEN`, `apiKey`, `*_SECRET`, `*_PASSWORD`, …), `url-credential`, `sk-secret`, private keys |
 
 See [`src/patterns.ts`](src/patterns.ts) for the complete, authoritative list.
 

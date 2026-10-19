@@ -340,10 +340,20 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
+  // A failed job rejects the returned promise, but `Promise.all` does not stop
+  // the sibling workers: without this flag each one kept pulling items and
+  // uploading a full state to Jev after the failure was already known. In-flight
+  // requests cannot be cancelled here, but no new one starts.
+  let failed = false;
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const index = next++;
-      results[index] = await fn(items[index]!);
+      try {
+        results[index] = await fn(items[index]!);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   };
   await Promise.all(

@@ -25,7 +25,12 @@
 
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { loadAceSearchConfig, toPosixAbsolutePath, type AceSearchConfig } from "./config.ts";
 import { formatAceStats, formatPhaseSummary, normalizeRetrievalPaths } from "./format.ts";
 import { runAceSearch, type AceSearchResult } from "./search.ts";
@@ -156,13 +161,27 @@ export default function aceSearchExtension(pi: ExtensionAPI): void {
   });
 }
 
-function renderResult(result: AceSearchResult): string {
+export function renderResult(result: AceSearchResult): string {
   const body = normalizeRetrievalPaths(result.text).trimEnd();
   const stats = formatAceStats(result);
   // The stats block is part of the tool result on purpose: a model that can see
   // "uploaded 6031 chunks in 69s" can explain a slow first search, and a human
   // reading the transcript can tell a warm run from a cold one.
-  return `${body}\n\n---\n${stats}\n${formatPhaseSummary(result)}`;
+  //
+  // Bound the retrieval body: ACE returns as much as it has, and one response
+  // with a 5 MB `formatted_retrieval` would otherwise become a 5 MB tool result
+  // and blow the model's context. The same bound as the built-in tools.
+  //
+  // The stats block is appended after truncation (and its length reserved from
+  // the budget) so a huge body cannot cut away the one part that explains a
+  // slow run.
+  const suffix = `\n\n---\n${stats}\n${formatPhaseSummary(result)}`;
+  const bodyBudget = DEFAULT_MAX_BYTES - suffix.length - 32;
+  const formatted = truncateHead(body, {
+    maxBytes: bodyBudget > 1024 ? bodyBudget : 1024,
+    maxLines: DEFAULT_MAX_LINES,
+  });
+  return `${formatted.content}${formatted.truncated ? "\n[Output truncated]" : ""}${suffix}`;
 }
 
 // Keep the type import used in a way bundlers cannot drop.

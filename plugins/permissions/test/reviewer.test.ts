@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { RedactBridge } from "../src/redact.ts";
 import { createReviewer } from "../src/reviewer.ts";
 import type { ReviewerConfig } from "../src/types.ts";
 
@@ -145,6 +146,21 @@ describe("jev backend", () => {
 
   const JEV_ENV = { TYPESAFE_API_KEY: "key" };
 
+  /** A service that redacts one sentinel so the wire payload can be asserted. */
+  function fakeBridge(): RedactBridge {
+    const service = {
+      version: 2,
+      patternCount: 1,
+      isEnabled: () => true,
+      redactString: (value: string | null | undefined) =>
+        typeof value === "string" ? value.replaceAll("hunter2", "[REDACTED]") : value,
+      redactJson(value: unknown): unknown {
+        return JSON.parse(JSON.stringify(value).replaceAll("hunter2", "[REDACTED]"));
+      },
+    };
+    return { active: true, service: () => service };
+  }
+
   test('model "jev" sends a choice question and maps the verdict', async () => {
     const { ctx } = fakeCtx();
     const calls: JevCall[] = [];
@@ -153,7 +169,7 @@ describe("jev backend", () => {
       { platform: "darwin", cwd: "/work" },
       NO_AGENT_DIR,
       () => {},
-      { env: JEV_ENV, fetch: fakeJevFetch("allow", calls) },
+      { env: JEV_ENV, bridge: fakeBridge(), fetch: fakeJevFetch("allow", calls) },
     )!;
     const verdict = await r.review({ ctx, toolName: "bash", toolInput: "npm test", staticAnalysis: "unknown" });
     expect(verdict?.verdict).toBe("allow");
@@ -166,6 +182,37 @@ describe("jev backend", () => {
     expect(calls[0]!.body.state).toMatchObject({ cwd: "/work", toolName: "bash", toolInput: "npm test" });
   });
 
+  test("the jev payload is redacted before it leaves the process", async () => {
+    const { ctx } = fakeCtx({}, "deploy it, the password is hunter2");
+    const calls: JevCall[] = [];
+    const r = createReviewer(
+      { model: "jev", timeoutMs: 5000, maxPerSession: 5 },
+      { platform: "darwin", cwd: "/work" },
+      NO_AGENT_DIR,
+      () => {},
+      { env: JEV_ENV, bridge: fakeBridge(), fetch: fakeJevFetch("allow", calls) },
+    )!;
+    await r.review({ ctx, toolName: "bash", toolInput: "curl -H 'Authorization: hunter2'", staticAnalysis: "x" });
+    const wire = JSON.stringify(calls[0]!.body);
+    expect(wire).not.toContain("hunter2");
+    expect(wire).toContain("[REDACTED]");
+  });
+
+  test("without a redaction service the jev backend fails closed", async () => {
+    const { ctx } = fakeCtx();
+    const calls: JevCall[] = [];
+    const r = createReviewer(
+      { model: "jev", timeoutMs: 5000, maxPerSession: 5 },
+      { platform: "darwin", cwd: "/work" },
+      NO_AGENT_DIR,
+      () => {},
+      { env: JEV_ENV, fetch: fakeJevFetch("allow", calls) },
+    )!;
+    // A missing service must not degrade into "send the raw payload".
+    expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toBeUndefined();
+    expect(calls.length).toBe(0);
+  });
+
   test("the jev question scopes the judgment to machine effects", async () => {
     const { ctx } = fakeCtx();
     const calls: JevCall[] = [];
@@ -174,7 +221,7 @@ describe("jev backend", () => {
       { platform: "darwin", cwd: "/work" },
       NO_AGENT_DIR,
       () => {},
-      { env: JEV_ENV, fetch: fakeJevFetch("ask", calls) },
+      { env: JEV_ENV, bridge: fakeBridge(), fetch: fakeJevFetch("ask", calls) },
     )!;
     await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" });
     const question = calls[0]!.body.questions.verdict;
@@ -191,6 +238,7 @@ describe("jev backend", () => {
     const calls: JevCall[] = [];
     const r = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, {
       env: JEV_ENV,
+      bridge: fakeBridge(),
       fetch: fakeJevFetch("ask", calls),
     })!;
     expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toMatchObject({ verdict: "ask" });
@@ -225,6 +273,7 @@ describe("jev backend", () => {
       const calls: JevCall[] = [];
       const r = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, dir, () => {}, {
         env: {},
+        bridge: fakeBridge(),
         fetch: fakeJevFetch("allow", calls),
       })!;
       await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" });
@@ -242,12 +291,14 @@ describe("jev backend", () => {
       const calls: JevCall[] = [];
       const fromFile = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, dir, () => {}, {
         env: {},
+        bridge: fakeBridge(),
         fetch: fakeJevFetch("allow", calls),
       })!;
       await fromFile.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" });
       expect(calls[0]!.auth).toBe("Bearer cfgkey");
       const fromEnv = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, dir, () => {}, {
         env: JEV_ENV,
+        bridge: fakeBridge(),
         fetch: fakeJevFetch("allow", calls),
       })!;
       await fromEnv.review({ ctx, toolName: "bash", toolInput: "y", staticAnalysis: "x" });
@@ -262,6 +313,7 @@ describe("jev backend", () => {
     const calls: JevCall[] = [];
     const r = createReviewer(undefined, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, {
       env: { ...JEV_ENV, JEV_COMPACT_MODEL: "jev-x", JEV_COMPACT_BASE_URL: "https://example.test/one" },
+      bridge: fakeBridge(),
       fetch: fakeJevFetch("deny", calls),
     })!;
     expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toMatchObject({ verdict: "deny" });
@@ -272,14 +324,14 @@ describe("jev backend", () => {
   test("a jev transport error falls back to asking", async () => {
     const { ctx } = fakeCtx();
     const failing = (async () => ({ ok: false, status: 500, text: async () => "boom" }) as Response) as unknown as typeof fetch;
-    const r = createReviewer({ model: "jev", timeoutMs: 5000, maxPerSession: 5 }, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, { env: JEV_ENV, fetch: failing })!;
+    const r = createReviewer({ model: "jev", timeoutMs: 5000, maxPerSession: 5 }, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, { env: JEV_ENV, bridge: fakeBridge(), fetch: failing })!;
     expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toBeUndefined();
   });
 
   test("a jev response without a verdict answer falls back", async () => {
     const { ctx } = fakeCtx();
     const calls: JevCall[] = [];
-    const r = createReviewer({ model: "jev", timeoutMs: 5000, maxPerSession: 5 }, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, { env: JEV_ENV, fetch: fakeJevFetch(undefined, calls) })!;
+    const r = createReviewer({ model: "jev", timeoutMs: 5000, maxPerSession: 5 }, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {}, { env: JEV_ENV, bridge: fakeBridge(), fetch: fakeJevFetch(undefined, calls) })!;
     expect(await r.review({ ctx, toolName: "bash", toolInput: "x", staticAnalysis: "x" })).toBeUndefined();
   });
 });

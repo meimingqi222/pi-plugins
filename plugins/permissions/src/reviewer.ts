@@ -12,6 +12,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isolatedComplete, parseJsonReply, parseModelIdentity, type RegisteredModel } from "pi-run-core";
 import { jevReview, resolveJevEndpoint, resolveJevKey } from "./jev.ts";
+import { redactPayload, type RedactBridge } from "./redact.ts";
 import type { PolicyEnv, ReviewerConfig } from "./types.ts";
 
 const SYSTEM_PROMPT = `You review a single tool call made by a coding agent and decide whether it can run without asking the user.
@@ -104,11 +105,23 @@ export function createReviewer(
   env: Pick<PolicyEnv, "platform" | "cwd">,
   agentDir: string,
   notify: (message: string) => void,
-  deps: { env?: Record<string, string | undefined>; fetch?: typeof fetch } = {},
+  deps: {
+    env?: Record<string, string | undefined>;
+    fetch?: typeof fetch;
+    /** pi-redact's bus service, installed by the extension factory. */
+    bridge?: RedactBridge;
+    /** Set false to allow a reviewer without pi-redact (not recommended). */
+    requireRedact?: boolean;
+  } = {},
 ): Reviewer | undefined {
   const spec = config?.model;
   const timeoutMs = config?.timeoutMs ?? 15_000;
   const maxPerSession = config?.maxPerSession ?? 100;
+  // The Jev upload defaults to fail-closed: it is a separate third party, and a
+  // reviewer deciding whether data may leave the machine must not itself send
+  // an unredacted payload. The registry backend keeps working without pi-redact
+  // because its call already goes through pi's provider pipeline.
+  const requireRedact = deps.requireRedact ?? deps.env?.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT !== "0";
   if (spec === "none") return undefined;
 
   let warned = false;
@@ -146,25 +159,40 @@ export function createReviewer(
       }
       calls += 1;
       try {
+        const payload = {
+          cwd: env.cwd,
+          platform: env.platform,
+          userRequest: lastUserRequest(input.ctx),
+          toolName: input.toolName,
+          toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
+          staticAnalysis: input.staticAnalysis,
+        };
+        // Redact at the transport edge. The Jev backend is a separate third
+        // party with its own `fetch`, so it is fail-closed: no redaction
+        // service means no upload. The registry backend goes through pi's
+        // provider path, which pi-redact already gates; there, a missing
+        // service degrades to the pre-bridge behaviour rather than disabling
+        // a provider the user configured. A throw means "ask instead".
+        const safePayload = redactPayload(
+          payload,
+          deps.bridge,
+          requireRedact && backend === "jev",
+        ) as typeof payload;
         const verdict =
           backend === "jev"
-            ? await jevReview(
-                {
-                  cwd: env.cwd,
-                  platform: env.platform,
-                  userRequest: lastUserRequest(input.ctx),
-                  toolName: input.toolName,
-                  toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
-                  staticAnalysis: input.staticAnalysis,
-                },
-                { apiKey: jevKey!, ...resolveJevEndpoint(deps.env), timeoutMs, signal: input.signal, fetch: deps.fetch },
-              )
-            : await registryReview(input, env, spec!, timeoutMs);
+            ? await jevReview(safePayload, {
+                apiKey: jevKey!,
+                ...resolveJevEndpoint(deps.env),
+                timeoutMs,
+                signal: input.signal,
+                fetch: deps.fetch,
+              })
+            : await registryReview(input, safePayload, spec!, timeoutMs);
         cache.set(key, verdict);
         return verdict;
       } catch {
-        // Unconfigured auth, provider failure, timeout, malformed JSON:
-        // §11.1 — fall back to asking.
+        // Unconfigured auth, provider failure, timeout, malformed JSON, or a
+        // redaction failure: §11.1 — fall back to asking.
         return undefined;
       }
     },
@@ -172,7 +200,7 @@ export function createReviewer(
 
   async function registryReview(
     input: Parameters<Reviewer["review"]>[0],
-    policyEnv: Pick<PolicyEnv, "platform" | "cwd">,
+    payload: Record<string, unknown>,
     modelSpec: string,
     timeoutMs: number,
   ): Promise<ReviewVerdict> {
@@ -186,14 +214,7 @@ export function createReviewer(
       signal: input.signal ?? new AbortController().signal,
       systemPrompt: SYSTEM_PROMPT,
       timeoutMs,
-      payload: {
-        cwd: policyEnv.cwd,
-        platform: policyEnv.platform,
-        userRequest: lastUserRequest(input.ctx),
-        toolName: input.toolName,
-        toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
-        staticAnalysis: input.staticAnalysis,
-      },
+      payload,
     });
     return parseJsonReply(reply.text, isVerdict);
   }

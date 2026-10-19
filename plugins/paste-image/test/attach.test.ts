@@ -53,11 +53,9 @@ describe("attachImageReferences", () => {
 		const result = await attachImageReferences("have a look at pi-clipboard-ca49e04e.png", env);
 		expect(result.attached).toBe(1);
 		expect(result.text).toBe("have a look at [#image 1]");
-		// The cwd candidate is tried first: only the second one exists.
-		expect(env.loaded).toEqual([
-			resolved(env.cwd, "pi-clipboard-ca49e04e.png"),
-			joined(env.tmpdir, "pi-clipboard-ca49e04e.png"),
-		]);
+		// The cwd candidate is tried first but its size is unknown, so it is
+		// skipped without a read; only the existing temp file reaches `load`.
+		expect(env.loaded).toEqual([joined(env.tmpdir, "pi-clipboard-ca49e04e.png")]);
 	});
 
 	test("numbers distinct images in first-reference order and reuses a repeat", async () => {
@@ -101,7 +99,7 @@ describe("attachImageReferences", () => {
 });
 
 test("attachment count includes existing images and is bounded", async () => {
-  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp', load: async () => ({ mimeType: 'image/png', base64: 'fake' }) };
+  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp', load: async () => ({ mimeType: 'image/png', base64: 'fake' }), size: async () => 4 };
   const result = await attachImageReferences(Array.from({ length: 100 }, (_, i) => `picture-${i}.png`).join(' '), env, 18);
   expect(result.images.length).toBe(2);
   expect(result.text).toContain('picture-2.png');
@@ -110,10 +108,18 @@ test("an ordinary basename cannot attach a same-named temp file", () => {
   expect(candidatePaths('residual.png', { cwd: '/work', home: '/home/me', tmpdir: '/tmp' })).toEqual(['/work/residual.png']);
 });
 
-test("the aggregate attachment bytes are bounded", async () => {
+test("the aggregate attachment bytes are bounded before the read", async () => {
   const base64 = 'A'.repeat(24 * 1024 * 1024); // 18 MiB decoded per image.
-  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp', load: async () => ({ mimeType: 'image/png', base64 }) };
-  const result = await attachImageReferences('first.png second.png', env);
+  let loads = 0;
+  let sizes = 0;
+  const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp',
+    load: async () => { loads += 1; return { mimeType: 'image/png', base64 }; },
+    // The size check must happen before load(): the second reference is refused
+    // without reading it, and the cap stops the remaining references too.
+    size: async () => { sizes += 1; return 24 * 1024 * 1024; } };
+  const result = await attachImageReferences('first.png second.png third.png', env);
   expect(result.images).toHaveLength(1);
   expect(result.text).toContain('second.png');
+  expect(loads).toBe(1);
+  expect(sizes).toBe(2);
 });

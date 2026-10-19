@@ -58,7 +58,8 @@ describe("transformInput", () => {
 	test("mixed attachments number new files after existing images and reuse repeated paths", async () => {
 		const existing = { type: "image", data: "existing", mimeType: "image/jpeg" } as const;
 		const env = { cwd: workspace, home: workspace, tmpdir: workspace,
-			load: async (file: string) => ({ mimeType: "image/png", base64: path.basename(file) }) };
+			load: async (file: string) => ({ mimeType: "image/png", base64: path.basename(file) }),
+			size: async () => 4 };
 		const result = await transformInput("a.png b.png a.png", [existing], ctx(), env);
 		expect(result.action).toBe("transform");
 		if (result.action !== "transform") return;

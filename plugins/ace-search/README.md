@@ -127,7 +127,10 @@ result so a slow first search is attributable from the transcript.
 
 Root and nested `.gitignore` files filter both uploads and retrieval hashes,
 including negation and directory rules. Configured `EXCLUDE_PATTERNS` remain
-an additional exclusion layer. This also works without a Git repository;
+an additional exclusion layer. A bare name excludes that directory at any
+depth; a leading `/` anchors it to the project root (`/env`, `/vendor`,
+`/target`, `/bin`, `/obj` are the shipped defaults, so `src/env` and
+`src/bin` are still indexed). This also works without a Git repository;
 global Git ignore files and `.git/info/exclude` are not read.
 
 This uploads source to a third-party ACE endpoint. `acemcp` already does the

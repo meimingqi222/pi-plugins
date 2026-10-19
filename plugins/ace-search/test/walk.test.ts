@@ -78,6 +78,22 @@ describe("createExcludeMatcher", () => {
     expect(matcher.isIgnored("packages/provider/src/resolver.ts", false)).toBe(false);
   });
 
+  test("a leading slash anchors a name to the project root", () => {
+    const anchored = createExcludeMatcher("/root", ["/env", "/vendor", "/target", "/bin", "dist"]);
+    // Root-level build/vendor directories are excluded.
+    expect(anchored.isIgnored("env", true)).toBe(true);
+    expect(anchored.isIgnored("vendor/lib.go", false)).toBe(true);
+    expect(anchored.isIgnored("target/debug/x", false)).toBe(true);
+    expect(anchored.isIgnored("bin/tool", false)).toBe(true);
+    // Ordinary source directories with the same names are indexed.
+    expect(anchored.isIgnored("src/env/index.ts", false)).toBe(false);
+    expect(anchored.isIgnored("src/bin/main.go", false)).toBe(false);
+    expect(anchored.isIgnored("src/target/handler.rs", false)).toBe(false);
+    expect(anchored.isIgnored("internal/vendor/lib.go", false)).toBe(false);
+    // Unanchored patterns keep matching at any depth.
+    expect(anchored.isIgnored("packages/a/dist/index.js", false)).toBe(true);
+  });
+
   test("a path pattern only matches at the root", () => {
     const rooted = createExcludeMatcher("/root", ["packages/desktop/dist-*"]);
     expect(rooted.isIgnored("packages/desktop/dist-main", true)).toBe(true);

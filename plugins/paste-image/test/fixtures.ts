@@ -58,5 +58,10 @@ export function stubEnv(
 			loaded.push(filePath);
 			return normal.get(path.normalize(filePath));
 		},
+		size: async (filePath: string): Promise<number | undefined> => {
+			const image = normal.get(path.normalize(filePath));
+			if (!image) return undefined;
+			return Math.floor(image.base64.length * 3 / 4);
+		},
 	};
 }

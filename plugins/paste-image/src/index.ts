@@ -56,6 +56,14 @@ export function createAttachEnv(cwd: string, maxSourceBytes = DEFAULT_MAX_SOURCE
 		home: homedir(),
 		tmpdir: tmpdir(),
 		load: (filePath) => loadImageFile(filePath, maxSourceBytes),
+		size: async (filePath) => {
+			try {
+				const info = await stat(filePath);
+				return info.isFile() ? info.size : undefined;
+			} catch {
+				return undefined;
+			}
+		},
 	};
 }
 
