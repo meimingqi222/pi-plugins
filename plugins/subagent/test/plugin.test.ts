@@ -349,6 +349,22 @@ describe("the extension registers delegation and task tools", () => {
     finish!({ status: "aborted", text: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
   });
 
+  test("a stale completion cannot notify the new session", async () => {
+    const { pi, tools, emit } = fakePi();
+    let finish!: (value: any) => void;
+    const notifications: string[] = [];
+    subagentExtension({ notifyDone: true, executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
+    let session = "A";
+    const ctx = { mode: "tui", hasUI: true, cwd: "/repo", sessionManager: { getSessionId: () => session }, ui: { notify: (text: string) => notifications.push(text) } };
+    await tools[0]!.execute!("old-job", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+    emit("session_before_switch", {}, ctx);
+    session = "B";
+    emit("session_start", {}, ctx);
+    finish({ status: "completed", text: "Old answer", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 2 } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notifications).toHaveLength(0);
+  });
+
   test("a background task is cancelled on tree navigation and late results cannot wake the new branch", async () => {
     const { pi, tools, messages, emit } = fakePi();
     let childSignal: AbortSignal | undefined;

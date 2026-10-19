@@ -48,6 +48,10 @@ smaller defects, each independently wrong:
   and only counts `mode === "background"` jobs.
 - `allocateLogPath` returns `undefined` when the directory cannot be created.
 - `kill()` returns early once the run has settled.
+- Settlement first kills any remaining descendants in the command's process
+  group, without changing the shell's outcome. A terminal job cannot manage
+  an orphan after its timers and abort handler are removed. Services should
+  stay foregrounded under `background: true`, not daemonize using shell `&`.
 - `TailBuffer` tracks `bufferBytes` incrementally.
 - `emitUpdate` sends `truncateOutput(...).text`, matching the final render.
 - `bg_tasks kill` polls the job status for up to 2s and reports the terminal
@@ -56,6 +60,11 @@ smaller defects, each independently wrong:
   and `# command …` lines at the top of each log file.
 
 ## Alternatives considered
+
+**Keep managing descendants after shell exit.** That conflicts with the
+existing bounded stdio-drain and terminal-shell-result contract; it would need
+a new job lifetime and portable descendant tracking. Cleanup at settlement
+preserves the shell result and avoids retaining unmanageable processes.
 
 **Refuse foreground commands at capacity too.** That trades a soft bound for a
 hard hang: a foreground command that cannot detach blocks its tool call
@@ -80,6 +89,14 @@ The kill poll adds up to 2s to `bg_tasks kill` in the worst case (a job that
 refuses to die), which is the honest answer to report anyway.
 
 ## Verification
+
+- `plugins/bg-bash/test/run.test.ts::settlement kills redirected shell descendants`
+
+Proved: the redirected `sleep 30` was still live after shell settlement before
+the fix; `.agents/notes-evidence/2026-10-19-bg-descendant-red.txt` saves the
+failed actual-process assertion. After cleanup the same test passes, checking
+Linux process state (not merely a resolved promise). Its finally kills the
+test descendant even on assertion failure.
 
 - `plugins/bg-bash/test/bash-tool.test.ts` — capacity refuses explicit
   backgrounding but still runs a foreground command.

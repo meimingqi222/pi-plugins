@@ -38,8 +38,10 @@ rather than re-reading the raw input on a retry.
 
 Redaction **fails closed**: if the redactor throws, the ask is aborted instead of
 falling through to the raw payload. Aborting makes the extension fall back to
-pi's own summary, which is a safe degradation; sending the secret is the exact
-outcome the bridge exists to prevent.
+pi's own summary. That fallback is not inherently protected in Pi 1.0: the
+separate guard described in `2026-10-19-redact-native-summary-guard.md` cancels
+attempts with detected unsafe preparation inputs. Sending the secret to
+TypeSafe is the exact outcome the service bridge exists to prevent.
 
 That guarantee requires the *announced* service to propagate engine errors, so it
 is deliberately **not** wrapped in pi-redact's own `safe()` helper. `safe()` fails

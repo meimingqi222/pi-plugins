@@ -8,7 +8,7 @@ can be installed without pulling in its siblings.
 
 | Plugin | Package | What it does |
 |--------|---------|--------------|
-| [redact](plugins/redact) | `pi-redact` | Strips API keys, tokens and other secrets from every payload sent to a model, before it leaves your machine. |
+| [redact](plugins/redact) | `pi-redact` | Redacts detected secrets from agent-loop payloads and blocks detected unsafe native-summary attempts. |
 | [jev-compact](plugins/jev-compact) | `pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
 | [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
 | [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |

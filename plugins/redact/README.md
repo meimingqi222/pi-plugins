@@ -1,6 +1,6 @@
 # pi-redact
 
-> Automatically redact API keys, tokens, passwords and secrets from every payload sent to a model — before it leaves your machine.
+> Redact detected API keys, tokens, passwords and secrets from agent-loop model payloads; block detected unsafe native-summary attempts.
 
 Part of the [pi-plugins](../../) workspace. A port of
 [`opencode-redact`](https://github.com/meimingqi222/opencode-redact) to
@@ -48,20 +48,35 @@ See [`src/patterns.ts`](src/patterns.ts) for the complete, authoritative list.
 
 ## How it works
 
-pi has two places where model input can be observed:
+pi has two agent-loop hooks where model input can be transformed:
 
 ```
 agent loop          context (AgentMessage[])  ──► context hook
                     │
 provider call       final serialized payload  ──► before_provider_request hook
-                    ▲
-auto-compaction ────┘   (bypasses `context`)
-branch summaries ───┘
+
+native summaries    preparation hooks        ──► inspect and cancel if unsafe
 ```
 
-Auto-compaction, branch summaries and overflow retries build their own prompt and call the model runtime directly, so they **never** pass through `context`. They do go through the same `streamFn`, and pi wraps that with `before_provider_request`.
+In pi 1.0.0, native compaction and branch summaries call the stream function
+directly, bypassing both `context` and `before_provider_request`. The latter is
+attached to the Agent's `onPayload`, not to every invocation of the stream function.
 
-pi-redact therefore treats `before_provider_request` as the primary gate and deep-walks the final payload. `context` and `tool_result` are defense in depth:
+pi-redact therefore inspects their exposed preparation inputs, using pi's own
+conversation serialization (including joined text blocks and tool arguments).
+If detection finds a secret, or inspection fails, it **cancels the operation**
+with a warning rather than sending raw input. It does not rewrite history or
+generate a replacement summary. Ordinary tree navigation without a summary is
+unaffected; `/redact off` explicitly permits unprotected summaries.
+
+This is a conservative guard, not final-payload redaction: it scans all branch
+entries even if the model's token budget would later exclude some. Cancellation
+can also block a custom compactor, regardless of load order. Other handlers can
+introduce input after this check, and earlier handlers may already have made
+their own requests; extensions remain responsible for their outbound traffic.
+
+`before_provider_request` remains the primary gate for agent-loop requests,
+including retried turns. `context` and `tool_result` are defense in depth:
 
 ```
 Provider request  →  before_provider_request  →  full payload deep-walked
@@ -71,6 +86,10 @@ Command           →  /redact                  →  status / on / off / toggle
 ```
 
 The walk is copy-on-write: unchanged branches keep their original reference, so provider payloads containing class instances, buffers or other special objects round-trip intact. Base64 image data is detected structurally and never rewritten.
+
+Configured `redactPaths` apply to each JSON object passed to provider hooks and
+the shared service, as well as tool-result details. They are relative to that
+object's root, not selectors that parse JSON embedded inside text strings.
 
 The provider hooks provide **best-effort detection and redaction**, not a strict
 no-secret-leaves-the-machine guarantee: patterns cannot recognize every secret.
@@ -170,7 +189,7 @@ Pause state is persisted in the session and restored on resume.
 
 ## Performance
 
-Redaction runs on the critical path of every model request, so it is written to be effectively free relative to the network.
+Redaction runs on the critical path of agent-loop model requests, so it is written to be effectively free relative to the network.
 
 Measured on this machine with `bun bench/bench.ts` (112 patterns):
 

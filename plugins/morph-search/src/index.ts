@@ -2,7 +2,6 @@ import { Type } from "typebox";
 import { WarpGrepClient, type WarpGrepResult } from "@morphllm/morphsdk";
 import {
   convertToLlm,
-  serializeConversation,
   truncateHead,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -40,25 +39,21 @@ export function formatResults(result: WarpGrepResult): string {
   }).join("\n\n");
 }
 
-export function compactMessagesFromText(text: string): Array<{ role: string; content: string }> {
+export function compactMessagesFromPi(input: Parameters<typeof convertToLlm>[0]): Array<{ role: string; content: string }> {
   const messages: Array<{ role: string; content: string }> = [];
-  let role: string | undefined;
-  let lines: string[] = [];
-  const flush = () => {
-    const content = lines.join("\n").trim();
-    if (role && content) messages.push({ role, content });
-  };
-  for (const line of text.split("\n")) {
-    const match = line.match(/^\[(User|Assistant thinking|Assistant tool calls|Assistant|Tool result)\]:\s*/);
-    if (match) {
-      flush();
-      role = match[1] === "User" ? "user" : match[1] === "Tool result" ? "tool" : "assistant";
-      lines = [line.slice(match[0].length)];
-    } else {
-      lines.push(line);
-    }
+  for (const message of convertToLlm(input)) {
+    const role = message.role === "toolResult" ? "tool" : message.role;
+    const content = typeof message.content === "string" ? message.content : message.content.map(block => {
+      if (block.type === "text") return block.text;
+      if (block.type === "thinking") return `[Assistant thinking]: ${block.thinking}`;
+      if (block.type === "toolCall") {
+        const args = Object.entries(block.arguments).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", ");
+        return `[Assistant tool calls]: ${block.name}(${args})`;
+      }
+      return "";
+    }).filter(Boolean).join("\n");
+    if (content.trim()) messages.push({ role, content });
   }
-  flush();
   return messages;
 }
 
@@ -123,8 +118,7 @@ export default function morphSearch(pi: ExtensionAPI): void {
       if (event.signal.aborted) return { cancel: true };
       if (!compactConfig.apiKey) return;
       const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore, previousSummary } = event.preparation;
-      const text = serializeConversation(convertToLlm([...messagesToSummarize, ...turnPrefixMessages]));
-      const messages = compactMessagesFromText(text);
+      const messages = compactMessagesFromPi([...messagesToSummarize, ...turnPrefixMessages]);
       // Pi supplies earlier compacted history separately from the new messages.
       // Keep it intact instead of parsing its role-like lines as fresh turns.
       if (previousSummary?.trim()) messages.unshift({ role: "user", content: previousSummary });

@@ -1,6 +1,7 @@
 # Agent Note: Make the workflow script host terminate instead of hanging
 
 Status: implemented
+Partly-superseded-by: 2026-09-23-workflow-terminate-once.md
 
 ## Problem
 
@@ -36,6 +37,8 @@ crashed on the first write.
 
 ## Decision
 
+The transport portion below is superseded; see `## Superseded`.
+
 Replace the subprocess with a `node:worker_threads` worker, and settle on the
 first terminal signal rather than on the worker exiting.
 
@@ -57,6 +60,13 @@ The worker source embeds `installDeterminismGuards.toString()` rather than a cop
 so `sandbox.ts` stays the single source of truth. Scripts run with `"use strict"`
 so an assignment to a guarded global throws instead of silently doing nothing —
 the guard held either way, but a silent no-op hides that from the author.
+
+## Superseded
+
+The claim that Bun workers can always interrupt the guarded vm is superseded
+by the owning termination note. Bun 1.3.10 requires an IPC subprocess; Node
+retains workers. The old stdin failure does not apply to IPC. The terminal
+message, bounded drain and single-source guard decisions below still apply.
 
 ## Alternatives considered
 

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   acemcpCachePath,
   loadBlobHashStore,
@@ -17,6 +17,21 @@ import type { InventoryEntry } from "../src/walk.ts";
 async function temporaryDirectory(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-ace-search-"));
 }
+
+test("concurrent index writers publish complete snapshots without temporary leftovers", async () => {
+  const directory = await temporaryDirectory();
+  const path = join(directory, "index.json");
+  try {
+    const results = await Promise.allSettled(Array.from({ length: 20 }, (_, i) =>
+      persistPiAceIndex({ path, projectRoot: `project-${i}`, entries: [], source: "pi-ace-index" })));
+    expect(results.filter(result => result.status === "rejected")).toEqual([]);
+    expect(JSON.parse(await readFile(path, "utf8")).projectRoot).toMatch(/^project-\d+$/);
+    expect(await readdir(directory)).toEqual(["index.json"]);
+    // A failed rename must remove the writer's private temporary file too.
+    await expect(persistPiAceIndex({ path: directory, projectRoot: "p", entries: [], source: "pi-ace-index" })).rejects.toThrow();
+    expect((await readdir(dirname(directory))).filter(name => name.startsWith(basename(directory) + "."))).toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 describe("cache path", () => {
   test("matches acemcp's sha256(absPath)[:16] scheme", () => {

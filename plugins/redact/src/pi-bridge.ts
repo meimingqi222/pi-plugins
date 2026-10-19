@@ -4,10 +4,9 @@
  * pi's model input has two entry points we care about:
  *
  *   1. `context` event          → AgentMessage[] for the main agent loop
- *   2. `before_provider_request` → the final provider payload. This wraps
- *      `streamFn`, so it also covers requests pi builds internally and never
- *      routes through `context` (notably auto-compaction, branch summaries,
- *      and overflow retries).
+ *   2. `before_provider_request` → the final agent-loop provider payload.
+ *      Pi 1.0's native compaction and branch summaries bypass this hook;
+ *      index.ts guards their exposed inputs separately by cancellation.
  *
  * Both are deep-walked with a copy-on-write JSON redactor. Binary content
  * (pi `ImageContent` and base64 blobs) is preserved untouched.

@@ -1,0 +1,71 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/jev-compact/test/retry.test.ts:
+59 |   await ready;
+60 |   controller.abort();
+61 |   const raced = await Promise.race([result, new Promise(resolve => setTimeout(() => resolve('still waiting'), 30))]);
+62 |   finish();
+63 |   await result;
+64 |   expect(raced).toBe(controller.signal.reason);
+                     ^
+error: expect(received).toBe(expected)
+
+Expected: DOMException {
+  line: 42,
+  column: 19,
+  sourceURL: "/home/user/workspace/repo/plugins/jev-compact/test/retry.test.ts",
+  stack: "abort@[native code]\n@/home/user/workspace/repo/plugins/jev-compact/test/retry.test.ts:42:19",
+  code: 20,
+  name: "AbortError",
+  message: "The operation was aborted.",
+  INDEX_SIZE_ERR: 1,
+  DOMSTRING_SIZE_ERR: 2,
+  HIERARCHY_REQUEST_ERR: 3,
+  WRONG_DOCUMENT_ERR: 4,
+  INVALID_CHARACTER_ERR: 5,
+  NO_DATA_ALLOWED_ERR: 6,
+  NO_MODIFICATION_ALLOWED_ERR: 7,
+  NOT_FOUND_ERR: 8,
+  NOT_SUPPORTED_ERR: 9,
+  INUSE_ATTRIBUTE_ERR: 10,
+  INVALID_STATE_ERR: 11,
+  SYNTAX_ERR: 12,
+  INVALID_MODIFICATION_ERR: 13,
+  NAMESPACE_ERR: 14,
+  INVALID_ACCESS_ERR: 15,
+  VALIDATION_ERR: 16,
+  TYPE_MISMATCH_ERR: 17,
+  SECURITY_ERR: 18,
+  NETWORK_ERR: 19,
+  ABORT_ERR: 20,
+  URL_MISMATCH_ERR: 21,
+  QUOTA_EXCEEDED_ERR: 22,
+  TIMEOUT_ERR: 23,
+  INVALID_NODE_TYPE_ERR: 24,
+  DATA_CLONE_ERR: 25,
+  toString: [Function: toString],
+}
+Received: "still waiting"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/jev-compact/test/retry.test.ts:64:17)
+(fail) cancellation interrupts backoff and never invokes another ask [32.85ms]
+66 | });
+67 |
+68 | test('pre-aborted signal and cancellation in onRetry prevent asks', async () => {
+69 |   const controller = new AbortController(); controller.abort();
+70 |   const first = flaky(0, () => new Error('fetch failed'));
+71 |   await expect(withRetry(first.asker).ask({}, {}, { signal: controller.signal })).rejects.toThrow();
+                                                                                               ^
+error:
+
+Expected promise that rejects
+Received promise that resolved: Promise { <resolved> }
+
+      at <anonymous> (/home/user/workspace/repo/plugins/jev-compact/test/retry.test.ts:71:91)
+(fail) pre-aborted signal and cancellation in onRetry prevent asks [0.38ms]
+
+ 0 pass
+ 22 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [73.00ms]

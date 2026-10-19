@@ -63,6 +63,14 @@ Two details matter more than the list:
 Retrying a Jev ask is safe because asks are read-only probability questions;
 there is no mutation to double-apply.
 
+Cancellation is checked before every asker invocation and before backoff. Backoff
+races the caller's signal (including injected sleeps), removes its abort listener
+on every exit, and clears the production timer. A cancellation during a delay
+rejects immediately with the signal reason and cannot schedule another ask.
+Checking only after a failed request would miss both pre-aborted callers and
+signals cancelled during sleep or by the retry notifier. Injected sleepers may
+finish later but their outcome is observed and cannot resume the retry loop.
+
 ## Alternatives considered
 
 **Retry every failure.** Simplest, and it would have fixed the observed bug.
@@ -109,6 +117,14 @@ becomes a concern, the `details.provider` field on the compaction entry is the
 place to record "fell back, and why".
 
 ## Verification
+
+- `plugins/jev-compact/test/retry.test.ts::cancellation interrupts backoff and never invokes another ask`
+- `plugins/jev-compact/test/retry.test.ts::pre-aborted signal and cancellation in onRetry prevent asks`
+
+Proved: pre-fix backoff remained pending after abort and a pre-aborted caller
+still reached the asker. Output saved to
+`.agents/notes-evidence/2026-10-19-jev-backoff-abort-red.txt`. Both tests pass
+with signal-aware backoff and the attempt-entry guard.
 
 Tests live in `plugins/jev-compact/test/retry.test.ts`; they inject a fake
 `sleep` and a scripted asker, so classification and backoff are asserted without

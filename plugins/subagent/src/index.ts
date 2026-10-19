@@ -197,6 +197,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       const launch = pending.get(record.id);
       pending.delete(record.id);
       launch?.lease?.finish(record.result ? readTokenUsage(record.result) : 0);
+      if (!launch?.isCurrent()) return;
       if (notifyDone && record.status !== "aborted") {
         const ui = uiCtx?.ui;
         if (ui) {
@@ -206,7 +207,6 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           } catch { /* The settled result still reaches the model. */ }
         }
       }
-      if (!launch?.isCurrent()) return;
       hostState.publish(record);
       delivery.offer(record, launch);
     }, resolveLaneLimit());

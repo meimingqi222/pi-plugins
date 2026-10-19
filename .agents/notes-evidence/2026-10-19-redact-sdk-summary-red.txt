@@ -1,0 +1,22 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/redact/test/native-summary.test.ts:
+50 |           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+51 |       }) } as any;
+52 |     };
+53 |     let blocked = false;
+54 |     try { await session.compact(); } catch { blocked = true; }
+55 |     expect(blocked).toBe(true);
+                         ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/native-summary.test.ts:55:21)
+(fail) Pi native compaction never sends detected stored secrets to its summarizer [41.76ms]
+
+ 0 pass
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [479.00ms]

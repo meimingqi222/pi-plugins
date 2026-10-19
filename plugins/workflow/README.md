@@ -110,12 +110,13 @@ returns at once.
 
 ## The script environment
 
-Scripts run in a **worker thread** (`node:worker_threads`), not in the pi
-process: `terminate()` interrupts a synchronous `while (true) {}`, which no
-in-process guard can do, and a memory cap keeps a script from growing the
-parent's heap. A subprocess was considered and rejected — it needs a second
-interpreter and broke under Bun; the worker gives the property that matters
-(killability) on both Node and Bun.
+Scripts run outside pi's execution realm: Node uses a **worker thread** with a
+heap cap; Bun uses a **subprocess** because Bun 1.3.10 cannot terminate a busy
+loop inside a worker's vm context. Both use the same guarded vm and structured
+messages, and await actual exit after termination. Bun reuses its own runtime
+(including standalone executables via `BUN_BE_BUN=1`) with IPC, not stdin.
+The Bun process has a separate heap; `memoryLimitMb` is a Node-worker option,
+not an OS memory quota on Bun.
 
 Inside the script:
 

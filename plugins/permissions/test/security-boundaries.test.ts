@@ -28,6 +28,29 @@ test("all grep-family tools ask before searching credential roots", () => {
     expect(verdict(`${tool} credential src`).action).toBe("allow");
   }
 });
+test("grep expression options never hide protected path operands", () => {
+  for (const tool of ["grep", "rg", "egrep", "fgrep"]) {
+    for (const args of ["needle", "--regexp=needle", "--regexp needle", "-e needle", "-eneedle", "-ineedle -e other", "-ie needle", "-e needle -e other", "--regexp=", "-f patterns", "--file=patterns", "-e needle --", "-- needle", "-n needle", "-A 2 needle", "--context=2 needle"]) {
+      const command = `${tool} ${args} ~/.aws/credentials`;
+      const classified = classifyToolCall("bash", { command }, { env, shellDialect: "bash" });
+      expect(decide(classified, "read-only", [], env).action).toBe("deny");
+      expect(verdict(`${tool} ${args} src`).action).toBe("allow");
+    }
+    expect(verdict(`${tool} -f ~/.aws/credentials src`).action).toBe("ask");
+    expect(verdict(`${tool} --file=~/.aws/credentials src`).action).toBe("ask");
+    expect(verdict(`${tool} -e needle "$TARGET"`).action).toBe("ask");
+    expect(verdict(`${tool} --unknown-option needle src`).action).toBe("ask");
+    expect(verdict(`${tool} src ~/.aws/credentials -e needle`).action).toBe("ask");
+    expect(verdict(`${tool} -e needle src -- ~/.aws/credentials`).action).toBe("ask");
+    expect(verdict(`${tool} -e`).action).toBe("ask");
+    expect(verdict(`${tool} -e "$PATTERN" src`).action).toBe("ask");
+    expect(verdict(`${tool} -f "$PATTERNS" src`).action).toBe("ask");
+  }
+  for (const command of ["grep --color needle", "grep --color=always needle", "grep -T needle", "rg --color always needle", "rg -E utf-8 needle", "rg -t ts needle", "rg --files"]) {
+    expect(verdict(`${command} ~/.aws/credentials`).action).toBe("ask");
+    expect(verdict(`${command} src`).action).toBe("allow");
+  }
+});
 test("find deletion checks filesystem boundaries and outside targets", () => {
   expect(verdict('find / -delete')).toEqual({ tier: "forbidden", action: "deny" });
   expect(verdict('find ~ -delete').action).toBe("deny");

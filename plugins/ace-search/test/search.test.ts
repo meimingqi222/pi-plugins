@@ -46,6 +46,37 @@ function configFor(dataDir: string, overrides: Record<string, string> = {}) {
   });
 }
 
+test("fatal upload stops queued batches and drains asynchronous in-flight workers", async () => {
+  const { root, dataDir } = await workspace();
+  let release!: () => void;
+  let fail!: (error: Error) => void;
+  let ready!: () => void;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  let uploads = 0;
+  const fatal = new AceApiError(401, "bad token");
+  const { client, calls } = fakeClient({ async uploadBlobs() {
+    uploads++;
+    if (uploads === 1) return new Promise<void>((_resolve, reject) => { fail = reject; });
+    if (uploads === 2) { ready(); return new Promise<void>(resolve => { release = resolve; }); }
+  } });
+  try {
+    for (let i = 0; i < 6; i++) await writeFile(join(root, `${i}.ts`), "x");
+    let settled = false;
+    const outcome = runAceSearch({ projectRoot: root, query: "x", config: {
+      ...configFor(dataDir), batchSize: 1, concurrency: 2,
+    }, client }).then(() => { settled = true; return undefined; }, error => { settled = true; return error; });
+    await started;
+    fail(fatal);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const settledBeforeDrain = settled;
+    release();
+    expect(await outcome).toBe(fatal);
+    expect(settledBeforeDrain).toBe(false);
+    expect(uploads).toBe(2);
+    expect(calls.some(call => call.method === "search")).toBe(false);
+  } finally { release?.(); await rm(root, { recursive: true, force: true }); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 describe("runAceSearch", () => {
   test("gitignore rules exclude upload bodies and retrieval hashes with nested overrides", async () => {
     const { root, dataDir } = await workspace();

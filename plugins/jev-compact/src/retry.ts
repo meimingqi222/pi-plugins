@@ -121,6 +121,24 @@ export function isAbortError(error: unknown): boolean {
   return /\baborted?\b/i.test(errorText(error));
 }
 
+/** Race even an injected sleep against cancellation; always detach listeners. */
+async function backoff(ms: number, signal?: AbortSignal, sleep?: RetryOptions['sleep']): Promise<void> {
+  signal?.throwIfAborted();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onAbort = () => reject(signal!.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (sleep) sleep(ms).then(resolve, reject);
+      else timer = setTimeout(resolve, ms);
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * Wraps an asker so transport faults and 429/5xx are retried with exponential
  * backoff. Jev asks are read-only probability questions, so repeating one is
@@ -130,8 +148,6 @@ export function withRetry(asker: JevAsker, options: RetryOptions = {}): JevAsker
   const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 4));
   const baseDelayMs = Math.max(0, options.baseDelayMs ?? 300);
   const maxDelayMs = Math.max(0, options.maxDelayMs ?? 4000);
-  const sleep =
-    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   return {
     async ask(
@@ -141,6 +157,7 @@ export function withRetry(asker: JevAsker, options: RetryOptions = {}): JevAsker
     ): Promise<JevResponse> {
       let lastError: Error = new Error('Jev ask failed without an error');
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        askOptions.signal?.throwIfAborted();
         try {
           return await asker.ask(state, questions, askOptions);
         } catch (err) {
@@ -154,7 +171,7 @@ export function withRetry(asker: JevAsker, options: RetryOptions = {}): JevAsker
           } catch {
             // A failing notifier must not break the retry.
           }
-          await sleep(delayMs);
+          await backoff(delayMs, askOptions.signal, options.sleep);
         }
       }
       throw lastError;

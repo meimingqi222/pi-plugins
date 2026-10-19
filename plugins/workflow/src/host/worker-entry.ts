@@ -31,13 +31,15 @@ export interface WorkerPayload {
 /**
  * Render the worker source.
  *
- * The payload arrives via `workerData`, never by template interpolation: a script
+ * The payload arrives via workerData or IPC, never by template interpolation: a script
  * containing a backtick or `${` must not be able to break out of this template
  * and run as host code before the guards exist.
  */
-export function renderWorkerSource(): string {
+export function renderWorkerSource(transport: "worker" | "process" = "worker"): string {
   return `"use strict";
-const { parentPort, workerData } = require("node:worker_threads");
+${transport === "worker" ? 'const { parentPort, workerData } = require("node:worker_threads");' : `
+const parentPort = { postMessage: (message) => process.send(message), on: (event, listener) => process.on(event, listener) };
+const workerData = { payload: initialPayload };`}
 const vm = require("node:vm");
 const payload = workerData.payload;
 // The guards run inside the script's vm context, not the worker realm; this is

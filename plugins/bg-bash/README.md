@@ -82,6 +82,10 @@ execution to *during* it.
   untouched.
 - **Full output is on disk.** Every chunk goes to a session-prefixed log under
   `~/.pi/bg-bash/logs/`; the model reads it only when requested.
+- **Shell exit ends ownership.** After bounded output draining, remaining
+  descendants in the command's process group are killed without changing the
+  shell's exit code. Do not daemonize with `&`: use `background: true` and keep
+  the service in the foreground so `bg_tasks` can manage it.
 
 ## Cross-platform
 

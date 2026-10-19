@@ -161,6 +161,66 @@ describe("pi-redact extension", () => {
     expect(result).toBeUndefined();
   });
 
+  test("configured paths apply to provider payloads and the shared service", async () => {
+    process.env.PI_REDACT_PATHS = "credentials.password";
+    const pi = createMockPi();
+    piRedact(pi as any);
+    const { ctx } = createMockCtx();
+    const opaque = "opaque-value";
+    const payload = { credentials: { password: opaque, user: "alice" } };
+    const service = pi.events.emitted.find((e) => e.channel === "pi-redact:service")!.data as any;
+    const result = await emit(pi, "before_provider_request", { payload }, ctx);
+    expect(result?.credentials.password === "[REDACTED]").toBe(true);
+    expect(service.redactJson(payload)).toEqual({ credentials: { password: "[REDACTED]", user: "alice" } });
+    expect(payload.credentials.password).toBe(opaque);
+  });
+
+  test("blocks exposed native-summary secrets without rewriting history", async () => {
+    const pi = createMockPi();
+    piRedact(pi as any);
+    const { ctx, notifications } = createMockCtx();
+    const clean = { role: "user", content: "hello", timestamp: 1 };
+    // Serialization joins content blocks: neither individual block is a secret.
+    const secret = { role: "user", content: [
+      { type: "text", text: GHP.slice(0, 15) }, { type: "text", text: GHP.slice(15) },
+    ], timestamp: 1 };
+    const base = { messagesToSummarize: [clean], turnPrefixMessages: [], previousSummary: undefined };
+    for (const input of [
+      { preparation: { ...base, messagesToSummarize: [secret] } },
+      { preparation: { ...base, turnPrefixMessages: [secret] } },
+      { preparation: { ...base, previousSummary: GHP } },
+      { preparation: base, customInstructions: GHP },
+    ]) {
+      const before = structuredClone(input);
+      expect((await emit(pi, "session_before_compact", input, ctx))?.cancel === true).toBe(true);
+      expect(input).toEqual(before);
+    }
+    const preparation = { userWantsSummary: true, entriesToSummarize: [
+      { type: "message", id: "u1", message: secret },
+    ] };
+    expect((await emit(pi, "session_before_tree", { preparation }, ctx))?.cancel === true).toBe(true);
+    for (const input of [
+      { ...preparation, entriesToSummarize: [{ type: "compaction", id: "c1", summary: GHP }] },
+      { ...preparation, entriesToSummarize: [{ type: "branch_summary", id: "b1", summary: GHP }] },
+      { ...preparation, entriesToSummarize: [{ type: "message", id: "u1", message: clean }], customInstructions: GHP },
+    ]) expect((await emit(pi, "session_before_tree", { preparation: input }, ctx))?.cancel === true).toBe(true);
+    expect(await emit(pi, "session_before_tree", { preparation: { ...preparation, userWantsSummary: false } }, ctx)).toBeUndefined();
+    expect(await emit(pi, "session_before_compact", { preparation: base }, ctx)).toBeUndefined();
+    expect(notifications.join("\n").includes(GHP)).toBe(false);
+    await pi.commands.get("redact").handler("off", ctx);
+    expect(await emit(pi, "session_before_tree", { preparation }, ctx)).toBeUndefined();
+    expect(await emit(pi, "session_before_compact", { preparation: base, customInstructions: GHP }, ctx)).toBeUndefined();
+  });
+
+  test("native-summary inspection errors block even if notification fails", async () => {
+    const pi = createMockPi();
+    piRedact(pi as any);
+    const { ctx } = createMockCtx();
+    ctx.ui.notify = () => { throw new Error("closed UI"); };
+    const preparation = { get messagesToSummarize() { throw new Error("bad history"); } };
+    expect((await emit(pi, "session_before_compact", { preparation }, ctx))?.cancel === true).toBe(true);
+  });
+
   test("redacts the agent context messages", async () => {
     const pi = createMockPi();
     piRedact(pi as any);

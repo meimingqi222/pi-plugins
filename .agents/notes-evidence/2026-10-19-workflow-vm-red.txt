@@ -1,0 +1,12 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/workflow/test/host.test.ts:
+(fail) script host shutdown > a runaway script is killed by the timeout instead of hanging the run [5000.01ms]
+  ^ this test timed out after 5000ms.
+(fail) script host shutdown > an external abort signal kills the run [5001.11ms]
+  ^ this test timed out after 5000ms.
+
+ 0 pass
+ 28 filtered out
+ 2 fail
+Ran 2 tests across 1 file. [10.06s]

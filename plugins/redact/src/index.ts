@@ -1,13 +1,13 @@
 /**
- * pi-redact — pi extension that strips secrets from everything sent to a model.
+ * pi-redact — redact agent-loop payloads and guard exposed native-summary input.
  *
  * Port of `opencode-redact` (https://github.com/meimingqi222/opencode-redact)
  * to pi's extension API.
  *
- * Primary gate: the `before_provider_request` hook wraps every provider call
- * (including auto-compaction, branch summaries and overflow retries, which
- * never route through the `context` hook), so the final serialized payload is
- * always scanned. `context` and `tool_result` add defense in depth.
+ * Primary gate: `before_provider_request` scans agent-loop provider payloads.
+ * Pi 1.0 native summaries bypass that hook: their preparation hooks cancel
+ * attempts containing detected secrets rather than claiming to redact them.
+ * `context` and `tool_result` add defense in depth.
  *
  * Configuration (env vars, all optional):
  *
@@ -28,7 +28,10 @@
  * @see ./patterns.ts for the full built-in rule set.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  convertToLlm, prepareBranchEntries, serializeConversation,
+  type ExtensionAPI, type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { createRedactor, type Redactor, type SecretPattern } from "./engine.ts";
 import { SECRET_PATTERNS } from "./patterns.ts";
 import { redactJson } from "./pi-bridge.ts";
@@ -161,7 +164,9 @@ interface RedactState {
 
 /** Deep-redact `value` and report how many strings changed. */
 function redactValue(value: unknown, redactor: Redactor): { value: unknown; hits: number } {
-  return redactJson(value, redactor);
+  const result = redactJson(value, redactor);
+  const pathed = redactor.paths(result.value);
+  return { value: pathed, hits: result.hits + (pathed === result.value ? 0 : 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -248,8 +253,7 @@ export default function piRedact(pi: ExtensionAPI) {
     }
   });
 
-  // --- primary gate: final provider payload --------------------------------
-  // Covers the agent loop, auto-compaction, branch summaries and retries.
+  // --- primary gate: final agent-loop provider payload ----------------------
   pi.on("before_provider_request", (event) => {
     const result = safe(() => redactValue(event.payload, redactor), undefined);
     if (!result || result.hits === 0) return undefined;
@@ -266,24 +270,52 @@ export default function piRedact(pi: ExtensionAPI) {
     return { messages: result.value as typeof event.messages };
   });
 
+  // Native summary calls bypass Agent.onPayload in Pi 1.0. There is no supported
+  // transform for every summary input (notably manual customInstructions).
+  // Cancel on detected input instead of mutating history or taking ownership of
+  // another compactor's result. Clean handlers must return undefined, not {}.
+  const guardSummary = (inspect: () => unknown, ctx: ExtensionContext): { cancel: true } | undefined => {
+    if (!state.enabled) return;
+    try {
+      if (redactValue(inspect(), redactor).hits === 0) return;
+    } catch {
+      // Inspection failure must block too; throwing from a Pi hook fails open.
+    }
+    try {
+      ctx.ui.notify(
+        "pi-redact: summary blocked because its input needs redaction or could not be inspected. " +
+        "Pi native summaries bypass provider redaction. Remove sensitive input, navigate without a summary, " +
+        "or explicitly /redact off to permit an unprotected summary.",
+        "warning",
+      );
+    } catch { /* A closed UI must not undo cancellation. */ }
+    return { cancel: true };
+  };
+  pi.on("session_before_compact", (event, ctx) => guardSummary(() => ({
+    // Match Pi's serialization: joined text blocks and rendered tool arguments
+    // can expose a pattern that does not match any individual raw string.
+    conversation: serializeConversation(convertToLlm(event.preparation.messagesToSummarize)),
+    turnPrefix: serializeConversation(convertToLlm(event.preparation.turnPrefixMessages)),
+    previousSummary: event.preparation.previousSummary,
+    customInstructions: event.customInstructions,
+  }), ctx));
+  pi.on("session_before_tree", (event, ctx) => {
+    if (!event.preparation.userWantsSummary || event.preparation.entriesToSummarize.length === 0) return;
+    return guardSummary(() => ({
+      // Scan all entries; reproducing the summarizer's model routing/budget
+      // here would drift. This can conservatively block older excluded input.
+      conversation: serializeConversation(convertToLlm(prepareBranchEntries(event.preparation.entriesToSummarize, 0).messages)),
+      customInstructions: event.preparation.customInstructions,
+    }), ctx);
+  });
+
   // --- tool results (stored in the session) --------------------------------
   if (config.redactToolResults) {
     pi.on("tool_result", (event) => {
       const content = safe(() => redactValue(event.content, redactor), undefined);
       const details = safe(() => redactValue(event.details, redactor), undefined);
 
-      let pathHits = 0;
-      let pathedDetails = details?.value;
-      if (config.redactPaths.length > 0) {
-        const base = details?.value ?? event.details;
-        const pathed = safe(() => redactor.paths(base), undefined);
-        if (pathed !== undefined && pathed !== base) {
-          pathedDetails = pathed;
-          pathHits += 1;
-        }
-      }
-
-      const detailsHits = (details?.hits ?? 0) + pathHits;
+      const detailsHits = details?.hits ?? 0;
       if ((content?.hits ?? 0) === 0 && detailsHits === 0) return undefined;
 
       record((content?.hits ?? 0) + detailsHits);
@@ -292,7 +324,7 @@ export default function piRedact(pi: ExtensionAPI) {
       // untouched `details` value is preserved rather than cleared.
       const patch: { content?: typeof event.content; details?: unknown } = {};
       if (content) patch.content = content.value as typeof event.content;
-      if (detailsHits > 0) patch.details = pathedDetails;
+      if (detailsHits > 0) patch.details = details?.value;
       return patch;
     });
   }

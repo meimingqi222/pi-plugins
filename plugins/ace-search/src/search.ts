@@ -235,8 +235,11 @@ async function uploadChunks(
   // A small worker pool instead of spawning one promise per batch: a file
   // created with thousands of chunks should not open thousands of sockets.
   let cursor = 0;
+  let stopped = false;
+  let fatalError: unknown;
   const workers = Array.from({ length: Math.min(config.concurrency, total) }, async () => {
     while (true) {
+      if (stopped) return;
       signal.throwIfAborted();
       const index = cursor;
       cursor += 1;
@@ -247,7 +250,11 @@ async function uploadChunks(
       } catch (error) {
         // An auth failure will repeat for every batch, so stop the whole run
         // rather than uploading nothing and reporting success.
-        if (isFatalAceError(error)) throw error;
+        if (isFatalAceError(error) || signal.aborted) {
+          if (!stopped) fatalError = error;
+          stopped = true;
+          return;
+        }
         // Retries are already exhausted inside the client; losing one batch
         // must not abort the run, because retrieval still improves with the
         // chunks that did land. It must, however, stop the index from being
@@ -267,7 +274,11 @@ async function uploadChunks(
     }
   });
 
-  await Promise.all(workers);
+  // Drain requests already handed to the transport before exposing failure.
+  // Promise.all alone rejects early and leaves other workers claiming batches.
+  const results = await Promise.allSettled(workers);
+  if (stopped) throw fatalError;
+  for (const result of results) if (result.status === "rejected") throw result.reason;
   return { uploadedChunks, failedBatches };
 }
 

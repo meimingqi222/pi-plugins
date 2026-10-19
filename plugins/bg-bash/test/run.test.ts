@@ -8,6 +8,23 @@ import type { ChildProcess } from "node:child_process";
 import { startCommand, waitForTermination } from "../src/runner/run.ts";
 
 describe("startCommand", () => {
+	test.skipIf(process.platform !== "linux")("settlement kills redirected shell descendants", async () => {
+		let output = "";
+		const running = startCommand({ command: "sleep 30 >/dev/null 2>&1 & echo $!", cwd: process.cwd(), onData: (text) => { output += text; } });
+		try {
+			const outcome = await running.result;
+			expect(outcome.exitCode).toBe(0);
+			expect(Number(output.trim())).toBeGreaterThan(0);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			let live = false;
+			try { live = !readFileSync(`/proc/${Number(output.trim())}/stat`, "utf8").split(" ")[2]!.includes("Z"); } catch { /* reaped */ }
+			expect(live).toBe(false);
+		} finally {
+			const pid = Number(output.trim());
+			if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+		}
+	});
+
 	test("captures output and a zero exit code", async () => {
 		const chunks: string[] = [];
 		const running = startCommand({

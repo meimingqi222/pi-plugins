@@ -197,7 +197,8 @@ function fencedRanges(text: string): Range[] {
 		const open = FENCE.exec(text.slice(all[line]!.start, all[line]!.end));
 		if (!open) continue;
 		const marker = open[1]!;
-		let last = line;
+		// Without a matching closer, the code block owns the rest of the input.
+		let last = all.length - 1;
 		for (let candidate = line + 1; candidate < all.length; candidate += 1) {
 			const close = FENCE.exec(text.slice(all[candidate]!.start, all[candidate]!.end));
 			if (close && close[1]![0] === marker[0] && close[1]!.length >= marker.length) {

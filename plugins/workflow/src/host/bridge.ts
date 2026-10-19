@@ -1,16 +1,11 @@
 /**
  * Parent side of the script host.
  *
- * Runs a workflow script in a `node:worker_threads` worker. The worker is what
- * makes a runaway script survivable: `terminate()` interrupts a synchronous
- * infinite loop, which no in-process guard can do. Measured on both Node and
- * Bun, a `while (true) {}` worker is killed in tens of milliseconds.
- *
- * Why a worker thread rather than a subprocess: a child process needs a second
- * interpreter, a temp entry file, and a framed wire, and it broke under Bun as a
- * spawned child (its `stdin` is `undefined`, so the handshake crashed). A worker
- * needs none of that, runs on both runtimes, and still gives the property that
- * matters — it can be terminated.
+ * Node uses a terminable worker; Bun uses an OS-killable subprocess because
+ * Bun 1.3.10 cannot interrupt a busy loop inside the worker's vm context.
+ * Both use the same guarded realm and structured-clone protocol. IPC, not
+ * stdin, avoids the old Bun subprocess handshake failure. Settlement waits
+ * for exit: it must never return while runaway code is still consuming CPU.
  *
  * The settlement rules below are the whole difficulty, and each was a bug once:
  *
@@ -34,6 +29,7 @@
  */
 
 import { Worker } from "node:worker_threads";
+import { spawn } from "node:child_process";
 import { renderWorkerSource } from "./worker-entry.ts";
 import { isWorkerMessage } from "./protocol.ts";
 import type { HostMessage } from "./protocol.ts";
@@ -77,7 +73,7 @@ export interface ScriptHostOptions {
    */
   abandonedAgentDrainMs?: number;
   signal?: AbortSignal;
-  /** Memory cap for the worker, in MB. A script cannot grow the parent's heap past this. */
+  /** Node worker heap cap in MB. Bun isolates the heap in a separate process. */
   memoryLimitMb?: number;
 }
 
@@ -125,11 +121,14 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     else options.signal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  const worker = new Worker(renderWorkerSource(), {
+  const payload = { script: options.script, args: options.args ?? null, name: options.name };
+  // Bun 1.3.10 cannot interrupt synchronous code in a worker's vm context.
+  // Keep the same guarded realm and protocol, but use an OS-killable process.
+  const worker = process.versions.bun ? createProcessHost(payload) : new Worker(renderWorkerSource(), {
     eval: true,
     // `payload` is structured-cloned in, so a script cannot break out of the
     // source template; it never becomes part of the worker's code text.
-    workerData: { payload: { script: options.script, args: options.args ?? null, name: options.name } },
+    workerData: { payload },
     resourceLimits: { maxOldGenerationSizeMb: options.memoryLimitMb ?? DEFAULT_MEMORY_LIMIT_MB },
   });
 
@@ -366,6 +365,21 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
     if (options.signal) options.signal.removeEventListener("abort", onExternalAbort);
     await kill();
   }
+}
+
+function createProcessHost(payload: { script: string; args: unknown; name: string }) {
+  const source = renderWorkerSource("process");
+  const child = spawn(process.execPath, ["-e", `process.once("message", function(initialPayload) {\n${source}\n});`], {
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    serialization: "advanced",
+    // Also works when pi itself is a Bun standalone executable.
+    env: { ...process.env, BUN_BE_BUN: "1" },
+  });
+  child.send(payload, () => {});
+  return Object.assign(child, {
+    postMessage: (message: HostMessage) => { if (child.connected) child.send(message, () => {}); },
+    terminate: async () => { child.kill("SIGKILL"); return 0; },
+  });
 }
 
 /** A host callback must not be able to abort the run by throwing. */

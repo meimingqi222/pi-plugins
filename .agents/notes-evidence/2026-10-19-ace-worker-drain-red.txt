@@ -1,0 +1,23 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/ace-search/test/search.test.ts:
+69 |     fail(fatal);
+70 |     await new Promise(resolve => setTimeout(resolve, 10));
+71 |     const settledBeforeDrain = settled;
+72 |     release();
+73 |     expect(await outcome).toBe(fatal);
+74 |     expect(settledBeforeDrain).toBe(false);
+                                    ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/home/user/workspace/repo/plugins/ace-search/test/search.test.ts:74:32)
+(fail) fatal upload stops queued batches and drains asynchronous in-flight workers [19.10ms]
+
+ 0 pass
+ 15 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [69.00ms]

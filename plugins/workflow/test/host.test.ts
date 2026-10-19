@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync, readdirSync } from "node:fs";
 import { runScriptHost } from "../src/host/bridge.ts";
 
 /**
@@ -339,6 +340,39 @@ describe("script host shutdown", () => {
     expect(result.completed).toBe(false);
     expect(result.stopReason).toBe("timeout");
     expect(result.errorMessage).toContain("user cancelled");
+  });
+
+  test.skipIf(process.platform !== "linux" || !process.versions.bun)("a busy continuation leaves no execution process after abort", async () => {
+    const controller = new AbortController();
+    const existing = new Set(readdirSync("/proc").filter((name) => /^\d+$/.test(name)).map(Number));
+    let hosts: number[] = [];
+    const result = await runScriptHost({
+      script: "await agent('ready'); while (true) {}",
+      args: null, name: "exit-proof", signal: controller.signal, timeoutMs: 2000,
+      callbacks: {
+        async agent() {
+          hosts = readdirSync("/proc/self/task").flatMap((tid) => {
+            try { return readFileSync(`/proc/self/task/${tid}/children`, "utf8").trim().split(/\s+/).map(Number).filter(Boolean); }
+            catch { return []; }
+          }).filter((pid) => {
+            if (existing.has(pid)) return false;
+            try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("initialPayload"); }
+            catch { return false; }
+          });
+          setTimeout(() => controller.abort(new Error("stop continuation")), 100);
+          return { value: null, tokens: 0 };
+        },
+        phase() {}, log() {}, budget: () => ({ total: null, spent: 0 }),
+      },
+    });
+    expect(result.stopReason).toBe("timeout");
+    expect(hosts.length).toBeGreaterThan(0);
+    for (const pid of hosts) {
+      let state: string | undefined;
+      try { state = readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2]; } catch { /* reaped */ }
+      // Bun may emit exit just before reaping; a zombie cannot execute code.
+      expect(state === "Z" ? undefined : state).toBeUndefined();
+    }
   });
 
   test("the host returns rather than hanging when the script is empty", async () => {

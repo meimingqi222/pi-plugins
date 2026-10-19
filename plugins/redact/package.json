@@ -1,7 +1,7 @@
 {
   "name": "pi-redact",
   "version": "0.1.0",
-  "description": "pi extension that redacts API keys, tokens, passwords and other secrets from every payload sent to the model — before it leaves your machine.",
+  "description": "pi extension that redacts detected secrets from agent-loop payloads and blocks detected unsafe native-summary attempts.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {

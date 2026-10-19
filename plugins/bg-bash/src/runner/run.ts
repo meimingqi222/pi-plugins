@@ -97,6 +97,9 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 
 	const finish = (exitCode: number | null): void => {
 		if (settled) return;
+		// A terminal job no longer has an owner that can stop its descendants.
+		// Clean the process group without relabelling a successful shell exit.
+		killTree(pid);
 		settled = true;
 		if (timeoutHandle) clearTimeout(timeoutHandle);
 		detach();

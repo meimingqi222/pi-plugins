@@ -1,0 +1,23 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/subagent/test/plugin.test.ts:
+359 |     await tools[0]!.execute!("old-job", { agent: "explore", task: "Inspect", background: true }, undefined, undefined, ctx);
+360 |     session = "B";
+361 |     emit("session_start", {}, ctx);
+362 |     finish({ status: "completed", text: "Old answer", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 2 } });
+363 |     await new Promise((resolve) => setTimeout(resolve, 0));
+364 |     expect(notifications).toHaveLength(0);
+                                ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 1
+
+      at <anonymous> (/home/user/workspace/repo/plugins/subagent/test/plugin.test.ts:364:27)
+(fail) the extension registers delegation and task tools > a stale completion cannot notify the new session [14.14ms]
+
+ 0 pass
+ 30 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [461.00ms]

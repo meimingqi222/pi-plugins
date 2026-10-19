@@ -67,6 +67,9 @@ Mixed attachment numbering starts after the existing image count. The placeholde
 for each newly loaded file names its position in the final images array, and a
 repeated path still reuses that number.
 
+An unclosed code fence excludes references through end of input, not just the
+opening line. Only a matching marker of sufficient length ends that exclusion.
+
 ## Alternatives considered
 
 **Wait for pi to do it.** Upstream declined: in issue #3318 the maintainer
@@ -78,6 +81,10 @@ more implications". A fix pinned on that decision leaves the failure in place.
 fixes failure 1, but it keeps a path-shaped string in the payload — the exact
 thing the reference-rejecting upstream refuses — and it invites the model to
 `read` the same image a second time.
+
+**Treat an unmatched fence as only its opening line.** This exposes example
+paths in incomplete snippets to filesystem loading and attachment; preserving
+the rest as code is safer, even if the author forgot to close their fence.
 
 **Fix it in the proxy instead.** Inlining `file://` and bare-path references in
 the request normaliser fixes every client, not just pi, and remains the right
@@ -114,6 +121,15 @@ plugin makes explicitly.
   input, so a `/model` switch changes behaviour on the next message.
 
 ## Verification
+
+- `plugins/paste-image/test/references.test.ts::unclosed fences exclude image references through end of input`
+
+Proved: Before implementation, `bun test plugins/paste-image/test/references.test.ts -t 'unclosed fences'`
+failed because `/tmp/inside.png` was returned alongside the outside reference.
+Actual output is saved in `.agents/notes-evidence/2026-10-19-paste-image-unclosed-fence-red.txt`.
+The same test passes after extending an unmatched fence to end of input; it
+covers backticks, tildes, trailing newline, wrong marker and too-short closer.
+The existing closed-fence control still finds images after a valid closer.
 
 - `plugins/paste-image/test/references.test.ts` — finding a pasted clipboard
   path in prose; punctuation wrapping; file-URL percent-decoding and a localhost

@@ -1,0 +1,23 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/bg-bash/test/run.test.ts:
+15 | 			const outcome = await running.result;
+16 | 			expect(outcome.exitCode).toBe(0);
+17 | 			await new Promise((resolve) => setTimeout(resolve, 100));
+18 | 			let live = false;
+19 | 			try { live = !readFileSync(`/proc/${Number(output.trim())}/stat`, "utf8").split(" ")[2]!.includes("Z"); } catch { /* reaped */ }
+20 | 			expect(live).toBe(false);
+                     ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/home/user/workspace/repo/plugins/bg-bash/test/run.test.ts:20:17)
+(fail) startCommand > settlement kills redirected shell descendants [111.19ms]
+
+ 0 pass
+ 9 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [677.00ms]

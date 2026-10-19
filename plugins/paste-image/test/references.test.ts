@@ -85,6 +85,17 @@ describe("scanImageReferences", () => {
 		expect(expressions("``a`b/logo.png``")).toEqual([]);
 	});
 
+	test("unclosed fences exclude image references through end of input", () => {
+		for (const marker of ["```", "~~~~"]) {
+			for (const tail of ["", "\n", "\n/tmp/later.png", "\n```\n/tmp/later.png"]) {
+				if (marker === "```" && tail.includes("```")) continue;
+				const text = `/tmp/before.png\n${marker}sh\n/tmp/inside.png${tail}`;
+				expect(expressions(text)).toEqual(["/tmp/before.png"]);
+			}
+		}
+		expect(expressions("````\n/tmp/a.png\n```\n/tmp/b.png")).toEqual([]);
+	});
+
 	test("a fence never swallows text after its closing marker", () => {
 		const text = ["```sh", "ls /tmp/inside.png", "```", "ls /tmp/after.png"].join("\n");
 		expect(expressions(text)).toEqual(["/tmp/after.png"]);

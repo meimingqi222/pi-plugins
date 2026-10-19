@@ -48,6 +48,35 @@ function collectingSleep(): { sleep: (ms: number) => Promise<void>; delays: numb
   };
 }
 
+test('cancellation interrupts backoff and never invokes another ask', async () => {
+  const controller = new AbortController();
+  const { asker, attempts } = flaky(1, () => new Error('fetch failed'));
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  let finish!: () => void;
+  const wrapped = withRetry(asker, { sleep: () => { started(); return new Promise<void>(resolve => { finish = resolve; }); } });
+  const result = wrapped.ask({}, {}, { signal: controller.signal }).then(() => 'success', error => error);
+  await ready;
+  controller.abort();
+  const raced = await Promise.race([result, new Promise(resolve => setTimeout(() => resolve('still waiting'), 30))]);
+  finish();
+  await result;
+  expect(raced).toBe(controller.signal.reason);
+  expect(attempts()).toBe(1);
+});
+
+test('pre-aborted signal and cancellation in onRetry prevent asks', async () => {
+  const controller = new AbortController(); controller.abort();
+  const first = flaky(0, () => new Error('fetch failed'));
+  await expect(withRetry(first.asker).ask({}, {}, { signal: controller.signal })).rejects.toThrow();
+  expect(first.attempts()).toBe(0);
+  const next = new AbortController();
+  const second = flaky(1, () => new Error('fetch failed'));
+  await expect(withRetry(second.asker, { onRetry: () => next.abort(), sleep: async () => {} })
+    .ask({}, {}, { signal: next.signal })).rejects.toThrow();
+  expect(second.attempts()).toBe(1);
+});
+
 describe('isRetryableJevError', () => {
   test('a TLS certificate fault is retryable', () => {
     const err = new Error('unknown certificate verification error');

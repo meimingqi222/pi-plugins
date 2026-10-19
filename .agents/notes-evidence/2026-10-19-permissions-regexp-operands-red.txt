@@ -1,0 +1,23 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/permissions/test/security-boundaries.test.ts:
+31 | test("grep expression options never hide protected path operands", () => {
+32 |   for (const tool of ["grep", "rg", "egrep", "fgrep"]) {
+33 |     for (const args of ["needle", "--regexp=needle", "--regexp needle", "-e needle", "-eneedle", "-ineedle -e other", "-ie needle", "-e needle -e other", "--regexp=", "-f patterns", "--file=patterns", "-e needle --", "-- needle", "-n needle", "-A 2 needle", "--context=2 needle"]) {
+34 |       const command = `${tool} ${args} ~/.aws/credentials`;
+35 |       const classified = classifyToolCall("bash", { command }, { env, shellDialect: "bash" });
+36 |       expect(decide(classified, "read-only", [], env).action).toBe("deny");
+                                                                   ^
+error: expect(received).toBe(expected)
+
+Expected: "deny"
+Received: "allow"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/permissions/test/security-boundaries.test.ts:36:63)
+(fail) grep expression options never hide protected path operands [6.94ms]
+
+ 0 pass
+ 4 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [112.00ms]

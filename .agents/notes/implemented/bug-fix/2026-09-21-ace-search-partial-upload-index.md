@@ -45,6 +45,20 @@ Two changes, each enforcement-level:
    retry a 401. A 401 that repeats for every batch cannot become a success by
    trying the next batch.
 
+The upload pool latches the first fatal failure before another worker can claim
+queued work, then drains all already-started requests before rethrowing it.
+`Promise.all` fail-fast alone is not cancellation: other workers would continue
+uploading after the caller had observed failure. Draining avoids background
+requests without requiring transports to cooperate with an internal abort signal;
+the trade-off is waiting for in-flight transport timeouts.
+
+Index publication uses a private same-directory UUID temporary file per writer,
+exclusive creation, atomic rename, and cleanup in `finally`. Concurrent searches
+may replace each other's complete snapshots (last rename wins), but cannot rename
+or truncate another writer's staging file. A shared `.tmp` path is not safe even
+though each individual rename is atomic. This is snapshot replacement, not a
+cross-process merge or a durability/fsync guarantee.
+
 Transient failures keep the documented behaviour: the batch is lost, progress is
 reported, and retrieval proceeds. Losing a batch degrades results; it must not
 invalidate them.
@@ -78,6 +92,16 @@ for a transient network blip.
   the error flag reaches the model.
 
 ## Verification
+
+- `plugins/ace-search/test/index-store.test.ts::concurrent index writers publish complete snapshots without temporary leftovers`
+- `plugins/ace-search/test/search.test.ts::fatal upload stops queued batches and drains asynchronous in-flight workers`
+
+Proved: pre-fix concurrent publication failed with ENOENT from shared staging
+renames; output saved to `.agents/notes-evidence/2026-10-19-ace-private-temp-red.txt`.
+Pre-fix asynchronous fatal upload settled before the second worker drained;
+output saved to `.agents/notes-evidence/2026-10-19-ace-worker-drain-red.txt`.
+Both regressions pass after the fix; the publication test also checks failed
+rename cleanup and the pool test checks queued batches and retrieval stay stopped.
 
 - `plugins/ace-search/test/search.test.ts` — "a failed upload is not persisted,
   so the next run retries it" (index stays empty after a failure, and the retry

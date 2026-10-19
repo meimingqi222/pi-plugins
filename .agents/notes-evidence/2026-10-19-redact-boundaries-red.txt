@@ -1,0 +1,51 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/redact/test/index.test.ts:
+167 |     piRedact(pi as any);
+168 |     const { ctx } = createMockCtx();
+169 |     const payload = { credentials: { password: "opaque-value", user: "alice" } };
+170 |     const service = pi.events.emitted.find((e) => e.channel === "pi-redact:service")!.data as any;
+171 |     const result = await emit(pi, "before_provider_request", { payload }, ctx);
+172 |     expect(result?.credentials.password === "[REDACTED]").toBe(true);
+                                                                ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/index.test.ts:172:59)
+(fail) pi-redact extension > configured paths apply to provider payloads and the shared service [4.04ms]
+189 |       { preparation: { ...base, turnPrefixMessages: [secret] } },
+190 |       { preparation: { ...base, previousSummary: GHP } },
+191 |       { preparation: base, customInstructions: GHP },
+192 |     ]) {
+193 |       const before = structuredClone(input);
+194 |       expect((await emit(pi, "session_before_compact", input, ctx))?.cancel === true).toBe(true);
+                                                                                            ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/index.test.ts:194:87)
+(fail) pi-redact extension > blocks exposed native-summary secrets without rewriting history [1.01ms]
+210 |     const pi = createMockPi();
+211 |     piRedact(pi as any);
+212 |     const { ctx } = createMockCtx();
+213 |     ctx.ui.notify = () => { throw new Error("closed UI"); };
+214 |     const preparation = { get messagesToSummarize() { throw new Error("bad history"); } };
+215 |     expect((await emit(pi, "session_before_compact", { preparation }, ctx))?.cancel === true).toBe(true);
+                                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/index.test.ts:215:95)
+(fail) pi-redact extension > native-summary inspection errors block even if notification fails [0.37ms]
+
+ 0 pass
+ 22 filtered out
+ 3 fail
+ 3 expect() calls
+Ran 3 tests across 1 file. [52.00ms]

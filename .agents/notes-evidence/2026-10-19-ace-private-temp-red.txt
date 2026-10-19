@@ -1,0 +1,83 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/ace-search/test/index-store.test.ts:
+22 |   const directory = await temporaryDirectory();
+23 |   const path = join(directory, "index.json");
+24 |   try {
+25 |     const results = await Promise.allSettled(Array.from({ length: 20 }, (_, i) =>
+26 |       persistPiAceIndex({ path, projectRoot: `project-${i}`, entries: [], source: "pi-ace-index" })));
+27 |     expect(results.filter(result => result.status === "rejected")).toEqual([]);
+                                                                        ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++   {
++     "reason": [Error: ENOENT: no such file or directory, rename '/tmp/pi-ace-search-AXsuek/index.json.tmp' -> '/tmp/pi-ace-search-AXsuek/index.json'],
++     "status": "rejected",
++   },
++ ]
+
+- Expected  - 1
++ Received  + 58
+
+      at <anonymous> (/home/user/workspace/repo/plugins/ace-search/test/index-store.test.ts:27:68)
+(fail) concurrent index writers publish complete snapshots without temporary leftovers [9.16ms]
+
+ 0 pass
+ 19 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [73.00ms]

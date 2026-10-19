@@ -24,6 +24,14 @@ tests looked all-green and then hung instead of failing.
 
 ## Decision
 
+On Bun, use an OS-killable subprocess running the unchanged guarded vm source.
+Bun 1.3.10/Linux cannot interrupt a synchronous busy loop in a worker's vm
+context: this is different from the earlier plain-worker termination probe.
+Use structured IPC rather than the failed stdin transport; `BUN_BE_BUN=1`
+lets a compiled pi executable provide the runtime without another install.
+Node retains its worker and resource limit. Bun's separate process isolates
+the parent's heap but does not enforce `memoryLimitMb` as an OS quota.
+
 Request termination at most once, and have `kill()` wait on the worker's `exit`
 event rather than on `terminate()`'s promise:
 
@@ -59,8 +67,10 @@ rejected `terminate()` promise unhandled.
 **Race `terminate()` against a timer.** A second timer added to fix a hang is a
 third way to hang; `exit` already reports exactly the event needed.
 
-**Detect the runtime and special-case Bun.** The `exit`-based wait is correct on
-both runtimes, so no branch is needed.
+**Only keep the worker and race exit against a timeout.** This leaves a CPU
+worker alive on Bun. A vm timeout on the initial invocation also misses busy
+loops reached after an awaited agent. The runtime branch is necessary until
+Bun can interrupt vm-context execution reliably.
 
 ## Consequences
 
@@ -78,6 +88,15 @@ an absolute temp-directory fixture, so it pins the `.pi/workflows` layout rather
 than the host's drive.
 
 ## Verification
+
+- `plugins/workflow/test/host.test.ts::a runaway script is killed by the timeout instead of hanging the run`
+- `plugins/workflow/test/host.test.ts::an external abort signal kills the run`
+- `plugins/workflow/test/host.test.ts::a busy continuation leaves no execution process after abort`
+
+Proved: on Bun 1.3.10/Linux both busy-loop cases timed out at 5000ms before
+the subprocess fallback; actual output is saved in
+`.agents/notes-evidence/2026-10-19-workflow-vm-red.txt`. After the change the
+same cases pass and settlement still awaits the real execution host exit.
 
 - `plugins/workflow/test/host.test.ts` — the `script host shutdown` block, whose
   timeout, never-resolving-agent, and external-abort cases all previously parked

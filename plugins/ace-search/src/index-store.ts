@@ -22,8 +22,8 @@
  * stale store can cause an extra upload, never a skipped one.
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { InventoryEntry } from "./walk.ts";
 
@@ -213,8 +213,12 @@ export async function persistPiAceIndex(options: PersistPiAceIndexOptions): Prom
   );
   // Atomic replace: a crash mid-write must not leave a truncated index that the
   // next run parses as "no hashes" and then re-uploads the whole project.
-  const temporaryPath = `${options.path}.tmp`;
+  const temporaryPath = `${options.path}.${randomUUID()}.tmp`;
   await mkdir(dirname(options.path), { recursive: true });
-  await writeFile(temporaryPath, payload, "utf8");
-  await rename(temporaryPath, options.path);
+  try {
+    await writeFile(temporaryPath, payload, { encoding: "utf8", flag: "wx" });
+    await rename(temporaryPath, options.path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
