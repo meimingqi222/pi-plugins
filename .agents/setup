@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Amp's orb image supplies these tools; this repo does not pin other versions.
+for tool in bun node npm npx python3 git; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "Missing orb base-image tool: $tool" >&2
+    exit 1
+  fi
+done
+printf 'Toolchain: Bun %s, Node %s, %s\n' \
+  "$(bun --version)" "$(node --version)" "$(python3 --version)"
+
+echo 'Installing workspace dependencies from bun.lock'
+time bun install --frozen-lockfile
+
+# Match CI's external verifier dependency. Keep it in the snapshot, not the repo.
+verifier="$HOME/.agents/skills/regression-notes/scripts/verify-notes.py"
+if [[ ! -f "$verifier" ]]; then
+  echo 'Installing the regression-notes verifier'
+  time npx --yes skills add meimingqi222/my-agent-skills@regression-notes -g -y --agent amp
+fi
+if [[ ! -f "$verifier" ]]; then
+  echo "Regression-notes installation did not create $verifier" >&2
+  exit 1
+fi
+python3 "$verifier" --help >/dev/null
+
+git config --local core.hooksPath .githooks
+echo 'Orb setup ready; use bun run typecheck, bun run test, and bun run notes.'

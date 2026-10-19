@@ -41,3 +41,6 @@ subagent-logs/
 
 # Project-local plugin install created by `pi install -l`
 .pi/
+
+# Amp orb portal metadata
+.amp/portals/*

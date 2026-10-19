@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Dependencies and the verifier survive in the snapshot. No services or
+# authentication need reconnecting, and resume must never reinstall packages.
+if [[ ! -d node_modules ]]; then
+  echo 'Workspace dependencies are missing; run .agents/setup to repair.' >&2
+  exit 1
+fi
+echo 'Orb resumed; workspace dependencies are present.'
