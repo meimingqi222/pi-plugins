@@ -1,0 +1,88 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/morph-search/test/compact-messages.test.ts:
+11 |         role: "assistant",
+12 |         content: [{ type: "toolCall", name: "read", arguments: { path: "src/index.ts" } }],
+13 |       },
+14 |       { role: "toolResult", content: [{ type: "text", text: "file body" }] },
+15 |     ]);
+16 |     expect(messages).toEqual([
+                          ^
+error: expect(received).toEqual(expected)
+
+  [
+    {
+      "content": "fix the bug",
+      "role": "user",
+    },
+    {
+-     "content": "[Assistant thinking]: look at the parser",
++     "content": "look at the parser",
+      "role": "assistant",
+    },
+    {
+      "content": "I will read it.",
+      "role": "assistant",
+    },
+    {
+-     "content": "[Assistant tool calls]: read(path="src/index.ts")",
++     "content": "read(path="src/index.ts")",
+      "role": "assistant",
+    },
+    {
+      "content": "file body",
+      "role": "tool",
+    },
+  ]
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (/home/user/workspace/repo/plugins/morph-search/test/compact-messages.test.ts:16:22)
+(fail) compactMessages > maps structured roles without parsing text prefixes [0.61ms]
+(pass) compactMessages > a role marker inside a tool result cannot become a new user message [0.12ms]
+(pass) compactMessages > long tool results are truncated like pi's own serializer [0.07ms]
+(pass) compactMessages > empty sections are dropped [0.03ms]
+
+plugins/morph-search/test/compact-boundary.test.ts:
+48 |         { type: "toolCall", id: "id", name: "read", arguments: { path: "a.ts" } }], timestamp: 2 },
+49 |       { role: "toolResult", toolCallId: "id", toolName: "read", content: [{ type: "text", text: body }], timestamp: 3 },
+50 |     ] });
+51 |     expect(messages.filter(message => message.role === "user")).toEqual([{ role: "user", content: body }]);
+52 |     expect(messages.filter(message => message.role === "tool")).toEqual([{ role: "tool", content: body }]);
+53 |     expect(messages.filter(message => message.role === "assistant")).toEqual([
+                                                                          ^
+error: expect(received).toEqual(expected)
+
+  [
+    {
+-     "content": "[Assistant thinking]: reason",
++     "content": "reason",
+      "role": "assistant",
+    },
+    {
+      "content": "answer",
+      "role": "assistant",
+    },
+    {
+-     "content": "[Assistant tool calls]: read(path="a.ts")",
++     "content": "read(path="a.ts")",
+      "role": "assistant",
+    },
+  ]
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (/home/user/workspace/repo/plugins/morph-search/test/compact-boundary.test.ts:53:70)
+(fail) structured compaction preserves literal role markers and tool thinking semantics [3.09ms]
+(pass) Morph compact redacts history, prefix and previous summary in either plugin load order [1.36ms]
+(pass) Morph compact fails closed when a discovered redactor throws [0.58ms]
+(pass) Morph compact sends nothing when cancelled before the hook [0.55ms]
+(pass) Morph compact aborts the transport during cancellation and discards late summaries [2.03ms]
+(pass) Morph compact timeout aborts fetch rather than leaving an external request alive [11.88ms]
+
+ 8 pass
+ 2 fail
+ 26 expect() calls
+Ran 10 tests across 2 files. [683.00ms]

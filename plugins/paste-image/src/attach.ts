@@ -120,33 +120,23 @@ export async function attachImageReferences(text: string, env: AttachEnv, existi
 	const images: InlineImage[] = [];
 	const replacements: Array<{ reference: ImageReference; placeholder: string }> = [];
 	let totalBytes = 0;
-	// Once the aggregate budget is full, stop opening further references. A
-	// `break` out of the candidate loop alone still reads every later reference.
-	let exhausted = false;
 
 	for (const reference of references) {
-		if (exhausted || existingImageCount + images.length >= DEFAULT_MAX_IMAGES) break;
 		for (const candidate of candidatePaths(reference.expression, env)) {
 			let index = numbers.get(candidate);
 			if (index === undefined) {
+				if (existingImageCount + images.length >= DEFAULT_MAX_IMAGES) continue;
 				// Refuse before `load()`: stat is cheap, and reading a 31 MiB image
 				// just to discard its base64 is the cost this cap is meant to avoid.
 				const declared = await sizeSafely(env, candidate);
 				if (declared === undefined) continue;
-				if (totalBytes + declared > DEFAULT_MAX_TOTAL_BYTES) {
-					exhausted = true;
-					break;
-				}
-			}
-			const loaded = await loadSafely(env, candidate);
-			if (loaded === undefined) continue;
-			if (index === undefined) {
+				// A refusal says nothing about later, smaller candidates or repeats.
+				if (totalBytes + declared > DEFAULT_MAX_TOTAL_BYTES) continue;
+				const loaded = await loadSafely(env, candidate);
+				if (loaded === undefined) continue;
 				const bytes = Math.floor(loaded.base64.length * 3 / 4) - (loaded.base64.endsWith("==") ? 2 : loaded.base64.endsWith("=") ? 1 : 0);
 				// Re-check: the file may have grown between stat and read.
-				if (totalBytes + bytes > DEFAULT_MAX_TOTAL_BYTES) {
-					exhausted = true;
-					break;
-				}
+				if (totalBytes + bytes > DEFAULT_MAX_TOTAL_BYTES) continue;
 				totalBytes += bytes;
 				index = existingImageCount + numbers.size + 1;
 				numbers.set(candidate, index);

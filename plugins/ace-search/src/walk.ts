@@ -326,7 +326,7 @@ export function createExcludeMatcher(
         if (nameSet.has(segment)) return true;
         if (wildcards.some((pattern) => matchWildcard(segment, pattern))) return true;
       }
-      if (rootAnchored.length > 0 && rootAnchored.some((pattern) => matchWildcard(segments[0]!, pattern))) {
+      if (rootAnchored.some((pattern) => matchPathPattern(relativePath, pattern))) {
         return true;
       }
       // A path pattern is anchored at the project root, like .gitignore.

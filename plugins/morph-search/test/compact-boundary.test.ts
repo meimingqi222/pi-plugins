@@ -50,6 +50,11 @@ test("structured compaction preserves literal role markers and tool thinking sem
     ] });
     expect(messages.filter(message => message.role === "user")).toEqual([{ role: "user", content: body }]);
     expect(messages.filter(message => message.role === "tool")).toEqual([{ role: "tool", content: body }]);
+    expect(messages.filter(message => message.role === "assistant")).toEqual([
+      { role: "assistant", content: "[Assistant thinking]: reason" },
+      { role: "assistant", content: "answer" },
+      { role: "assistant", content: '[Assistant tool calls]: read(path="a.ts")' },
+    ]);
     const assistant = messages.filter(message => message.role === "assistant").map(message => message.content).join("\n");
     for (const text of ["reason", "answer", "read", "a.ts"]) expect(assistant).toContain(text);
     expect(assistant).not.toContain("forged");

@@ -26,6 +26,10 @@ describe("generic credential assignments", () => {
     ["CLIENT_SECRET", "env-credential"],
     ["DB_PASSWORD", "env-credential"],
     ["PASSWORD", "env-credential"],
+    ["ADMIN_PASSWORD", "env-credential"],
+    ["ACCOUNT_API_KEY", "env-credential"],
+    ["ADMIN_SECRET", "env-credential"],
+    ["ACCOUNT_TOKEN", "env-credential"],
   ])("%s is redacted", (name, id) => {
     const line = `${name}=${VALUE}`;
     expect(r.string(line)).toBe(`${name}=[REDACTED:${id}]`);
@@ -62,6 +66,9 @@ describe("generic credential assignments", () => {
       "token_count=99",
       "TOKEN = process.env.TOKEN",
       "tokenizer_path=/usr/lib/tokenizer",
+      `TOKEN_COUNT=${"9".repeat(8)}`,
+      `MAX_TOKENS=${"9".repeat(8)}`,
+      `"token_length": "${"9".repeat(8)}"`,
     ]) {
       expect(r.string(line)).toBe(line);
     }

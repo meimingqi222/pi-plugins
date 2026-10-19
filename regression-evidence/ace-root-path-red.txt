@@ -1,0 +1,34 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/ace-search/test/walk.test.ts:
+(pass) chunkFileContent > a file at or under the limit is a single chunk named after the path [0.49ms]
+(pass) chunkFileContent > a file over the limit splits with `#chunk{N}of{TOTAL}` names [0.15ms]
+(pass) chunkFileContent > the hash is sha256 over name + content, not content alone [0.04ms]
+(pass) chunkFileContent > two files with identical bodies hash differently [0.04ms]
+(pass) chunkFileContent > over-long lines are truncated with the same ellipsis acemcp appends [0.04ms]
+(pass) chunkFileContent > an empty file still produces one chunk [0.02ms]
+(pass) chunkFileContent > splitting is line-based, so a trailing newline lands in the last chunk [0.03ms]
+(pass) createExcludeMatcher > a bare name excludes that directory at any depth [0.32ms]
+(pass) createExcludeMatcher > a wildcard pattern matches by suffix [0.03ms]
+(pass) createExcludeMatcher > unrelated paths are kept [0.02ms]
+(pass) createExcludeMatcher > a leading slash anchors a name to the project root [0.57ms]
+ 95 |   });
+ 96 | 
+ 97 |   test("leading slash paths match multiple root segments and descendants", () => {
+ 98 |     const anchored = createExcludeMatcher("/root", ["/packages/private", "/packages/*/secrets/"]);
+ 99 |     for (const target of ["packages/private", "packages/private/deep/file.ts", "packages/ui/secrets", "packages/ui/secrets/deep/file.ts"]) {
+100 |       expect(anchored.isIgnored(target, !target.endsWith(".ts"))).toBe(true);
+                                                                        ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/home/user/workspace/repo/plugins/ace-search/test/walk.test.ts:100:67)
+(fail) createExcludeMatcher > leading slash paths match multiple root segments and descendants [0.37ms]
+(pass) createExcludeMatcher > a path pattern only matches at the root [0.22ms]
+
+ 12 pass
+ 1 fail
+ 32 expect() calls
+Ran 13 tests across 1 file. [63.00ms]

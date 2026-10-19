@@ -42,12 +42,26 @@ upload. `PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT=0` restores the old
 behaviour for a deployment that accepts the risk. Redaction preserves object
 keys, so the Jev answer still maps back to its question.
 
+The opt-out reads the real process environment when no environment is
+injected. An explicitly injected environment replaces rather than merges
+the process environment, matching key/endpoint resolution and retaining the
+fail-closed default in isolated callers. Reading only `deps.env` made the
+documented deployment switch silently ineffective.
+
 ## Verification
 
 - `plugins/permissions/test/reviewer.test.ts` — "the jev payload is redacted
   before it leaves the process" asserts the wire body contains no sentinel,
   and "without a redaction service the jev backend fails closed" asserts no
   request is made.
+- `plugins/permissions/test/reviewer.test.ts::the process environment can opt out of required reviewer redaction`
+  asserts a mocked transport receives a request with the real process opt-out,
+  but not when an injected environment omits it.
+
+Proved: the process-environment regression failed before the fallback fix
+at the request-count assertion (expected 1, received 0), saved in
+`regression-evidence/permissions-reviewer-env-red.txt`; the same test passes
+after the fix.
 
 Proved: with `plugins/permissions/src/reviewer.ts` and `plugins/permissions/src/index.ts` restored, the
 redaction test fails (`expect(received).not.toContain(expected)`) and the

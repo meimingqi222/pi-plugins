@@ -849,11 +849,11 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     //    `GITHUB_TOKEN`, `ACCESS_TOKEN`, `apiKey`, `APIKEY` and `PRIVATE_KEY`
     //    never reached a rule at all.
     //
-    // Every quantifier below is bounded, and the placeholder lookahead sees only
-    // the candidate value (<=128 chars), so cost is linear in the payload.
-    // `(?![A-Za-z])` after bare `token` keeps `tokenizer` out; the metric-suffix
-    // lookahead keeps `max_tokens`/`token_count` out.
-    pattern: String.raw`(?<![A-Za-z0-9_.-])(?![A-Za-z0-9_.-]*(?:count|length|limit|size|max|min|budget|threshold|usage|tokens)[A-Za-z0-9_.-]*)["']?[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|access[_-]?key|secret|password|passwd|pwd|[A-Za-z0-9_.-]{1,64}[_-]token|token(?![A-Za-z]))[A-Za-z0-9_.-]{0,64}["']?\s*[:=]\s*((?:["'](?![^"'\n]*(?:example|placeholder|dummy|fake|sample|changeme|redacted))[^"'\n]{6,128}["']|(?![A-Za-z0-9+/_=-]*(?:example|placeholder|dummy|fake|sample|changeme|redacted|string|number|boolean|unknown|undefined|null|true|false))[A-Za-z0-9+/_=-]{6,128}))(?![A-Za-z0-9+/_.=([{-])`,
+    // Names and values have bounded captures. `(?![A-Za-z])` after bare `token`
+    // keeps `tokenizer` out. Metric words must be whole name components:
+    // `token_count` is a metric, but `count` inside `ACCOUNT_API_KEY` and `min`
+    // inside `ADMIN_PASSWORD` must not veto a credential.
+    pattern: String.raw`(?<![A-Za-z0-9_.-])(?!["']?(?:[A-Za-z0-9_.-]{0,192}[_.-])?(?:count|length|limit|size|max|min|budget|threshold|usage|tokens)(?:[_.-]|["']?\s*[:=]))["']?[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|access[_-]?key|secret|password|passwd|pwd|[A-Za-z0-9_.-]{1,64}[_-]token|token(?![A-Za-z]))[A-Za-z0-9_.-]{0,64}["']?\s*[:=]\s*((?:["'](?![^"'\n]*(?:example|placeholder|dummy|fake|sample|changeme|redacted))[^"'\n]{6,128}["']|(?![A-Za-z0-9+/_=-]*(?:example|placeholder|dummy|fake|sample|changeme|redacted|string|number|boolean|unknown|undefined|null|true|false))[A-Za-z0-9+/_=-]{6,128}))(?![A-Za-z0-9+/_.=([{-])`,
     keywords: [
       "token", "secret", "password", "passwd", "pwd",
       "apikey", "api_key", "api-key", "api_token", "api-token",

@@ -213,6 +213,36 @@ describe("jev backend", () => {
     expect(calls.length).toBe(0);
   });
 
+  test("the process environment can opt out of required reviewer redaction", async () => {
+    const oldRequired = process.env.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT;
+    const oldKey = process.env.TYPESAFE_API_KEY;
+    process.env.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT = "0";
+    process.env.TYPESAFE_API_KEY = "test-key";
+    try {
+      const { ctx } = fakeCtx();
+      for (const injected of [undefined, {}]) {
+        const calls: JevCall[] = [];
+        const r = createReviewer(
+          { model: "jev", timeoutMs: 5000, maxPerSession: 5 },
+          { platform: "darwin", cwd: "/work" },
+          NO_AGENT_DIR,
+          () => {},
+          { ...(injected ? { env: { ...JEV_ENV, ...injected } } : {}), fetch: fakeJevFetch("allow", calls) },
+        )!;
+        const verdict = await r.review({ ctx, toolName: "bash", toolInput: "npm test", staticAnalysis: "unknown" });
+        // An injected environment replaces process.env; an empty injected
+        // policy still defaults to requiring redaction, even if the host opts out.
+        expect(calls.length).toBe(injected ? 0 : 1);
+        expect(verdict?.verdict).toBe(injected ? undefined : "allow");
+      }
+    } finally {
+      if (oldRequired === undefined) delete process.env.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT;
+      else process.env.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT = oldRequired;
+      if (oldKey === undefined) delete process.env.TYPESAFE_API_KEY;
+      else process.env.TYPESAFE_API_KEY = oldKey;
+    }
+  });
+
   test("the jev question scopes the judgment to machine effects", async () => {
     const { ctx } = fakeCtx();
     const calls: JevCall[] = [];

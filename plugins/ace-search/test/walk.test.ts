@@ -94,6 +94,16 @@ describe("createExcludeMatcher", () => {
     expect(anchored.isIgnored("packages/a/dist/index.js", false)).toBe(true);
   });
 
+  test("leading slash paths match multiple root segments and descendants", () => {
+    const anchored = createExcludeMatcher("/root", ["/packages/private", "/packages/*/secrets/"]);
+    for (const target of ["packages/private", "packages/private/deep/file.ts", "packages/ui/secrets", "packages/ui/secrets/deep/file.ts"]) {
+      expect(anchored.isIgnored(target, !target.endsWith(".ts"))).toBe(true);
+    }
+    for (const target of ["other/packages/private", "other/packages/ui/secrets/file.ts", "packages/public/file.ts", "packages/ui/src/secrets/file.ts", "packages/private-other/file.ts"]) {
+      expect(anchored.isIgnored(target, !target.endsWith(".ts"))).toBe(false);
+    }
+  });
+
   test("a path pattern only matches at the root", () => {
     const rooted = createExcludeMatcher("/root", ["packages/desktop/dist-*"]);
     expect(rooted.isIgnored("packages/desktop/dist-main", true)).toBe(true);

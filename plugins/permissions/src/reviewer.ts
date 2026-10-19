@@ -121,7 +121,7 @@ export function createReviewer(
   // reviewer deciding whether data may leave the machine must not itself send
   // an unredacted payload. The registry backend keeps working without pi-redact
   // because its call already goes through pi's provider pipeline.
-  const requireRedact = deps.requireRedact ?? deps.env?.PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT !== "0";
+  const requireRedact = deps.requireRedact ?? (deps.env ?? process.env).PI_PERMISSIONS_REVIEWER_REQUIRE_REDACT !== "0";
   if (spec === "none") return undefined;
 
   let warned = false;

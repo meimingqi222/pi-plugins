@@ -71,12 +71,10 @@ function truncateToolResult(text: string): string {
  * Convert pi's structured messages to the role/text pairs Morph's compaction
  * endpoint expects.
  *
- * This replaces a round-trip through `serializeConversation` followed by a
- * line-prefix parser. The parser treated any line in a tool result that began
- * with `[User]:` (or another marker) as a fresh message with a caller-chosen
- * role — a prompt-injection primitive that survived compaction by
- * construction. Reading the structured messages removes the ambiguity: a tool
- * result is always one `tool` message, whatever its body contains.
+ * Roles come from structured messages, never line prefixes in their bodies:
+ * a tool result is always one `tool` message, whatever its body contains.
+ * Thinking and tool calls retain descriptive labels because Morph's text-only
+ * assistant role cannot otherwise distinguish them from a spoken answer.
  */
 export function compactMessages(messages: readonly LlmMessage[]): Array<{ role: string; content: string }> {
   const out: Array<{ role: string; content: string }> = [];
@@ -102,10 +100,10 @@ export function compactMessages(messages: readonly LlmMessage[]): Array<{ role: 
           return `${block.name ?? "tool"}(${rendered})`;
         })
         .join("; ");
-      // One message per section, matching what the parser produced before.
-      if (thinking.trim()) out.push({ role: "assistant", content: thinking });
+      // Labels describe sections; they are never parsed back into roles.
+      if (thinking.trim()) out.push({ role: "assistant", content: `[Assistant thinking]: ${thinking}` });
       if (text.trim()) out.push({ role: "assistant", content: text });
-      if (calls) out.push({ role: "assistant", content: calls });
+      if (calls) out.push({ role: "assistant", content: `[Assistant tool calls]: ${calls}` });
       continue;
     }
     if (message.role === "toolResult") {

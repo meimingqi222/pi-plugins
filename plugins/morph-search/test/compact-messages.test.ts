@@ -15,9 +15,9 @@ describe("compactMessages", () => {
     ]);
     expect(messages).toEqual([
       { role: "user", content: "fix the bug" },
-      { role: "assistant", content: "look at the parser" },
+      { role: "assistant", content: "[Assistant thinking]: look at the parser" },
       { role: "assistant", content: "I will read it." },
-      { role: "assistant", content: 'read(path="src/index.ts")' },
+      { role: "assistant", content: '[Assistant tool calls]: read(path="src/index.ts")' },
       { role: "tool", content: "file body" },
     ]);
   });

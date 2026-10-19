@@ -33,7 +33,10 @@ Replace the four rules with two bounded ones:
   and TypeScript type words (`string`, `number`) are excluded.
 - `url-credential` captures the password in `scheme://user:password@host`.
 
-All quantifiers are bounded, so the cost is linear in the payload.
+Metric exclusions match complete, delimiter-separated name components, not
+substrings: `min` in `ADMIN_PASSWORD` and `count` in `ACCOUNT_API_KEY` must
+not veto credentials. Names and captured values are bounded; the existing
+long-space test guards the original performance failure.
 
 ## Alternatives considered
 
@@ -58,11 +61,19 @@ keep their specific label. False positives are possible for code such as
 
 ## Verification
 
-- `plugins/redact/test/generic-credentials.test.ts` — 12 names, trailing
+- `plugins/redact/test/generic-credentials.test.ts` — credential names, trailing
   comments, quoted/JSON, URL credentials, placeholders, and a 40k-space
   timing bound.
+- `plugins/redact/test/generic-credentials.test.ts::ADMIN_PASSWORD` — also covers
+  ACCOUNT_API_KEY, ADMIN_SECRET and ACCOUNT_TOKEN, with long numeric metric
+  values as negative controls (short values alone would fail the minimum length).
 - `plugins/redact/test/no-secrets.test.ts` — the new rule must not match the
   repository's own source.
+
+Proved: before the component-boundary fix, the four added credential-name
+cases failed their output assertions; output is saved in
+`regression-evidence/redact-metric-boundaries-red.txt`. The same test file
+passes after the fix, including the metric negative controls.
 
 Proved: with `plugins/redact/src/patterns.ts` restored, the new test fails on
 `GITHUB_TOKEN is redacted` (and the other names). Before the fix, a probe

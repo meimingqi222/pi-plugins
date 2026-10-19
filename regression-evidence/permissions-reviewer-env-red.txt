@@ -1,0 +1,47 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/permissions/test/reviewer.test.ts:
+(pass) reviewer > allow verdict releases the call [1.74ms]
+(pass) reviewer > ask and deny verdicts come back as-is [0.32ms]
+(pass) reviewer > a hanging model times out and falls back [51.23ms]
+(pass) reviewer > a non-JSON reply falls back [0.23ms]
+(pass) reviewer > no configured auth → no model call, falls back [0.17ms]
+(pass) reviewer > unknown model → no model call, one warning [0.21ms]
+(pass) reviewer > identical calls hit the cache [0.15ms]
+(pass) reviewer > maxPerSession caps real calls and warns once [0.21ms]
+(pass) reviewer > the payload carries cwd, platform, the user request and the call [0.19ms]
+(pass) jev backend > model "jev" sends a choice question and maps the verdict [0.82ms]
+(pass) jev backend > the jev payload is redacted before it leaves the process [0.18ms]
+(pass) jev backend > without a redaction service the jev backend fails closed [0.17ms]
+230 |           { ...(injected ? { env: { ...JEV_ENV, ...injected } } : {}), fetch: fakeJevFetch("allow", calls) },
+231 |         )!;
+232 |         const verdict = await r.review({ ctx, toolName: "bash", toolInput: "npm test", staticAnalysis: "unknown" });
+233 |         // An injected environment replaces process.env; an empty injected
+234 |         // policy still defaults to requiring redaction, even if the host opts out.
+235 |         expect(calls.length).toBe(injected ? 0 : 1);
+                                   ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/user/workspace/repo/plugins/permissions/test/reviewer.test.ts:235:30)
+(fail) jev backend > the process environment can opt out of required reviewer redaction [0.49ms]
+(pass) jev backend > the jev question scopes the judgment to machine effects [0.29ms]
+(pass) jev backend > no reviewer section autodetects jev when a key exists [0.21ms]
+(pass) jev backend > no reviewer section and no jev key → disabled [0.14ms]
+(pass) jev backend > model "none" disables the reviewer even with a key [0.04ms]
+(pass) jev backend > model "jev" without a key warns once and disables [0.05ms]
+(pass) jev backend > auth.json[typesafe] supplies the key when the env var is absent [1.18ms]
+(pass) jev backend > jev-compact.json supplies the key, and the env var wins over it [0.84ms]
+(pass) jev backend > JEV_COMPACT_MODEL and JEV_COMPACT_BASE_URL reach the request [0.22ms]
+(pass) jev backend > a jev transport error falls back to asking [0.21ms]
+(pass) jev backend > a jev response without a verdict answer falls back [0.21ms]
+
+1 tests failed:
+(fail) jev backend > the process environment can opt out of required reviewer redaction [0.49ms]
+
+ 22 pass
+ 1 fail
+ 56 expect() calls
+Ran 23 tests across 1 file. [157.00ms]

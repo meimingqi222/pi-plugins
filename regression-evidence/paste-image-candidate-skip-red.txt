@@ -1,0 +1,47 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/paste-image/test/attach.test.ts:
+(pass) candidatePaths > an absolute path is the only candidate [0.15ms]
+(pass) candidatePaths > ~ resolves against home [0.04ms]
+(pass) candidatePaths > a relative path tries cwd, only clipboard basenames try the temp dir [0.15ms]
+(pass) attachImageReferences > attaches a pasted clipboard path and leaves a placeholder [2.26ms]
+(pass) attachImageReferences > resolves a bare filename out of pi's temp directory [0.32ms]
+(pass) attachImageReferences > numbers distinct images in first-reference order and reuses a repeat [0.34ms]
+(pass) attachImageReferences > leaves the text alone when the reference is not an image [0.11ms]
+(pass) attachImageReferences > leaves the text alone when the file vanished between paste and submit [0.08ms]
+(pass) attachImageReferences > a loader that throws is treated as a miss, not a failure [0.09ms]
+(pass) attachment count includes existing images and is bounded [1.77ms]
+(pass) an ordinary basename cannot attach a same-named temp file [0.04ms]
+119 |     size: async () => { sizes += 1; return 24 * 1024 * 1024; } };
+120 |   const result = await attachImageReferences('first.png second.png third.png', env);
+121 |   expect(result.images).toHaveLength(1);
+122 |   expect(result.text).toContain('second.png');
+123 |   expect(loads).toBe(1);
+124 |   expect(sizes).toBe(3);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 3
+Received: 2
+
+      at <anonymous> (/home/user/workspace/repo/plugins/paste-image/test/attach.test.ts:124:17)
+(fail) the aggregate attachment bytes are bounded before the read [14.85ms]
+127 | test("oversized candidates do not block later tiny images or duplicate references", async () => {
+128 |   const env = stubEnv({ "/tmp/tiny.png": IMAGE });
+129 |   const size = env.size;
+130 |   env.size = async (file) => file.endsWith("large.png") ? 33 * 1024 * 1024 : size(file);
+131 |   const result = await attachImageReferences("/tmp/large.png /tmp/tiny.png /tmp/large.png /tmp/tiny.png", env);
+132 |   expect(result.text).toBe("/tmp/large.png [#image 1] /tmp/large.png [#image 1]");
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: "/tmp/large.png [#image 1] /tmp/large.png [#image 1]"
+Received: "/tmp/large.png /tmp/tiny.png /tmp/large.png /tmp/tiny.png"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/paste-image/test/attach.test.ts:132:23)
+(fail) oversized candidates do not block later tiny images or duplicate references [0.37ms]
+
+ 11 pass
+ 2 fail
+ 31 expect() calls
+Ran 13 tests across 1 file. [58.00ms]

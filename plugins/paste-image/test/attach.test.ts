@@ -115,11 +115,22 @@ test("the aggregate attachment bytes are bounded before the read", async () => {
   const env = { cwd: '/work', home: '/home/me', tmpdir: '/tmp',
     load: async () => { loads += 1; return { mimeType: 'image/png', base64 }; },
     // The size check must happen before load(): the second reference is refused
-    // without reading it, and the cap stops the remaining references too.
+    // without reading it; later candidates still get a cheap size check.
     size: async () => { sizes += 1; return 24 * 1024 * 1024; } };
   const result = await attachImageReferences('first.png second.png third.png', env);
   expect(result.images).toHaveLength(1);
   expect(result.text).toContain('second.png');
   expect(loads).toBe(1);
-  expect(sizes).toBe(2);
+  expect(sizes).toBe(3);
+});
+
+test("oversized candidates do not block later tiny images or duplicate references", async () => {
+  const env = stubEnv({ "/tmp/tiny.png": IMAGE });
+  const size = env.size;
+  env.size = async (file) => file.endsWith("large.png") ? 33 * 1024 * 1024 : size(file);
+  const result = await attachImageReferences("/tmp/large.png /tmp/tiny.png /tmp/large.png /tmp/tiny.png", env);
+  expect(result.text).toBe("/tmp/large.png [#image 1] /tmp/large.png [#image 1]");
+  expect(result.attached).toBe(2);
+  expect(result.images).toHaveLength(1);
+  expect(env.loaded.every((file) => file === joined("/tmp/tiny.png"))).toBe(true);
 });

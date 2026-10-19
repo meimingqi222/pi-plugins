@@ -1,0 +1,97 @@
+bun test v1.3.10 (30e609e0)
+
+plugins/redact/test/generic-credentials.test.ts:
+(pass) generic credential assignments > GITHUB_TOKEN is redacted [0.62ms]
+(pass) generic credential assignments > ACCESS_TOKEN is redacted [0.10ms]
+(pass) generic credential assignments > AUTH_TOKEN is redacted [0.04ms]
+(pass) generic credential assignments > SLACK_TOKEN is redacted [0.05ms]
+(pass) generic credential assignments > NPM_TOKEN is redacted [0.10ms]
+(pass) generic credential assignments > API_KEY is redacted [0.17ms]
+(pass) generic credential assignments > apiKey is redacted [0.03ms]
+(pass) generic credential assignments > APIKEY is redacted [0.03ms]
+(pass) generic credential assignments > PRIVATE_KEY is redacted [0.03ms]
+(pass) generic credential assignments > CLIENT_SECRET is redacted [0.08ms]
+(pass) generic credential assignments > DB_PASSWORD is redacted [0.04ms]
+(pass) generic credential assignments > PASSWORD is redacted [0.03ms]
+30 |     ["ACCOUNT_API_KEY", "env-credential"],
+31 |     ["ADMIN_SECRET", "env-credential"],
+32 |     ["ACCOUNT_TOKEN", "env-credential"],
+33 |   ])("%s is redacted", (name, id) => {
+34 |     const line = `${name}=${VALUE}`;
+35 |     expect(r.string(line)).toBe(`${name}=[REDACTED:${id}]`);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: "ADMIN_PASSWORD=[REDACTED:env-credential]"
+Received: "ADMIN_PASSWORD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/generic-credentials.test.ts:35:28)
+(fail) generic credential assignments > ADMIN_PASSWORD is redacted [0.21ms]
+30 |     ["ACCOUNT_API_KEY", "env-credential"],
+31 |     ["ADMIN_SECRET", "env-credential"],
+32 |     ["ACCOUNT_TOKEN", "env-credential"],
+33 |   ])("%s is redacted", (name, id) => {
+34 |     const line = `${name}=${VALUE}`;
+35 |     expect(r.string(line)).toBe(`${name}=[REDACTED:${id}]`);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: "ACCOUNT_API_KEY=[REDACTED:env-credential]"
+Received: "ACCOUNT_API_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/generic-credentials.test.ts:35:28)
+(fail) generic credential assignments > ACCOUNT_API_KEY is redacted [0.11ms]
+30 |     ["ACCOUNT_API_KEY", "env-credential"],
+31 |     ["ADMIN_SECRET", "env-credential"],
+32 |     ["ACCOUNT_TOKEN", "env-credential"],
+33 |   ])("%s is redacted", (name, id) => {
+34 |     const line = `${name}=${VALUE}`;
+35 |     expect(r.string(line)).toBe(`${name}=[REDACTED:${id}]`);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: "ADMIN_SECRET=[REDACTED:env-credential]"
+Received: "ADMIN_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/generic-credentials.test.ts:35:28)
+(fail) generic credential assignments > ADMIN_SECRET is redacted [0.07ms]
+30 |     ["ACCOUNT_API_KEY", "env-credential"],
+31 |     ["ADMIN_SECRET", "env-credential"],
+32 |     ["ACCOUNT_TOKEN", "env-credential"],
+33 |   ])("%s is redacted", (name, id) => {
+34 |     const line = `${name}=${VALUE}`;
+35 |     expect(r.string(line)).toBe(`${name}=[REDACTED:${id}]`);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: "ACCOUNT_TOKEN=[REDACTED:env-credential]"
+Received: "ACCOUNT_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/generic-credentials.test.ts:35:28)
+(fail) generic credential assignments > ACCOUNT_TOKEN is redacted [0.08ms]
+(pass) generic credential assignments > a trailing comment does not veto: API_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # api key for prod [0.09ms]
+(pass) generic credential assignments > a trailing comment does not veto: PASSWORD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # password for prod [0.04ms]
+(pass) generic credential assignments > a trailing comment does not veto: DB_PASSWORD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # token for prod [0.03ms]
+(pass) generic credential assignments > a trailing comment does not veto: SECRET_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # api secret [0.06ms]
+(pass) generic credential assignments > quoted and JSON-shaped assignments are redacted [0.07ms]
+(pass) generic credential assignments > a password embedded in a URL is redacted without hiding the URL [0.06ms]
+68 |       "tokenizer_path=/usr/lib/tokenizer",
+69 |       `TOKEN_COUNT=${"9".repeat(8)}`,
+70 |       `MAX_TOKENS=${"9".repeat(8)}`,
+71 |       `"token_length": "${"9".repeat(8)}"`,
+72 |     ]) {
+73 |       expect(r.string(line)).toBe(line);
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: ""token_length": "99999999""
+Received: ""token_length": [REDACTED:env-credential]"
+
+      at <anonymous> (/home/user/workspace/repo/plugins/redact/test/generic-credentials.test.ts:73:30)
+(fail) generic credential assignments > placeholders and metric-shaped names are left alone [0.30ms]
+(pass) generic credential assignments > a long non-matching value stays linear [25.25ms]
+
+ 19 pass
+ 5 fail
+ 33 expect() calls
+Ran 24 tests across 1 file. [59.00ms]
