@@ -7,6 +7,9 @@ export function SyncedWorkCard({ store, ...props }: ComponentProps<typeof WorkCa
   const { agentId, item } = props;
   const subscribe = useCallback((changed: () => void) => item.data.kind === "Subagent" ? store.subscribe(agentId, changed) : () => {}, [store, agentId, item.data.kind]);
   const snapshot = useCallback(() => store.get(agentId, item.data.id), [store, agentId, item.data.id]);
-  const latest = useSyncExternalStore(subscribe, snapshot, () => undefined);
+  const sourceSnapshot = useCallback(() => store.getCardSource(agentId, item.data.id), [store, agentId, item.data.id]);
+  const latest = useSyncExternalStore(subscribe, snapshot, snapshot);
+  const source = useSyncExternalStore(subscribe, sourceSnapshot, sourceSnapshot);
+  if (item.data.kind === "Subagent" && item.data.source && source && item.data.source !== source) return null;
   return <WorkCard {...props} latest={latest} />;
 }

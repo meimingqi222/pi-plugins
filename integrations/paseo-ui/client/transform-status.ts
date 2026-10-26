@@ -4,17 +4,17 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { WorkStatus } from "../shared/work-status.ts";
 import { liveLogSchema, parseWorkStatus, workStatusSchema } from "../shared/work-status.ts";
 
-function replacement(text: string, snapshot = false) {
+function replacement(text: string, snapshot = false, source?: string) {
   const data = parseWorkStatus(text);
   if (!data) return;
   // Progress snapshots replay after the turn; only the live tool row should show running state.
   if (snapshot && data.kind === "Subagent" && data.status === "running") return { items: [] };
-  return { items: [{ type: "plugin" as const, kind: "pi-work-status", version: 1, data }] };
+  return { items: [{ type: "plugin" as const, kind: "pi-work-status", version: 1, data: data.kind === "Subagent" && source ? { ...data, source } : data }] };
 }
 
 export const transformStatusMessage: PluginTimelineTransformerContribution<"assistant_message">["transform"] = ({ item, phase }) => {
   if (phase !== "complete") return;
-  return replacement(item.text, true);
+  return replacement(item.text, true, taskCardSource(item));
 };
 
 /**
@@ -53,10 +53,10 @@ export const transformStatusToolCall: PluginTimelineTransformerContribution<"too
     const log = liveLogSchema.safeParse(reference?.[1]);
     if (spawn && log.success) {
       const prompt = item.detail.type === "sub_agent" ? item.detail.description ?? "" : "";
-      return { items: [{ type: "plugin" as const, kind: "pi-work-status", version: 1, data: { kind: "Subagent", id: spawn[1]!, title: spawn[2]!, status: "running", description: prompt.slice(0, 240), activity: "Background", metric: "", liveLog: log.data } }] };
+      return { items: [{ type: "plugin" as const, kind: "pi-work-status", version: 1, data: { kind: "Subagent", id: spawn[1]!, title: spawn[2]!, status: "running", description: prompt.slice(0, 240), activity: "Background", metric: "", liveLog: log.data, source: taskCardSource(item) } }] };
     }
   }
-  return text === undefined ? undefined : replacement(text, typeof item.metadata?.customType === "string");
+  return text === undefined ? undefined : replacement(text, typeof item.metadata?.customType === "string", taskCardSource(item));
 };
 
 const laneSchema = z.object({
@@ -84,10 +84,30 @@ export const transformTaskInspection: PluginTimelineTransformerContribution<"too
     const reason = lane.errorMessage ?? lane.result?.details.errorMessage ?? lane.progress?.activeTool ?? lane.progress?.phase ?? "";
     const data = workStatusSchema.safeParse({ kind: "Subagent", id: lane.id, title: lane.alias ?? lane.agent, status: lane.result?.details.status ?? lane.status, description: lane.task.slice(0, 240), activity: reason.replace(/; its event stream is at [\s\S]*$/u, "").slice(0, 240), metric: `${lane.progress?.completedTools ?? 0} tools completed` });
     if (!data.success) return;
-    items.push({ type: "plugin" as const, kind: "pi-work-status", version: 1, data: data.data });
+    items.push({ type: "plugin" as const, kind: "pi-work-status", version: 1, data: { ...data.data, source: taskCardSource(item) } });
   }
   return { items };
 };
+
+/** The host gives transformers a stable call ID, but no ID for old text carriers. */
+export function taskCardSource(item: Extract<AgentTimelineItem, { type: "tool_call" }>): string;
+export function taskCardSource(item: AgentTimelineItem): string | undefined;
+export function taskCardSource(item: AgentTimelineItem): string | undefined {
+  if (item.type === "tool_call") return `tool:${item.callId}`;
+  if (item.type === "assistant_message" && item.text.length <= 1_500) return `message:${item.text}`;
+  return undefined;
+}
+
+/** Only renderable rows may own the task card; hidden updates still carry state. */
+export function subagentCards(item: AgentTimelineItem): WorkStatus[] {
+  let result;
+  if (item.type === "assistant_message") result = transformStatusMessage({ item, phase: "complete" });
+  else if (item.type === "tool_call") result = transformStatusToolCall({ item, phase: "complete" }) ?? transformTaskInspection({ item, phase: "complete" });
+  return (result?.items ?? []).flatMap(row => {
+    const parsed = row.type === "plugin" ? workStatusSchema.safeParse(row.data) : undefined;
+    return parsed?.success && parsed.data.kind === "Subagent" ? [parsed.data] : [];
+  });
+}
 
 /** Read status evidence even when replayed progress is intentionally hidden. */
 export function subagentStatuses(item: AgentTimelineItem): WorkStatus[] {

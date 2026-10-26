@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { PaseoAgentTimelineEvent, PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { WorkStatus } from "../shared/work-status.ts";
 import { TaskStatusStore } from "../client/task-status-store.ts";
-import { subagentStatuses } from "../client/transform-status.ts";
+import { subagentStatuses, transformStatusToolCall, transformTaskInspection } from "../client/transform-status.ts";
 
 const work = (status: WorkStatus["status"], id = "sa-task"): WorkStatus => ({ kind: "Subagent", id, title: "review", description: "task", status, activity: status, metric: "72 tools completed" });
 function item(status: WorkStatus["status"], id = "sa-task") {
@@ -26,6 +26,70 @@ function host(read: (options: any) => Promise<any>) {
   return { timeline, emit: (event: any) => receive(event), counts: () => ({ subscribed, released }) };
 }
 const live = (status: WorkStatus["status"], seq: number, epoch = "epoch-1") => ({ agentId: "parent", seq, epoch, event: { type: "timeline", provider: "pi", item: item(status) } });
+
+test("one task keeps one status card across launch, failed inspection and terminal update", async () => {
+  const source = host(async () => page([]));
+  const store = new TaskStatusStore(() => source.timeline);
+  const statusRow = (callId: string) => ({ type: "tool_call" as const, callId, name: "subagent-update", status: "completed" as const, error: null, detail: { type: "plain_text" as const, text: item("failed").text }, metadata: { customType: "subagent-update" } });
+  const inspection = { type: "tool_call" as const, callId: "wait", name: "subagent_tasks", status: "completed" as const, error: null, detail: { type: "unknown" as const, input: { action: "wait" }, output: { details: { id: "sa-task", agent: "review", task: "task", status: "failed", errorMessage: "Provider failed" } } } };
+  const terminal = statusRow("terminal");
+  const emit = (row: any, seq: number) => source.emit({ agentId: "parent", seq, epoch: "epoch-1", event: { type: "timeline", provider: "pi", item: row } });
+  const getSource = () => store.getCardSource("parent", "sa-task");
+  try {
+    store.subscribe("parent", () => {}); await settle();
+    emit(inspection, 20);
+    const queryCard: any = transformTaskInspection({ item: inspection, phase: "complete" })?.items[0];
+    expect(queryCard.data.source).toBe("tool:wait");
+    expect(getSource()).toBe(queryCard.data.source);
+    emit(terminal, 21);
+    const terminalCard: any = transformStatusToolCall({ item: terminal, phase: "complete" })?.items[0];
+    expect(getSource()).toBe(terminalCard.data.source);
+    expect(getSource()).not.toBe(queryCard.data.source);
+    // An older page may arrive after the failed query: use its launch as the
+    // permanent task card, and keep the newer failure as state evidence.
+    const launch = { ...terminal, callId: "launch", name: "subagent", metadata: undefined, detail: { type: "sub_agent" as const, description: "task", log: item("running").text } };
+    emit(launch, 10);
+    expect(getSource()).toBe("tool:launch");
+    expect(store.get("parent", "sa-task")?.status).toBe("failed");
+    emit(statusRow("later-terminal"), 22);
+    expect(getSource()).toBe("tool:launch");
+  } finally { store.dispose(); }
+});
+
+test("a foreground tool returning its answer releases the card to the terminal status", async () => {
+  const source = host(async () => page([]));
+  const store = new TaskStatusStore(() => source.timeline);
+  const running = { type: "tool_call" as const, callId: "foreground", name: "subagent", status: "running" as const, error: null, detail: { type: "sub_agent" as const, log: item("running").text } };
+  const emit = (row: any, seq: number) => source.emit({ agentId: "parent", seq, epoch: "epoch-1", event: { type: "timeline", provider: "pi", item: row } });
+  const getSource = () => store.getCardSource("parent", "sa-task");
+  try {
+    store.subscribe("parent", () => {}); await settle();
+    emit(running, 10);
+    expect(getSource()).toBe("tool:foreground");
+    emit({ type: "tool_call", callId: "terminal", name: "subagent-update", status: "completed", error: null, detail: { type: "plain_text", text: item("completed").text }, metadata: { customType: "subagent-update" } }, 12);
+    emit({ ...running, status: "completed", detail: { ...running.detail, log: "Exact answer" } }, 11);
+    expect(getSource()).toBe("tool:terminal");
+    // Late history must not resurrect a row that is now a native answer.
+    emit(running, 10);
+    expect(getSource()).toBe("tool:terminal");
+    expect(store.get("parent", "sa-task")?.status).toBe("completed");
+  } finally { store.dispose(); }
+});
+
+test("cold paginated history restores one card without reviving an answered foreground row", async () => {
+  const nativeAnswer = { type: "tool_call" as const, callId: "foreground", name: "subagent", status: "completed" as const, error: null, detail: { type: "sub_agent" as const, log: "Exact answer" } };
+  const terminal = { type: "tool_call" as const, callId: "terminal", name: "subagent-update", status: "completed" as const, error: null, detail: { type: "plain_text" as const, text: item("completed").text }, metadata: { customType: "subagent-update" } };
+  const progress = { ...nativeAnswer, status: "running" as const, detail: { type: "sub_agent" as const, log: item("running").text } };
+  const source = host(async options => options.cursor
+    ? { ...page([]), entries: [{ item: progress, seqEnd: 10 }] }
+    : { ...page([], true, 20), entries: [{ item: terminal, seqEnd: 22 }, { item: nativeAnswer, seqEnd: 21 }] });
+  const store = new TaskStatusStore(() => source.timeline);
+  try {
+    store.subscribe("parent", () => {}); await settle();
+    expect(store.getCardSource("parent", "sa-task")).toBe("tool:terminal");
+    expect(store.get("parent", "sa-task")?.status).toBe("completed");
+  } finally { store.dispose(); }
+});
 
 test("cold history restores completion from older pages even when the completed card is not mounted", async () => {
   const directions: string[] = [];

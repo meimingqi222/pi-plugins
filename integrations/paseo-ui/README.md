@@ -66,7 +66,10 @@ directory, rejects symlinks and scans at most 2 MiB. The screen shows at most
 
 Historical subagent cards show the task's latest execution state, activity and
 tool count while preserving the original title and task description. The
-companion shares one timeline subscription per parent conversation and restores
+companion shows one card per task, preferring its launch/status row over query
+results. Inspection and completion references still update that card, including
+after reopening; native final answers remain visible. The companion shares
+one timeline subscription per parent conversation and restores
 status from Paseo's saved canonical timeline when reopening a conversation;
 the completion card need not be visible and the raw log need not still exist.
 A later reply can move the same task back to Running. Leaving the conversation

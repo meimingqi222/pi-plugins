@@ -44,7 +44,8 @@ test("a custom status message renders as a card on hosts old and new", () => {
   // (provider/pi/agent.ts, mapCustomMessageToToolCall) instead of assistant speech.
   for (const customType of ["pi-work-status", "subagent-update"]) {
     const row = syntheticStatusRow(customType, text);
-    expect(transformStatusToolCall({ phase: "complete", item: row })).toEqual(before);
+    const mapped = transformStatusToolCall({ phase: "complete", item: row });
+    expect(mapped?.items[0]).toMatchObject({ data: { kind: "Subagent", id: work.id, title: work.title, description: work.description, status: work.status, source: `tool:${row.callId}` } });
   }
 });
 

@@ -1,0 +1,43 @@
+bun test v1.4.2 (744846f84)
+
+integrations/paseo-ui/test/task-status-store.test.ts:
+37 |   const getSource = () => (store as any).getCardSource?.("parent", "sa-task");
+38 |   try {
+39 |     store.subscribe("parent", () => {}); await settle();
+40 |     emit(inspection, 20);
+41 |     const queryCard: any = transformTaskInspection({ item: inspection, phase: "complete" })?.items[0];
+42 |     expect(queryCard.data.source).toBe("tool:wait");
+                                       ^
+error: expect(received).toBe(expected)
+
+Expected: "tool:wait"
+Received: undefined
+
+      at <anonymous> (integrations/paseo-ui/test/task-status-store.test.ts:42:35)
+(fail) one task keeps one status card across launch, failed inspection and terminal update [18.59ms]
+63 |   const emit = (row: any, seq: number) => source.emit({ agentId: "parent", seq, epoch: "epoch-1", event: { type: "timeline", provider: "pi", item: row } });
+64 |   const getSource = () => (store as any).getCardSource?.("parent", "sa-task");
+65 |   try {
+66 |     store.subscribe("parent", () => {}); await settle();
+67 |     emit(running, 10);
+68 |     expect(getSource()).toBe("tool:foreground");
+                             ^
+error: expect(received).toBe(expected)
+
+Expected: "tool:foreground"
+Received: undefined
+
+      at <anonymous> (integrations/paseo-ui/test/task-status-store.test.ts:68:25)
+(fail) a foreground tool returning its answer releases the card to the terminal status [1.72ms]
+(pass) cold history restores completion from older pages even when the completed card is not mounted [0.91ms]
+(pass) live completion updates all observers, survives an older fetch, and a later reply may run again [0.45ms]
+(pass) reopening a conversation reads persisted latest state and isolates identical task IDs in other parents [4.20ms]
+(pass) reconnection recovers missed completion and replacement drops old epoch state [0.26ms]
+(pass) navigation releases the shared subscription only after the last card and drops late reads [0.11ms]
+(pass) hidden progress and metadata-only host updates still provide task evidence [0.37ms]
+(pass) observation errors retry independently of a concurrent failed history read [1114.70ms]
+
+ 7 pass
+ 2 fail
+ 25 expect() calls
+Ran 9 tests across 1 file. [1231.00ms]

@@ -1,11 +1,16 @@
 import type { PaseoAgentTimelineHandle, PaseoAgentTimelineSubscription, PaseoAgentTimelineRefetchOptions } from "@getpaseo/client";
 import type { WorkStatus } from "../shared/work-status.ts";
-import { subagentStatuses } from "./transform-status.ts";
+import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { subagentCards, subagentStatuses, taskCardSource } from "./transform-status.ts";
+
+type CardRow = { seq: number; rank: number; tasks: string[] };
 
 type Conversation = {
   timeline: PaseoAgentTimelineHandle;
   listeners: Set<() => void>;
   tasks: Map<string, { seq: number; work: WorkStatus }>;
+  cardRows: Map<string, CardRow>;
+  cardSources: Map<string, string>;
   epoch?: string;
   generation: number;
   stopped: boolean;
@@ -25,10 +30,14 @@ export class TaskStatusStore {
     return this.conversations.get(agentId)?.tasks.get(taskId)?.work;
   }
 
+  getCardSource(agentId: string, taskId: string): string | undefined {
+    return this.conversations.get(agentId)?.cardSources.get(taskId);
+  }
+
   subscribe(agentId: string, listener: () => void): () => void {
     let state = this.conversations.get(agentId);
     if (!state) {
-      state = { timeline: this.timelineFor(agentId), listeners: new Set(), tasks: new Map(), generation: 0, stopped: false, loading: false, refreshRequested: false };
+      state = { timeline: this.timelineFor(agentId), listeners: new Set(), tasks: new Map(), cardRows: new Map(), cardSources: new Map(), generation: 0, stopped: false, loading: false, refreshRequested: false };
       this.conversations.set(agentId, state);
       this.observe(state);
     }
@@ -51,6 +60,8 @@ export class TaskStatusStore {
     state.generation++;
     state.epoch = epoch;
     state.tasks.clear();
+    state.cardRows.clear();
+    state.cardSources.clear();
     this.notify(state);
   }
 
@@ -67,6 +78,39 @@ export class TaskStatusStore {
     if (changed) this.notify(state);
   }
 
+  private applyItem(state: Conversation, item: AgentTimelineItem, seq: number): void {
+    this.apply(state, subagentStatuses(item), seq);
+    const source = taskCardSource(item);
+    if (!source) return;
+    const previous = state.cardRows.get(source);
+    if (previous && previous.seq >= seq) return;
+    const tasks = subagentCards(item).map(card => card.id);
+    const spawn = item.type === "tool_call" && item.name === "subagent";
+    if (!previous && tasks.length === 0 && !spawn) return;
+    // A finished foreground tool becomes a native answer. Keep its latest
+    // sequence as a tombstone so older pages cannot resurrect its live card.
+    let rank = 1;
+    if (spawn) rank = 0;
+    else if (item.type === "tool_call" && item.name === "subagent_tasks") rank = 2;
+    state.cardRows.set(source, { seq, rank, tasks });
+    let changed = false;
+    for (const task of new Set([...(previous?.tasks ?? []), ...tasks])) {
+      let winner: { source: string; row: CardRow } | undefined;
+      for (const [candidate, row] of state.cardRows) {
+        if (!row.tasks.includes(task)) continue;
+        if (!winner || row.rank < winner.row.rank || (row.rank === winner.row.rank && row.seq < winner.row.seq)) {
+          winner = { source: candidate, row };
+        }
+      }
+      const next = winner?.source;
+      if (state.cardSources.get(task) === next) continue;
+      if (next) state.cardSources.set(task, next);
+      else state.cardSources.delete(task);
+      changed = true;
+    }
+    if (changed) this.notify(state);
+  }
+
   private observe(state: Conversation): void {
     try {
       state.subscription = state.timeline.subscribe(({ event, ...message }) => {
@@ -78,15 +122,13 @@ export class TaskStatusStore {
         } else if (event.type === "subscription_restored") {
           void this.refresh(state); // Reconnect may have missed terminal updates.
         } else if (event.type === "timeline") {
-          const evidence = subagentStatuses(event.item);
-          if (!evidence.length) return;
           const seq = "seq" in message ? message.seq : undefined;
           const epoch = "epoch" in message ? message.epoch : undefined;
           if (epoch && state.epoch !== epoch) {
             this.reset(state, epoch);
             void this.refresh(state);
           }
-          if (typeof seq === "number") this.apply(state, evidence, seq);
+          if (typeof seq === "number") this.applyItem(state, event.item, seq);
           else void this.refresh(state);
         }
       });
@@ -120,7 +162,7 @@ export class TaskStatusStore {
           generation = state.generation;
         }
         state.epoch = page.epoch;
-        for (const entry of page.entries) this.apply(state, subagentStatuses(entry.item), entry.seqEnd);
+        for (const entry of page.entries) this.applyItem(state, entry.item, entry.seqEnd);
         const next = page.hasOlder ? page.startCursor : null;
         if (!next || (cursor && next.seq >= cursor.seq)) break;
         cursor = next;

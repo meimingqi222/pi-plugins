@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+integrations/paseo-ui/test/card.test.tsx:
+25 |
+26 | test("duplicate inspection and status references render exactly one task disclosure", () => {
+27 |   const latest: WorkStatus = { kind: "Subagent", id: "sa-review", title: "Review", status: "failed", description: "Review source files", activity: "Provider failed", metric: "52 tools completed" };
+28 |   const store = { get: () => latest, getCardSource: () => "tool:terminal", subscribe: () => () => {} };
+29 |   const renderReference = (source: string) => renderToStaticMarkup(createElement(SyncedWorkCard, { agentId: "parent", store, item: { type: "plugin", kind: "pi-work-status", version: 1, data: { ...latest, source } }, theme: { colors } } as any));
+30 |   expect(renderReference("tool:wait")).toBe("");
+                                            ^
+error: expect(received).toBe(expected)
+
+Expected: ""
+Received: "<div style="border-width:0;display:flex;flex-direction:column;min-width:0;margin-horizontal:-13px;b... (2330 bytes truncated) ...-style:solid;min-width:0;overflow-wrap:anywhere">sa-review · 52 tools completed</span></div></div>"
+
+      at <anonymous> (integrations/paseo-ui/test/card.test.tsx:30:40)
+(fail) duplicate inspection and status references render exactly one task disclosure [5.59ms]
+
+ 0 pass
+ 11 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [27.00ms]

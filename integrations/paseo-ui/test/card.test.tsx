@@ -15,12 +15,24 @@ function surface(tag: "div" | "span") {
 mock.module("react-native", () => ({ View: surface("div"), Text: surface("span"), Pressable: surface("div"), ScrollView: surface("div"), Switch: surface("span") }));
 mock.module("@getpaseo/plugin/client/react-native", () => ({ Icon: surface("span") }));
 const { WorkCard } = await import("../client/work-card.tsx");
+const { SyncedWorkCard } = await import("../client/synced-work-card.tsx");
 
 const colors = { surface1: "#171a1f", border: "#343b44", foreground: "#edf0f4", foregroundMuted: "#a9b1bd", accent: "#65b9ee", statusSuccess: "#75be8c", statusDanger: "#ee8b82" };
 function render(data: WorkStatus, palette = colors): string {
   const props = { item: { type: "plugin", kind: "pi-work-status", version: 1, data }, theme: { colors: palette } } as unknown as PluginTimelineItemProps<WorkStatus>;
   return renderToStaticMarkup(createElement(WorkCard, props));
 }
+
+test("duplicate inspection and status references render exactly one task disclosure", () => {
+  const latest: WorkStatus = { kind: "Subagent", id: "sa-review", title: "Review", status: "failed", description: "Review source files", activity: "Provider failed", metric: "52 tools completed" };
+  const store = { get: () => latest, getCardSource: () => "tool:terminal", subscribe: () => () => {} };
+  const renderReference = (source: string) => renderToStaticMarkup(createElement(SyncedWorkCard, { agentId: "parent", store, item: { type: "plugin", kind: "pi-work-status", version: 1, data: { ...latest, source } }, theme: { colors } } as any));
+  expect(renderReference("tool:wait")).toBe("");
+  const html = renderReference("tool:terminal");
+  expect(html.match(/Collapse Subagent:/g)).toHaveLength(1);
+  expect(html).toContain("52 tools completed");
+  expect(html).toContain("Provider failed");
+});
 
 test("cards render task, execution state, failure reason and budget with the host theme", () => {
   const data: WorkStatus = { kind: "Subagent", id: "sa-review", title: "检查工具调用的并发行为", status: "failed", description: "Review source files", activity: "Child timed out while reading sources", metric: "3 tools completed" };

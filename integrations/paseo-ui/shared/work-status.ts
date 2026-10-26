@@ -12,6 +12,7 @@ export const workStatusSchema = z.object({
   activity: z.string().max(240),
   metric: z.string().max(240),
   liveLog: liveLogSchema.optional(),
+  source: z.string().max(1_600).optional(),
 });
 
 export type WorkStatus = z.output<typeof workStatusSchema>;
