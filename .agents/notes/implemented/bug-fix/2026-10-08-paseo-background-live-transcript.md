@@ -52,5 +52,5 @@ Proved: adding the live transcript regression before implementation made
 `bun test plugins/subagent/test/host-transcript.test.ts` report 1 fail and 3
 pass because `startLive` was absent. After implementation all cases pass.
 A separate integration check imported the actual Paseo adapter and file
-follower from the reference checkout and verified a running foreground card,
+follower from the reference checkout and verified a background launch,
 background tool call, background tool result and final settlement in order.

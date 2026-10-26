@@ -34,6 +34,10 @@ evidence logging, automatic delivery, and goal usage accounting.
 
 Launch results contain handles, not final answers. `wait`, `show` and `log`
 return settled answers and consume only that answer's pending notification.
+A host that only renders tool results has no in-call answer to fall back on:
+it must call `wait`, or the completion message is never seen. The fleet cap now
+refuses a launch when full instead of parking a blocking call, so one turn that
+launches more than the cap fails the extras rather than waiting for a lane.
 Reload Pi to refresh the tool schema and implementation. Existing foreground
 host records remain readable; no new tool launch creates one. The internal
 lane registry still understands historical foreground records, but the tool

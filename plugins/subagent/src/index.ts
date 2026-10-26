@@ -427,7 +427,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       promptSnippet: "Delegate one self-contained task to a named subagent with its own context window",
       promptGuidelines: SUBAGENT_GUIDELINES,
       parameters: SubagentParams,
-      async execute(toolCallId, params, signal, onUpdate, ctx) {
+      // Launch never produces partial updates: it returns a handle immediately,
+      // so the host's progress channel stays unused.
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
         if (signal?.aborted) {
           return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
         }

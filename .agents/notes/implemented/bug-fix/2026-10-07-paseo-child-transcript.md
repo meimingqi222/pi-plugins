@@ -45,7 +45,7 @@ is truncated, and transcript files count toward the existing 200-file retention.
   duplicate suppression, immutable reply deltas, byte/item bounds and abort text.
 - `plugins/subagent/test/paseo.test.ts` locks background failure transcripts and
   background task correlation using actual plugin execution, including
-  timeout and thrown executor failures. Foreground exceptions return structured
+  timeout and thrown executor failures. Executor exceptions return structured
   failed details so Paseo can correlate the subsequent transcript notification.
 - `plugins/agent-runner/test/rpc-child.test.ts` locks observer-before-settlement
   ordering and exception isolation.

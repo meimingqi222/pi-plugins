@@ -1,11 +1,12 @@
 /**
  * `lane.ts` — a lane is one subagent execution with an identity.
  *
- * `BackgroundRecord` becomes `Lane` because a foreground call is a lane too:
- * same spawn, same settle, same observability contract — only the answer
- * path differs (the tool call returns it instead of a follow-up message).
- * Registering foreground calls closes the last blind spot the fleet had:
- * a blocking call no longer looks like the session is idle.
+ * Every launch is a lane with the same spawn, settle and observability
+ * contract; the answer always arrives through a handle and a completion
+ * message. `foreground` remains in the types only because restored session
+ * records from older versions may contain such lanes, and the fleet surfaces
+ * must keep rendering what they already hold. No current launch path creates
+ * one.
  *
  * `queuedPrompts` and `generation` are stored now for the reply transport
  * that follows: they are the fields a live-child continuation needs, and
@@ -17,15 +18,19 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { SubagentDetails, SubagentProgress } from "./tool.ts";
 
 export type LaneStatus = "running" | "completed" | "failed" | "aborted";
-/** `foreground` lanes are observable but not addressable: no id reaches the model and stop() refuses them. */
+/**
+ * Legacy lane kinds. `foreground` only appears in restored session records:
+ * current launches are always `background` and are addressable by task ID.
+ */
 export type LaneKind = "background" | "foreground";
 
 /**
  * Why a cancel request did or did not stop a lane.
  *
- * `foreground` is a distinct answer rather than a `false`: a foreground call is
- * the session's own turn, so there is no child to abort behind the model's back,
- * and a caller that reports "nothing happened" is describing a broken button.
+ * `foreground` is a distinct answer rather than a `false`, kept for restored
+ * blocking records: such a call was the session's own turn, so there is no
+ * child to abort behind the model's back, and a caller that reports "nothing
+ * happened" is describing a broken button.
  */
 export type StopOutcome = "stopped" | "settled" | "foreground";
 

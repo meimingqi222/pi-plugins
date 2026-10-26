@@ -35,7 +35,8 @@ neither a subagent nor a workflow is worth its cost for those.
 ## The tool
 
 The public arguments use `subagent_type` and `prompt`; old `agent`/`task` calls
-are normalized before validation. Host results include `agentId`, `status`
+are normalized before validation, and a legacy `background` argument is
+discarded — there is no blocking mode. Host results include `agentId`, `status`
 (`error` for failure), and `nativeStatus`. Independent hidden `subagent-update`
 messages keep Paseo cards synchronized on completion, failure, cancellation
 and replies, even when the parent already read the answer. Raw RPC logs remain
@@ -53,7 +54,9 @@ Reload pi to load the updated schema. Old recorded launches are not rewritten.
 The subagent starts with a **fresh context**: it cannot see this conversation, so
 the `prompt` must state the goal, the relevant paths, and what a good answer looks
 like. Launch returns a task ID; the final answer arrives as a completion message.
-Use `show` or `wait` to read the answer explicitly. Returned text is capped at
+Use `show` or `wait` to read the answer explicitly. A host that delivers custom
+messages receives it at a safe turn boundary; a host that only renders tool
+results must call `wait`. Returned text is capped at
 50 KB; the full text and token usage remain in task details. `subagent_tasks` can
 list tasks, show a task's status and answer, or cancel a running task:
 

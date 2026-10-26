@@ -115,7 +115,7 @@ export class HostTranscript {
     }
   }
 
-  /** Seal a live turn or publish an immutable delta for a completed foreground turn. */
+  /** Seal a live turn or publish an immutable delta for a completed turn. */
   snapshot(
     logPath: string,
     task: string,
