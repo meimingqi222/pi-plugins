@@ -52,6 +52,13 @@ execution to *during* it.
   an active run, delivery waits until Pi becomes idle or a new run starts.
   Synchronous send failures remain pending for retry, with one UI warning
   per affected job rather than a warning on every attempt.
+  A completion that qualifies for a wake is written to a **durable offer**
+  before the send and acknowledged after the host accepts it. If the process
+  exits or the branch is left between finish and flush, reopening that branch
+  replays the notice once, batched, at `session_start`/`session_tree`; a notice
+  already in the transcript suppresses the replay. `quiet` and auto-success
+  completions are never offered, so durability cannot turn a silent completion
+  into a wake.
 - **`bg_tasks`.** `list`, `status`, `result`, `log`, `output`, `wait`, `kill`.
   `result` returns metadata and at most 40 lines / 4 KB of output; `log`
   returns at most 2000 lines / 50 KB. `output` returns only what the job
@@ -152,9 +159,10 @@ at most the newest 200 files are kept.
 - **No wake-up for explicit `background: true` if the session ends first.** Jobs
   are killed on `session_shutdown` and on every leave of the launching
   conversation (`session_before_switch`, `session_before_tree`,
-  `session_before_fork`). A completion that arrives after that leave is
-  dropped instead of injected into the next branch; the log file remains for
-  diagnosis.
+  `session_before_fork`). A job killed by that leave produces no offer, so its
+  late result is not injected into the next branch; the log file remains for
+  diagnosis. A completion that finished and was offered *before* the leave is
+  replayed when that branch is reopened.
 - **Log retention is coarse.** The sweep runs on `session_start`, so a
   long-lived process only prunes when a session begins; between sweeps the
   directory grows with every command.

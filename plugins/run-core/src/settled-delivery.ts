@@ -6,7 +6,18 @@ export class SettledDeliveryQueue {
 
   constructor(pi: Pick<ExtensionAPI, "on">) {
     pi.on("agent_settled", () => {
-      for (const send of this.pending.splice(0)) send();
+      // Take the batch before running it, but isolate each send: a caller that
+      // forgot its own try/catch must cost its own result, not every result
+      // queued behind it. The previous bare loop lost the rest of the batch on
+      // the first throw.
+      for (const send of this.pending.splice(0)) {
+        try {
+          send();
+        } catch {
+          // The queue's contract is delivery, not error reporting. A send that
+          // fails has already had its chance to notify its origin.
+        }
+      }
     });
   }
 

@@ -16,3 +16,13 @@ test("a failed idle probe defers delivery until the settled event", () => {
   settle();
   expect(sent).toBe(1);
 });
+test("one throwing delivery does not drop the rest of the settled batch", () => {
+  let settle!: () => void;
+  const queue = new SettledDeliveryQueue({ on(_event: string, handler: () => void) { settle = handler; } } as any);
+  const sent: string[] = [];
+  queue.defer(() => sent.push("first"));
+  queue.defer(() => { throw new Error("origin went away"); });
+  queue.defer(() => sent.push("third"));
+  settle();
+  expect(sent).toEqual(["first", "third"]);
+});

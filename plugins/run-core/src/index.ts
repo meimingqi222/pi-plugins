@@ -13,10 +13,36 @@
  */
 
 export { ActiveTimer, readTokenUsage } from "./usage.ts";
+export {
+  ADMISSION_RECOVERY_SUCCESSES,
+  DEFAULT_ADMISSION_KEY,
+  MAX_ADMISSION_COOLDOWN_MS,
+  admissionCeiling,
+  createAdmission,
+  isAdmissionThrottle,
+  processAdmission,
+  resetProcessAdmission,
+  type Admission,
+  type AdmissionEvent,
+  type AdmissionRequest,
+  type AdmissionSnapshot,
+  type AdmissionTicket,
+} from "./admission.ts";
 export { createHostWorkReporter, formatHostWork, type HostWork, type HostWorkContext } from "./host-work.ts";
 export { connectGoalSpend, GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendLease, type GoalSpendService } from "./goal-spend.ts";
 export { RunGuard, type RunToken } from "./guard.ts";
 export { SettledDeliveryQueue } from "./settled-delivery.ts";
+export {
+  DeliveryLedger,
+  type DeliveryLedgerOptions,
+  type DeliveryOffer,
+} from "./delivery-ledger.ts";
+export {
+  PURE_WAIT_PATTERN,
+  createPollGuard,
+  isPureWaitCommand,
+  type PollGuardOptions,
+} from "./poll-guard.ts";
 export {
   RunBudget,
   RunBudgetExceeded,

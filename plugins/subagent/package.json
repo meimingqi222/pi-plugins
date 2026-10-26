@@ -7,7 +7,7 @@
 	"exports": { ".": "./src/index.ts", "./transcript": "./src/transcript.ts", "./logs": "./src/logs.ts" },
 	"files": ["src", "README.md", "ATTRIBUTION.md"],
 	"pi": { "extensions": ["./src/index.ts"] },
-	"scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+	"scripts": { "test": "bun test --isolate", "typecheck": "tsc --noEmit" },
 	"keywords": ["pi", "pi-package", "subagent", "delegation", "agent"],
 	"license": "MIT",
 	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0", "typebox": "*" },

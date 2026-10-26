@@ -119,13 +119,34 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 	interrupted: "was interrupted",
 };
 
+/** The durable facts a completion notice is built from, without the Job object. */
+export interface CompletionSummary {
+	jobId: string;
+	status: JobStatus;
+	exitCode: number | null;
+	durationMs: number;
+}
+
+export function completionSummary(job: Job, now = Date.now()): CompletionSummary {
+	return {
+		jobId: job.id,
+		status: job.status,
+		exitCode: job.exitCode,
+		durationMs: durationMs(job, now),
+	};
+}
+
 /** Small model notification; stdout remains in the job log. */
-export function formatCompletionNotice(jobs: Job[]): string {
+export function formatCompletionNoticeSummaries(items: CompletionSummary[]): string {
 	return [
 		`Background commands finished:`,
-		...jobs.map((job) => `- ${job.id}: ${job.status}${job.exitCode === null ? "" : ` (exit ${job.exitCode})`}, ${formatDuration(durationMs(job))}`),
+		...items.map((item) => `- ${item.jobId}: ${item.status}${item.exitCode === null ? "" : ` (exit ${item.exitCode})`}, ${formatDuration(item.durationMs)}`),
 		"Status only. Output: bg_tasks result <id>.",
 	].join("\n");
+}
+
+export function formatCompletionNotice(jobs: Job[]): string {
+	return formatCompletionNoticeSummaries(jobs.map((job) => completionSummary(job)));
 }
 
 /** The status sentence a completion message opens with. */

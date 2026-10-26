@@ -27,10 +27,21 @@ conversation. A harness failure wakes the originating conversation with its
 error so the agent can respond instead of waiting for a result that cannot arrive.
 Results that settle during another agent turn are handed to Pi at
 `agent_settled`, when a `followUp` can safely start a turn. Idle results are
-delivered immediately. Results settling after the launching
-session has been left are discarded.
+delivered immediately.
+
+A result is written to a **durable offer** before the send and acknowledged
+after the host accepts it. If the process exits or the branch is left between
+settlement and delivery, reopening that branch replays the offer once at
+`session_start`/`session_tree`; a message already in the transcript (crash
+between send and ack) suppresses the replay. A run that settles after its
+launching session was left never gets an offer and is still discarded.
 A failure in goal spend reporting is surfaced without suppressing the workflow
 result or preventing session cleanup.
+
+Leaving a session frees the run slots immediately and then waits up to five
+seconds for cooperative work to settle. A run that ignores its abort past that
+window is recorded as **abandoned** with its id logged, instead of disappearing
+from every surface while its child process is still alive.
 
 ## The surface
 
@@ -40,14 +51,21 @@ result or preventing session cleanup.
   `maxAgents`, `maxConcurrency`, `agentTimeoutMs` (per agent), `runTimeoutMs`
   (whole run, default 30 minutes), `resumeFromRunId`.
 
-  Concurrency is capped by a **provider ceiling: 4 live agents by default**, set
-  with `PI_WORKFLOW_MAX_CONCURRENCY`. `maxConcurrency` can only *lower* that
-  ceiling; a request above it is clamped rather than refused, and a burst beyond
-  what the provider tolerates becomes failed agents rather than queued ones —
-  which is why the default is the safe one rather than the fastest one.
+  Concurrency is capped by a **process-wide provider ceiling: 4 live agents by
+  default**, set with `PI_ADMISSION_MAX_CONCURRENCY` (the older
+  `PI_WORKFLOW_MAX_CONCURRENCY` is still honoured). The ceiling is shared with
+  `pi-subagent`, because four runs × four agents is sixteen live child sessions
+  against one account, and a provider answers that burst with refused calls that
+  surface as failed agents. `maxConcurrency` can only *lower* the share this run
+  may take; a request above the ceiling is clamped rather than refused. A call
+  waiting for a ticket is reported as **`queued`**, not `running`, so
+  `workflow_status` distinguishes "working" from "waiting for capacity". Time
+  queued behind other runs' tickets does not count against `runTimeoutMs` —
+  the deadline moves by the wait rather than killing a run that never got to
+  work, while time spent running after the queue is still billed.
 - **`workflow_status` tool** — reports what active runs are doing: phase,
-  agents running and their elapsed time, tokens, age of the last progress event,
-  and whether a per-agent timeout bounds them. `/workflows` renders the same
+  agents queued or running and their elapsed time, tokens, age of the last
+  progress event, and whether a per-agent timeout bounds them. `/workflows` renders the same
   text for the user: one liveness surface, two callers, so the two can never
   disagree about a run.
 - **`/workflows` command** — shows the active runs **and** the recent history

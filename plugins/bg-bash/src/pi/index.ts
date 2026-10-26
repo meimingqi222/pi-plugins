@@ -9,18 +9,24 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { connectTaskNavigation, openMainTaskView, createHostWorkReporter, createWorkReporter } from "pi-run-core";
+import { connectTaskNavigation, openMainTaskView, createHostWorkReporter, createPollGuard, createWorkReporter, DeliveryLedger } from "pi-run-core";
 import { createBgTasksPanel } from "./panel.ts";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
-import type { RunOutcome } from "../core/types.ts";
+import type { JobStatus, RunOutcome } from "../core/types.ts";
 import { createBgBashTool } from "./bash-tool.ts";
 import { createBgTasksTool } from "./tasks-tool.ts";
-import { formatCompletionNotice, type BgBashDetails } from "./format.ts";
+import {
+	completionSummary,
+	formatCompletionNotice,
+	formatCompletionNoticeSummaries,
+	type BgBashDetails,
+	type CompletionSummary,
+} from "./format.ts";
 import { renderCompletion, renderStatusEntry } from "./render.ts";
 import { loadThresholdSources, sweepLogDir } from "./settings.ts";
 import { BG_BASH_COMPLETION_ENTRY, BG_BASH_STATE_ENTRY, recordFor, recordsFromBranch } from "./records.ts";
-import { isPureWaitCommand, pollBlockReason } from "./poll-guard.ts";
+import { pollBlockReason } from "./poll-guard.ts";
 import { formatJobsListing, runningWorkItems } from "./surface.ts";
 import type { Runtime } from "./runtime.ts";
 
@@ -47,6 +53,14 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	// lazily when a job detaches (a tool call can precede or survive one).
 	let uiCtx: ExtensionContext | undefined;
 	const hostWork = createHostWorkReporter(pi);
+	// A completion that qualifies for a model wake is offered before the send,
+	// so a reload or branch switch between finish and flush replays it once.
+	const ledger = new DeliveryLedger(pi, {
+		offerType: "bg-bash-delivery-offer",
+		ackType: "bg-bash-delivery-ack",
+	});
+	/** Delivery ids offered by this process; a quiet/auto-success job is never offered. */
+	const offered = new Set<string>();
 	let panelOpen = false;
 	let panel: { dispose?(): void } | undefined;
 	const navigation = connectTaskNavigation(pi, {
@@ -147,14 +161,24 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		const current = batch.filter(([job, origin]) => origin.isCurrent() && !consumed.has(job) && !submitted.has(job)).map(([job]) => job);
 		if (shuttingDown || current.length === 0) return;
 		try {
+			const deliveryIds = current.map(deliveryId).filter((id) => offered.has(id));
 			pi.sendMessage(
-				{ customType: BG_BASH_CUSTOM_TYPE, content: formatCompletionNotice(current), display: false },
+				{
+					customType: BG_BASH_CUSTOM_TYPE,
+					content: formatCompletionNotice(current),
+					display: false,
+					// A batched notice covers several offers; the ids let the
+					// ledger prove all of them from the transcript alone.
+					details: { deliveryIds },
+				},
 				{ deliverAs: boundary ?? "followUp", triggerTurn: true },
 			);
 			for (const job of current) {
 				submitted.add(job);
 				pendingNotices.delete(job);
 				warned.delete(job);
+				const id = deliveryId(job);
+				if (offered.delete(id)) ledger.ack(id);
 			}
 		} catch (error) {
 			if (current.some((job) => !warned.has(job))) {
@@ -166,11 +190,32 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const deliveryId = (job: Job): string => `bg:${job.id}`;
+
 	const routeCompletion = (job: Job, ctx: ExtensionContext | undefined, isCurrent: () => boolean): void => {
 		if (shuttingDown || !isCurrent()) return;
 		persist(job, BG_BASH_COMPLETION_ENTRY, ctx, isCurrent);
 		if (job.notify === "quiet" || (job.notify === "auto" && job.status !== "failed" && job.status !== "timedout")) return;
 		if (consumed.has(job) || submitted.has(job)) return;
+		const sessionId = (() => {
+			try { return ctx?.sessionManager.getSessionId(); } catch { return undefined; }
+		})();
+		// Only a completion that is allowed to wake the model is offered. A
+		// quiet or auto-success job must not come back as a replayed wake.
+		if (sessionId) {
+			const id = deliveryId(job);
+			ledger.offer({
+				id,
+				runId: job.id,
+				sessionId,
+				customType: BG_BASH_CUSTOM_TYPE,
+				content: formatCompletionNotice([job]),
+				display: false,
+				wake: true,
+				details: { ...completionSummary(job) },
+			});
+			offered.add(id);
+		}
 		pendingNotices.set(job, { ctx, isCurrent });
 		scheduleNotices(25);
 	};
@@ -200,6 +245,10 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 			if (signal?.aborted || job.status === "running" || registry.get(job.id) !== job) return;
 			consumed.add(job);
 			pendingNotices.delete(job);
+			// The model read the status through bg_tasks, so a replay would only
+			// repeat it. A quiet or auto-success job was never offered.
+			const id = deliveryId(job);
+			if (offered.delete(id)) ledger.ack(id);
 		},
 		started: (job, ctx, isCurrent) => {
 			// A job has just become live background work: bind the UI context here
@@ -228,6 +277,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		uiCtx = undefined;
 		hostWork.clear();
 		pendingNotices.clear();
+		offered.clear();
 		consumed = new WeakSet<Job>();
 		submitted = new WeakSet<Job>();
 		warned = new WeakSet<Job>();
@@ -258,6 +308,63 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 			for (const record of recordsFromBranch(ctx.sessionManager.getBranch())) registry.restore(record);
 		} catch { /* A session without readable history still starts cleanly. */ }
 	});
+
+	const offeredSummary = (value: unknown): CompletionSummary | undefined => {
+		if (!value || typeof value !== "object") return undefined;
+		const item = value as Record<string, unknown>;
+		const statuses: JobStatus[] = ["exited", "failed", "killed", "timedout", "interrupted"];
+		if (typeof item.jobId !== "string" || !item.jobId) return undefined;
+		if (typeof item.status !== "string" || !statuses.includes(item.status as JobStatus)) return undefined;
+		if (typeof item.durationMs !== "number" || !Number.isFinite(item.durationMs) || item.durationMs < 0) return undefined;
+		const exitCode = typeof item.exitCode === "number" && Number.isSafeInteger(item.exitCode) ? item.exitCode : null;
+		return { jobId: item.jobId, status: item.status as JobStatus, exitCode, durationMs: item.durationMs };
+	};
+
+	/**
+	 * Deliver completions that qualified for a wake but were never accepted by
+	 * the host — a reload between finish and flush, or a switch away before the
+	 * settled boundary fired.
+	 *
+	 * Only waking completions are offered, so every replay keeps the same
+	 * `triggerTurn: true` policy. A malformed offer is acknowledged rather than
+	 * retried forever.
+	 */
+	const replayNotices = (ctx: ExtensionContext): void => {
+		let sessionId: string;
+		try { sessionId = ctx.sessionManager.getSessionId(); } catch { return; }
+		const offers = ledger.pending(ctx, sessionId);
+		if (offers.length === 0) return;
+		const summaries: CompletionSummary[] = [];
+		const ids: string[] = [];
+		for (const offer of offers) {
+			const summary = offeredSummary(offer.details);
+			if (!summary) {
+				ledger.ack(offer.id);
+				continue;
+			}
+			summaries.push(summary);
+			ids.push(offer.id);
+		}
+		if (ids.length === 0) return;
+		try {
+			pi.sendMessage(
+				{
+					customType: BG_BASH_CUSTOM_TYPE,
+					content: formatCompletionNoticeSummaries(summaries),
+					display: false,
+					details: { deliveryIds: ids },
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+			for (const id of ids) ledger.ack(id);
+		} catch {
+			// Keep the offers; the next start/tree boundary is the retry.
+		}
+	};
+	// Registered after the restore handler above, so the job list exists before
+	// a replay message points the model at `bg_tasks result <id>`.
+	pi.on("session_start", (_event, ctx) => replayNotices(ctx));
+	pi.on("session_tree", (_event, ctx) => replayNotices(ctx));
 
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
@@ -313,14 +420,14 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	// A bare sleep is not a useful wait. Block it without terminating the turn:
 	// default successful jobs no longer wake the model, so it must be able to
 	// call bg_tasks wait or continue other work.
-	pi.on("tool_call", (event) => {
-		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
+	createPollGuard(pi, {
 		// Only background jobs make a bare sleep a poll: a foreground job ends
 		// its own tool call, so sleeping alongside it is not waiting on us.
-		const running = registry.list().filter((job) => job.status === "running" && job.mode === "background");
-		if (running.length === 0) return;
-		const command = (event.input as { command?: unknown }).command;
-		if (typeof command !== "string" || !isPureWaitCommand(command)) return;
-		return { block: true, reason: pollBlockReason(running.map((job) => job.id)) };
+		active: () => registry.list()
+			.filter((job) => job.status === "running" && job.mode === "background")
+			.map((job) => job.id),
+		reason: pollBlockReason,
+		// A default successful job does not wake the model, so the turn must
+		// stay alive for bg_tasks wait.
 	});
 }

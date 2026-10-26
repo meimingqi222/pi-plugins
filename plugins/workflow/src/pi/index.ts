@@ -29,7 +29,7 @@
 import { Type } from "typebox";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, createHostWorkReporter, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
+import { connectGoalSpend, createHostWorkReporter, createPollGuard, DeliveryLedger, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
 import { renderLiveStatus } from "../runs/live-status.ts";
@@ -38,7 +38,7 @@ import { createFooterReporter } from "./footer.ts";
 import { createWorkflowsPanel } from "./panel.ts";
 import { newWorkflowRunId } from "../runs/journal.ts";
 import { savedWorkflowRoots, resolveWorkflowSource, promoteWorkflow } from "./script-source.ts";
-import { isPureWaitCommand, pollBlockReason } from "./poll-guard.ts";
+import { pollBlockReason } from "./poll-guard.ts";
 import {
   executeWorkflow,
   renderWorkflowResult,
@@ -82,26 +82,17 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     const goalLeases = new Map<string, GoalSpendLease>();
     let sessionGeneration = 0;
     const delivery = new SettledDeliveryQueue(pi);
+    // Offers outlive the process; the queue above only decides *when* a send is
+    // safe. A result offered while its session was current is replayed when the
+    // branch is reopened, instead of being lost with the process.
+    const ledger = new DeliveryLedger(pi, {
+      offerType: "workflow-delivery-offer",
+      ackType: "workflow-delivery-ack",
+    });
     const hostWork = createHostWorkReporter(pi);
     const origins = new Map<string, { isCurrent: () => boolean; isIdle: () => boolean; notify: (message: string) => void; ctx: ExtensionContext }>();
     const executor = options.executor ?? createPiExecutor();
     const cwd = (ctx: ExtensionContext): string => options.cwd ?? ctx.cwd;
-
-    const deliver =
-      options.deliver ??
-      ((api: ExtensionAPI, record: RunRecord): void => {
-        // The result arrives as a custom message rather than a tool result,
-        // because the turn that asked for the run is long over.
-        api.sendMessage(
-          {
-            customType: "workflow-result",
-            content: `${formatRun(record)}\n\n${renderWorkflowResult(record.result!)}`,
-            display: true,
-            details: record,
-          },
-          { triggerTurn: true, deliverAs: "followUp" },
-        );
-      });
 
     pi.registerMessageRenderer<RunRecord>("workflow-result", (message, { expanded }, theme) => {
       const record = message.details;
@@ -147,19 +138,46 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
           return;
         }
         hostWork.publish({ kind: "workflow", id: record.runId, title: record.name, status: record.status, description: record.message ?? "", activity: record.progress?.currentPhase ?? "", metric: `${record.progress?.completedAgents ?? 0}/${record.progress?.totalAgents ?? 0} agents · ${record.progress?.spentTokens ?? 0} tokens` }, origin.ctx);
+        const deliveryId = `wf:${record.runId}`;
+        const content = record.result
+          ? `${formatRun(record)}\n\n${renderWorkflowResult(record.result)}`
+          : formatRun(record);
+        // A failed or completed result wakes the model; an aborted transcript
+        // entry stays passive. The replay must use the same policy.
+        const wake = record.result !== undefined || record.status === "failed";
+        const sessionId = (() => {
+          try { return origin.ctx.sessionManager.getSessionId(); } catch { return undefined; }
+        })();
+        // Offered before the send, so a reload or a branch switch has a durable
+        // record of the result even when the in-memory queue never ran.
+        if (sessionId) {
+          ledger.offer({
+            id: deliveryId,
+            runId: record.runId,
+            sessionId,
+            customType: "workflow-result",
+            content,
+            display: true,
+            wake,
+            // Only what the renderer needs after the run record is gone; the
+            // journal on disk holds the full record.
+            details: { runId: record.runId, name: record.name, status: record.status },
+          });
+        }
         const send = () => {
           if (!origin.isCurrent()) return;
           try {
-            if (record.result) {
-              deliver(pi, record);
+            if (options.deliver) {
+              options.deliver(pi, record);
             } else {
               pi.sendMessage({
                 customType: "workflow-result",
-                content: formatRun(record),
+                content,
                 display: true,
-                details: record,
-              }, record.status === "failed" ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
+                details: { ...record, deliveryId },
+              }, wake ? { triggerTurn: true, deliverAs: "followUp" } : undefined);
             }
+            ledger.ack(deliveryId);
           } catch (error) {
             const message = `Workflow ${record.runId} finished, but its result could not be delivered: ${error instanceof Error ? error.message : String(error)}`;
             try { origin.notify(message); } catch { console.error(message); }
@@ -262,7 +280,7 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
       name: "workflow_status",
       label: "Workflow status",
       description:
-        "Report progress and liveness of workflow runs: phases reached, agents running and for how long, tokens spent, " +
+        "Report progress and liveness of workflow runs: phases reached, agents queued or running and for how long, tokens spent, " +
         "time since the last progress event, and whether a per-agent timeout bounds them. Use this instead of polling with sleep.",
       promptSnippet: "Check progress and liveness of workflow runs",
       promptGuidelines: [
@@ -286,16 +304,12 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
     // command with a purpose (`sleep 5 && npm test`) is untouched, and the
     // batch early-termination rule means a poll batched with real work does not
     // stop that work.
-    pi.on("tool_call", (event) => {
-      if (event.toolName !== "bash" && event.toolName !== "powershell") return;
-      if (registry.activeCount() === 0) return;
-      const command = (event.input as { command?: unknown }).command;
-      if (typeof command !== "string" || !isPureWaitCommand(command)) return;
-      const runIds = registry
-        .list()
-        .filter((record) => record.status === "running")
-        .map((record) => record.runId);
-      return { block: true, terminate: true, reason: pollBlockReason(runIds) };
+    createPollGuard(pi, {
+      active: () => registry.list().filter((record) => record.status === "running").map((record) => record.runId),
+      reason: pollBlockReason,
+      // A workflow result always wakes the model, so ending the turn is the
+      // correct outcome of blocking its poll.
+      terminate: true,
     });
 
     pi.registerCommand("workflows", {
@@ -430,12 +444,55 @@ export function workflowExtension(options: WorkflowExtensionOptions = {}) {
       }
       goalLeases.clear();
       origins.clear();
-      registry.reset();
+      // Slots are freed synchronously inside close; the promise is the wait for
+      // work that may still be exiting. An ignored abort is reported rather
+      // than vanishing with the session.
+      void registry.close().then(({ abandoned, abandonedIds }) => {
+        if (abandoned === 0) return;
+        try {
+          console.warn(
+            `Workflow: ${abandoned} run(s) did not settle after the session ended: ${abandonedIds.join(", ")}.`,
+          );
+        } catch { /* A restricted console cannot turn a warning into a failure. */ }
+      });
+    };
+    /**
+     * Deliver results that settled for this branch but were never accepted by
+     * the host — a reload between settlement and send, or a switch away before
+     * the deferred boundary fired.
+     *
+     * The ledger filters by session and drops offers whose message is already
+     * in the transcript, so this is safe to run at every start/tree boundary.
+     * A failed send keeps its offer for the next boundary.
+     */
+    const replayDeliveries = (ctx: ExtensionContext): void => {
+      let sessionId: string;
+      try { sessionId = ctx.sessionManager.getSessionId(); } catch { return; }
+      for (const offer of ledger.pending(ctx, sessionId)) {
+        try {
+          pi.sendMessage(
+            {
+              customType: offer.customType,
+              content: offer.content,
+              display: offer.display,
+              details: { ...(offer.details ?? {}), deliveryId: offer.id },
+            },
+            offer.wake ? { triggerTurn: true, deliverAs: "followUp" } : undefined,
+          );
+          ledger.ack(offer.id);
+        } catch {
+          // Keep the offer: the next boundary is the retry.
+        }
+      }
     };
     pi.on("session_before_switch", leaveSession);
     pi.on("session_before_tree", leaveSession);
     pi.on("session_before_fork", leaveSession);
     pi.on("session_start", leaveSession);
+    // Registered after `leaveSession`, which clears in-memory state first; the
+    // ledger is durable and independent of that state.
+    pi.on("session_start", (_event, ctx) => replayDeliveries(ctx));
+    pi.on("session_tree", (_event, ctx) => replayDeliveries(ctx));
     pi.on("session_shutdown", () => {
       leaveSession();
       // Settlement after a shutdown may never arrive, so the slot is released

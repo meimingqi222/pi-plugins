@@ -40,7 +40,11 @@ cleanly reported candidate remains ready for verification. The follow-up may
 arrive before the verifier can run; its next clean settlement verifies the
 existing candidate without asking the agent to re-report or repeat the tests.
 After reporting a candidate, further tool calls in that run are blocked with
-termination requested. When Pi ends on that goal-blocked tool batch (`toolUse`),
+termination requested. That block is scoped to the run that **made** the claim:
+a turn started by a background result while a candidate is already awaiting
+verification may use tools, because it did not make the claim. Blocking it made
+the delivered result unusable and, after two further turns, paused the goal.
+When Pi ends on that goal-blocked tool batch (`toolUse`),
 the candidate stays ready and is verified after settlement; no final text
 response is expected from that run. Pi only stops a tool batch early when every
 call in it terminates, so `pi-goal` also pauses and aborts after two more turns

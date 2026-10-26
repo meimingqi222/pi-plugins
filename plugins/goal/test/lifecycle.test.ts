@@ -353,6 +353,8 @@ describe("goal safety boundaries", () => {
   env.ctx.isIdle = () => false;
   await env.tools.get("subagent").execute("late-child", { agent: "explore", task: "inspect" }, undefined, undefined, env.ctx);
   await update(env.tools.get("update_goal"), "candidate_complete", "done", env.ctx);
+  // The run that makes the claim is still forced to stop.
+  expect(await env.emit("tool_call", { toolName: "read", input: {} })).toMatchObject({ block: true, terminate: true });
   await env.emit("agent_end", { messages: [verdict()] });
   let wakeups = 0;
   let queued = false;
@@ -375,6 +377,10 @@ describe("goal safety boundaries", () => {
   expect((await state(env)).used).toBe(7);
   queued = false;
   await env.emit("agent_start");
+  // The delivered child result started this turn; the claim belongs to the
+  // previous run, so this one may use tools to act on it. Blocking it here made
+  // a delivered result unusable and could pause the goal after two turns.
+  expect(await env.emit("tool_call", { toolName: "read", input: {} })).toBeUndefined();
   await env.emit("agent_end", { messages: [verdict()] });
   await env.emit("agent_settled");
   await waitFor(env, (s) => s.status === "complete");

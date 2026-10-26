@@ -183,6 +183,63 @@ describe("RunRegistry stop", () => {
   });
 });
 
+describe("RunRegistry close", () => {
+  test("frees slots at once and reports work that settles inside the grace", async () => {
+    let settledCalls = 0;
+    const registry = new RunRegistry({ onSettled: () => { settledCalls += 1; } });
+    const gate = deferred();
+    let observed: AbortSignal | undefined;
+    registry.launch({ runId: "wf_1", name: "t" }, (signal) => {
+      observed = signal;
+      return gate.promise;
+    });
+
+    const closing = registry.close(1_000);
+    expect(observed?.aborted).toBe(true);
+    // The slot is released before the wait, so a new session can launch now.
+    expect(registry.activeCount()).toBe(0);
+    expect(registry.list()).toHaveLength(0);
+
+    gate.resolve(result({ status: "aborted", stopReason: "stopped" }));
+    await expect(closing).resolves.toEqual({ settled: 1, abandoned: 0, abandonedIds: [] });
+    // The owning session is gone; delivery and its leases were released at the
+    // same boundary, so a closing run must not fire onSettled again.
+    expect(settledCalls).toBe(0);
+    expect(registry.get("wf_1")).toBeUndefined();
+  });
+
+  test("records work that ignores abort past the grace instead of losing it", async () => {
+    const registry = new RunRegistry();
+    registry.launch({ runId: "wf_1", name: "t" }, () => new Promise(() => {}));
+
+    await expect(registry.close(5)).resolves.toMatchObject({
+      settled: 0,
+      abandoned: 1,
+      abandonedIds: ["wf_1"],
+    });
+    // A late settle after abandonment is a no-op rather than a second report.
+    expect(registry.get("wf_1")).toBeUndefined();
+  });
+
+  test("a new run may launch while the previous close is still waiting", async () => {
+    const registry = new RunRegistry();
+    registry.launch({ runId: "old", name: "t" }, () => new Promise(() => {}));
+    const closing = registry.close(5);
+
+    expect(() => registry.launch({ runId: "new", name: "t" }, () => new Promise(() => {}))).not.toThrow();
+    expect(registry.activeCount()).toBe(1);
+    await closing;
+  });
+
+  test("close is idempotent while it is waiting", async () => {
+    const registry = new RunRegistry();
+    registry.launch({ runId: "wf_1", name: "t" }, () => new Promise(() => {}));
+    const first = registry.close(5);
+    expect(registry.close(5)).toBe(first);
+    await first;
+  });
+});
+
 describe("RunRegistry history", () => {
   test("list puts active runs before settled ones", async () => {
     const registry = new RunRegistry();

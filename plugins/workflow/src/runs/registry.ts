@@ -86,10 +86,28 @@ export function maxActiveRunsCeiling(env: NodeJS.ProcessEnv = process.env): numb
 interface ActiveRun {
   record: RunRecord;
   controller: AbortController;
+  /** Resolves when the work chain has settled (including a forced close). */
+  done: Promise<void>;
+  resolveDone: () => void;
+}
+
+export interface CloseResult {
+  /** Runs that settled inside the grace window. */
+  settled: number;
+  /** Runs that ignored the abort past the grace window and were abandoned. */
+  abandoned: number;
+  abandonedIds: string[];
 }
 
 export class RunRegistry {
   private readonly active = new Map<string, ActiveRun>();
+  /**
+   * Runs that belonged to a session that was left. They are no longer listed,
+   * counted or delivered, but their work promise may still be running; the
+   * promise is what `close()` waits on and what a forced abandonment releases.
+   */
+  private readonly closing = new Map<string, ActiveRun>();
+  private closingPromise: Promise<CloseResult> | undefined;
   private readonly settled: RunRecord[] = [];
   private readonly onSettled?: (record: RunRecord) => void;
   private readonly historyLimit: number;
@@ -131,7 +149,9 @@ export class RunRegistry {
       ...(descriptor.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: descriptor.agentTimeoutMs }),
     };
     const controller = new AbortController();
-    this.active.set(descriptor.runId, { record, controller });
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    this.active.set(descriptor.runId, { record, controller, done, resolveDone });
 
     // Deliberately not awaited. The rejection path is handled here rather than
     // left to the caller, because an unhandled rejection would take the process
@@ -215,25 +235,87 @@ export class RunRegistry {
     }
   }
 
-  /** Leave the current conversation without letting abort-ignoring work hold its run slots. */
-  reset(): void {
-    this.stopAll();
-    this.active.clear();
+  /**
+   * Leave the conversation: abort every run, free the slots immediately, and
+   * wait up to `graceMs` for cooperative work to settle.
+   *
+   * Slots are freed before the wait, so a new session can launch at once;
+   * `closing` is what keeps the registry from forgetting the old work. A run
+   * that ignores its abort is recorded as abandoned instead of disappearing,
+   * which is the difference between "stopped" and "we stopped waiting".
+   * Closing runs do not fire `onSettled`: the session that owned them is gone,
+   * and the plugin releases its leases at the same boundary.
+   */
+  close(graceMs = 5_000): Promise<CloseResult> {
+    if (this.closingPromise) return this.closingPromise;
+    const entries = [...this.active.values()];
     this.settled.length = 0;
+    this.active.clear();
+    for (const entry of entries) {
+      this.closing.set(entry.record.runId, entry);
+      entry.controller.abort(new Error("Workflow run stopped because the session ended"));
+    }
+    if (entries.length === 0) return Promise.resolve({ settled: 0, abandoned: 0, abandonedIds: [] });
+
+    this.closingPromise = new Promise<CloseResult>((resolve) => {
+      let remaining = entries.length;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let finished = false;
+      const finish = (result: CloseResult): void => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        this.closingPromise = undefined;
+        resolve(result);
+      };
+      for (const entry of entries) {
+        void entry.done.then(() => {
+          remaining -= 1;
+          if (remaining === 0) finish({ settled: entries.length, abandoned: 0, abandonedIds: [] });
+        });
+      }
+      timer = setTimeout(() => {
+        const abandoned = [...this.closing.keys()];
+        for (const [runId, entry] of this.closing) {
+          entry.record.status = "aborted";
+          entry.record.message = "Workflow run did not settle after the session ended.";
+          entry.record.finishedAt = this.now();
+          entry.resolveDone();
+          this.closing.delete(runId);
+        }
+        finish({
+          settled: entries.length - abandoned.length,
+          abandoned: abandoned.length,
+          abandonedIds: abandoned,
+        });
+      }, Math.max(0, graceMs));
+      timer.unref?.();
+    });
+    return this.closingPromise;
   }
 
   private settle(record: RunRecord): void {
-    if (!this.active.delete(record.runId)) return;
-    record.finishedAt = this.now();
-    this.settled.push(record);
-    while (this.settled.length > this.historyLimit) this.settled.shift();
-    // Guarded so a throwing callback cannot skip the bookkeeping above or
-    // prevent a later run from settling.
-    try {
-      this.onSettled?.({ ...record });
-    } catch {
-      // A delivery failure is the callback's problem, not the registry's.
+    const active = this.active.get(record.runId);
+    if (active) {
+      this.active.delete(record.runId);
+      record.finishedAt = this.now();
+      this.settled.push(record);
+      while (this.settled.length > this.historyLimit) this.settled.shift();
+      // Guarded so a throwing callback cannot skip the bookkeeping above or
+      // prevent a later run from settling.
+      try {
+        this.onSettled?.({ ...record });
+      } catch {
+        // A delivery failure is the callback's problem, not the registry's.
+      }
+      active.resolveDone();
+      return;
     }
+    const closing = this.closing.get(record.runId);
+    if (!closing) return;
+    this.closing.delete(record.runId);
+    record.finishedAt = this.now();
+    closing.resolveDone();
   }
 }
 

@@ -47,6 +47,11 @@ function runningAgents(record: RunRecord): WorkflowProgressAgent[] {
 	return agentsWithStatus(record, "running");
 }
 
+/** Calls waiting for a run-local slot or the process-wide provider admission. */
+function queuedAgents(record: RunRecord): WorkflowProgressAgent[] {
+	return agentsWithStatus(record, "queued");
+}
+
 /** `a2 "review-plugins" (Connection error.)` — the id is what a resume or a stop needs. */
 function describeStoppedAgent(agent: WorkflowProgressAgent): string {
 	const reason = agent.error?.slice(0, MAX_AGENT_ERROR_CHARS);
@@ -82,10 +87,15 @@ function activeSection(record: RunRecord, now: number): string[] {
 	if (progress.currentPhase) lines.push(`    phase: ${progress.currentPhase}`);
 	const agents = progress.agents;
 	const running = runningAgents(record);
+	const queued = queuedAgents(record);
 	// A failed agent was counted in `agents.length` but in no other bucket, so
 	// `seen - running - completed` silently absorbed it and read as "not started
 	// yet". A run that had lost half its agents looked healthy.
 	const buckets = [
+		// Only shown when someone is actually waiting: with process-wide admission
+		// a full panel can be queued behind another run, and that is a different
+		// state from "working".
+		...(queued.length > 0 ? [`${queued.length} queued`] : []),
 		`${running.length} running`,
 		`${progress.completedAgents} completed`,
 		...(["failed", "aborted"] as const)
@@ -152,6 +162,7 @@ export function formatFooterStatus(records: RunRecord[], options: LiveStatusOpti
 	if (active.length === 0) return undefined;
 
 	const running = active.reduce((total, record) => total + runningAgents(record).length, 0);
+	const queued = active.reduce((total, record) => total + queuedAgents(record).length, 0);
 	const parts: string[] = [];
 	if (active.length === 1) {
 		const only = active[0]!;
@@ -162,6 +173,7 @@ export function formatFooterStatus(records: RunRecord[], options: LiveStatusOpti
 		parts.push(`wf ${active.length} runs \u00b7 ${formatElapsed(Math.max(...active.map((record) => now - record.startedAt)))}`);
 	}
 	if (running > 0) parts.push(`${running} running`);
+	if (queued > 0) parts.push(`${queued} queued`);
 	const overdue = active.reduce((total, record) => total + overdueAgents(record, now).length, 0);
 	if (overdue > 0) parts.push(`${overdue} past timeout`);
 	return parts.join(" \u00b7 ");

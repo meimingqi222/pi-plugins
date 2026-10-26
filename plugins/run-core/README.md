@@ -1,9 +1,12 @@
 # pi-run-core
 
 Background plugins share `SettledDeliveryQueue`: idle results send immediately;
-busy results wait for `agent_settled`. Callers clear the queue at session or branch
-boundaries and recheck the result's origin inside the send callback. bg-bash,
-workflow and subagent use this primitive so their wake-up timing stays consistent.
+busy results wait for `agent_settled`, each delivery is isolated so one failing
+send cannot drop the rest of the batch, and callers clear the queue at session or
+branch boundaries and recheck the result's origin inside the send callback.
+`pi-workflow` uses it today; `pi-subagent` and `pi-bg-bash` keep their own queues
+because their wake policies differ (steer at `turn_end`, quiet successes, result
+revisions) — the shared part is the boundary rule, not the policy.
 
 Shared run primitives for pi extensions that own a *run* rather than a *turn*.
 
@@ -21,6 +24,9 @@ plugin independently installable.
 
 | Export | Purpose |
 |---|---|
+| `Admission` / `processAdmission` | Process-wide provider ceiling. Every spawned child agent takes a ticket; waiters are round-robin per run and the cap lowers itself on a throttle and recovers gradually. |
+| `DeliveryLedger` | Durable offer/ack around a background result: a reload or branch switch replays an unacknowledged result once, and a message already in the transcript suppresses the replay. |
+| `createPollGuard` | The bare-sleep parser and `tool_call` gate shared by workflow and bg-bash; each plugin supplies its live ids, reason and terminate policy. |
 | `RunGuard` | Epoch × session staleness guard for async run work. Bump once on pause/clear/replace; every outstanding token dies at once. |
 | `RunBudget` | Dual-axis, fail-closed spend limit. Tokens bound cost, agent calls bound fan-out; either exhausted stops admission. |
 | `ActiveTimer` | Active-time accounting that survives pause/resume without dropping the sub-second remainder at each boundary. |
@@ -33,6 +39,16 @@ plugin independently installable.
 | `HostWork` / `formatHostWork` / `createHostWorkReporter` | RPC status text and publication independent of TUI rendering. Deduplicates, coalesces active progress, immediately publishes terminal states, and cancels timers with `clear()`. |
 
 ## Why each one is shared rather than local
+
+**`Admission`** — a per-run semaphore bounds one run, and a per-plugin lane cap
+bounds one plugin; neither bounds their sum. Four workflow runs with four agents
+each against one provider account is sixteen live children, and the provider
+answers a burst with refused calls that surface as failed agents. The ceiling is
+a provider property, so it lives in one process-wide controller. It is kept on
+`globalThis` under a symbol because a workspace can resolve two copies of this
+package, and two module-level controllers would each believe they own the
+ceiling. `PI_ADMISSION_MAX_CONCURRENCY` sets it (falling back to the older
+`PI_WORKFLOW_MAX_CONCURRENCY`); the default is four.
 
 **`RunGuard`** — a stale verdict can complete a goal the user already replaced,
 and a stale continuation can start a turn for a goal that no longer exists.
@@ -69,6 +85,19 @@ same reason.
 **`ContinuationChannel.consume()` is per attempt, not per run.** A user
 follow-up can arrive inside a run the extension started, and attributing that
 turn to the extension is what causes a user's own output to be interrupted.
+
+**`DeliveryLedger` separates durability from transport.** A custom message is
+accepted by the host, not by the model, and the process can die between the two
+events. The offer is the recovery record; the ack is the proof. The transcript
+check is what makes the crash window harmless rather than a duplicate: a custom
+message carrying `details.deliveryId` is already delivered even when the ack
+never landed.
+
+**Admission is a decision, not a counter.** A semaphore only counts; admission
+also refuses to bypass a queue, holds a cooldown after a throttle, and lowers the
+cap when the provider says it is saturated. The plugins' own caps remain: a
+workflow's `maxConcurrency` decides how much of the shared budget one run may
+occupy, and a subagent fleet cap decides how many lanes one plugin may keep.
 
 ## Install
 

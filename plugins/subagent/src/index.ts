@@ -15,7 +15,18 @@ import { Type } from "typebox";
 import { HostSubagentState, registerHostSubagent } from "./host-protocol.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, Text } from "@earendil-works/pi-tui";
-import { childModelSpec, connectTaskNavigation, openMainTaskView, connectGoalSpend, readTokenUsage, type GoalSpendLease } from "pi-run-core";
+import {
+  childModelSpec,
+  connectTaskNavigation,
+  openMainTaskView,
+  connectGoalSpend,
+  DEFAULT_ADMISSION_KEY,
+  isAdmissionThrottle,
+  processAdmission,
+  readTokenUsage,
+  type Admission,
+  type GoalSpendLease,
+} from "pi-run-core";
 import { laneResultText, SubagentResultDelivery, type ResultOrigin } from "./result-delivery.ts";
 import { formatBackground } from "./background.ts";
 import { LaneRegistry, type Lane } from "./lane.ts";
@@ -47,6 +58,8 @@ export interface SubagentExtensionOptions extends SubagentToolOptions {
   downInspect?: boolean;
   /** Notify the user when a child settles; defaults to PI_SUBAGENT_NOTIFY_DONE, toggled by `n` or `/subagents notify`. */
   notifyDone?: boolean;
+  /** Test seam: replaces the process-wide admission controller. */
+  admission?: Admission;
 }
 
 /** Raw-log tail rows shown by the panel's `l` key; same bound as the tool's log action. */
@@ -84,6 +97,58 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
     const delivery = new SubagentResultDelivery(pi);
+    const admission = options.admission ?? processAdmission();
+    // The lane cap is this plugin's own fleet bound. Admission is the provider
+    // bound shared with workflows and goals: without it four background lanes
+    // plus four workflow runs can hold a dozen live children against one
+    // account. Both are needed — one is a structural limit, the other is the
+    // provider's.
+    async function withAdmission<T>(
+      runId: string,
+      signal: AbortSignal | undefined,
+      work: () => Promise<T>,
+      /**
+       * Resolves when the work stops occupying the provider even though its
+       * promise stays open. A background RPC lane parks between turns awaiting
+       * a reply; holding a ticket for that parked time would let four answered
+       * lanes block every launch, the same reason the fleet cap does not count
+       * idle lanes.
+       */
+      releaseOn?: Promise<unknown>,
+    ): Promise<T> {
+      const ticket = await admission.acquire({
+        runId,
+        key: DEFAULT_ADMISSION_KEY,
+        ...(signal ? { signal } : {}),
+      });
+      const release = () => ticket.release();
+      // Cancellation must free the provider slot even if the child ignores its
+      // abort: holding capacity for a process that will never settle is worse
+      // than a brief overshoot while it exits.
+      const onAbort = release;
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+      if (releaseOn) void releaseOn.then(release, release);
+      try {
+        const result = await work();
+        const details = (result as { details?: { status?: string; errorMessage?: string } }).details;
+        const failure = details?.status === "failed" ? details.errorMessage ?? "" : "";
+        admission.observe(
+          DEFAULT_ADMISSION_KEY,
+          failure && isAdmissionThrottle(failure) ? "throttled" : "succeeded",
+        );
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        admission.observe(DEFAULT_ADMISSION_KEY, isAdmissionThrottle(message) ? "throttled" : "failed");
+        throw error;
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        ticket.release();
+      }
+    }
     const hostState = new HostSubagentState(pi, (lane) => registry.getLogPath(lane.sessionId, lane.id));
     const pending = new Map<string, ResultOrigin & {
       lease?: GoalSpendLease;
@@ -178,6 +243,21 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
     const liveChildren = new Map<string, RpcChild>();
     /** KeepAlive timers, keyed by lane id — idle lanes settle after `keepAliveMs`. */
     const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /**
+     * Provider tickets held by reply turns, keyed by lane id. A launch ticket
+     * is released when the lane parks; a reply starts a fresh provider turn on
+     * that parked lane, so it takes a fresh ticket and holds it until the lane
+     * parks again or settles. Without this, four parked lanes answered at once
+     * run four live turns with nobody holding anything — the hole the launch
+     * ticket was meant to close, reopened by one `reply` call.
+     */
+    const replyTickets = new Map<string, { release(): void }>();
+    const releaseReplyTicket = (id: string): void => {
+      const ticket = replyTickets.get(id);
+      if (!ticket) return;
+      replyTickets.delete(id);
+      ticket.release();
+    };
     /** How long an idle RPC lane stays alive awaiting a reply; `PI_SUBAGENT_KEEPALIVE_MS`, default 5 minutes. */
     const keepAliveMs = (() => {
       const raw = Number(process.env.PI_SUBAGENT_KEEPALIVE_MS);
@@ -194,6 +274,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       if (uiCtx) attachDownInspect(uiCtx);
       liveChildren.delete(record.id);
       clearIdleTimer(record.id);
+      releaseReplyTicket(record.id);
       const launch = pending.get(record.id);
       pending.delete(record.id);
       launch?.lease?.finish(record.result ? readTokenUsage(record.result) : 0);
@@ -216,6 +297,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       delivery.clear();
       hostState.clear();
       registry.stopAll();
+      // A lane that ignores its abort never reaches the settle callback; the
+      // ticket belongs to the process, not the session, so it cannot leak past
+      // the boundary.
+      for (const id of [...replyTickets.keys()]) releaseReplyTicket(id);
       uiCtx = undefined;
       navigation.clear();
       // The host removes overlays without disposing them, so the panel would
@@ -375,7 +460,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
             const { record } = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
               const logPath = subagentLogPath(id, sessionId);
               registry.setLogPath(id, logPath);
-              return executeSubagent(params, {
+              // Released on the first idle/turn settle: from then on the lane is
+              // parked awaiting a reply, not occupying the provider.
+              let markIdle!: () => void;
+              const idleRelease = new Promise<void>((resolve) => { markIdle = resolve; });
+              return withAdmission(id, runSignal, () => executeSubagent(params, {
                 ...childContext,
                 signal: runSignal,
                 evidencePath: logPath,
@@ -395,6 +484,11 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                   onChild: (child) => { liveChildren.set(id, child); },
                   onIdleChange: (idle) => {
                     registry.setIdle(id, idle);
+                    if (idle) {
+                      markIdle();
+                      // A reply turn that parked again is done with the provider.
+                      releaseReplyTicket(id);
+                    }
                     if (uiCtx) attachDownInspect(uiCtx);
                     if (!idle) {
                       const lane = registry.get(sessionId, id);
@@ -418,6 +512,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                   // after keepalive expiry ends the process. The lane keeps
                   // running status; `idleSince` + `result` mark it answered.
                   onTurnSettled: (turn) => {
+                    markIdle();
+                    // Settled is a parking signal too: the answer is out, so the
+                    // reply turn's ticket goes back before the lane even idles.
+                    releaseReplyTicket(id);
                     const current = registry.get(sessionId, id);
                     registry.setTurnResult(id, toSubagentToolResult(turn, resolved?.name ?? params.agent, current?.progress));
                     const record = registry.get(sessionId, id);
@@ -430,12 +528,15 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                     registry.setCommandError(id, `${info.command}: ${info.error}`.slice(0, 200));
                   },
                 },
-              }, options);
+              }, options), idleRelease);
             }, { alias: params.alias, generation: launchedIn });
             pending.set(record.id, {
               ...(lease ? { lease } : {}),
               isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
               isIdle: () => ctx.isIdle(),
+              // Ownership for the durable offer; a result must never replay into
+              // a different conversation.
+              sessionId,
             });
             // The fleet widget mounts on the first live child: session_start is
             // the usual source of `uiCtx`, and this lazy refresh covers a /reload
@@ -463,13 +564,13 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         if (!sessionId) {
           const childModel = childModelFor(ctx);
           try {
-            const result = await executeSubagent(params, {
+            const result = await withAdmission(toolCallId, signal, () => executeSubagent(params, {
               cwd: ctx.cwd,
               ...(childModel ? { model: childModel } : {}),
               ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
               ...(signal ? { signal } : {}),
               ...(onUpdate ? { onUpdate } : {}),
-            }, options);
+            }, options));
             lease?.finish(readTokenUsage(result));
             return result;
           } catch (error) {
@@ -506,7 +607,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           // lane without one, which made a hung blocking call undiagnosable.
           const logPath = subagentLogPath(id, sessionId);
           registry.setLogPath(id, logPath);
-          return executeSubagent(params, {
+          return withAdmission(id, runSignal, () => executeSubagent(params, {
             cwd: ctx.cwd,
             ...(fgModel ? { model: fgModel } : {}),
             ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
@@ -527,7 +628,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
                   ...(ctx.mode === "rpc" ? { visible: true, onUpdate, ctx } : {}),
                 });
             },
-          }, options);
+          }, options));
         }, { kind: "foreground", alias: params.alias, generation, slotHeld: true });
         const onAbort = () => registry.abort(launched.record.id);
         signal?.addEventListener("abort", onAbort, { once: true });
@@ -638,8 +739,36 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
           // Mid-turn, interrupt chooses steer (after the current tool calls)
           // over follow_up (queued until the turn ends).
           const idle = record.idleSince !== undefined;
-          if (idle && !registry.tryResume(sessionId, params.id)) {
-            return { content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Reply was not sent; retry after a busy lane settles or goes idle.` }], details: record };
+          if (idle) {
+            // The fleet-cap refusal must stay fast: a reply that queued on the
+            // provider first would be stuck behind the very busy lanes whose
+            // cap it is about to exceed.
+            if (registry.atCapacity()) {
+              return { content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Reply was not sent; retry after a busy lane settles or goes idle.` }], details: record };
+            }
+            // A reply to a parked lane starts a new provider turn, so it takes
+            // a fresh ticket — released when the lane parks again or settles.
+            let ticket: { release(): void };
+            try {
+              ticket = await admission.acquire({
+                runId: params.id,
+                key: DEFAULT_ADMISSION_KEY,
+                ...(signal ? { signal } : {}),
+              });
+            } catch {
+              return { content: [{ type: "text", text: "Reply was cancelled while waiting for provider capacity." }], details: record };
+            }
+            // The lane may have settled or been resumed while this reply queued.
+            const current = registry.get(sessionId, params.id);
+            if (!current || current.status !== "running" || current.idleSince === undefined || !liveChildren.has(params.id)) {
+              ticket.release();
+              return { content: [{ type: "text", text: `Subagent ${params.id} is no longer parked — its result will arrive on settle.` }], details: record };
+            }
+            if (!registry.tryResume(sessionId, params.id)) {
+              ticket.release();
+              return { content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Reply was not sent; retry after a busy lane settles or goes idle.` }], details: record };
+            }
+            replyTickets.set(params.id, ticket);
           }
           const command = idle
             ? ({ type: "prompt", message: prompt } as const)
@@ -647,7 +776,10 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
               ? ({ type: "steer", message: prompt } as const)
               : ({ type: "follow_up", message: prompt } as const);
           if (!child.send(command)) {
-            if (idle) registry.setIdle(params.id, true, record.idleSince);
+            if (idle) {
+              registry.setIdle(params.id, true, record.idleSince);
+              releaseReplyTicket(params.id);
+            }
             return { content: [{ type: "text", text: `Subagent ${params.id}'s control channel is already closed — its result will arrive on settle.` }], details: record };
           }
           if (idle) clearIdleTimer(params.id);
@@ -658,6 +790,9 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
         }
         if (params.action === "cancel") {
           const outcome = registry.stop(sessionId, params.id);
+          // Settle releases the reply ticket too, but a child that ignores its
+          // abort never settles; the cancel is the caller's explicit "done".
+          releaseReplyTicket(params.id);
           const text = outcome === "stopped"
             ? `Stopping ${params.id}.`
             : outcome === "foreground"

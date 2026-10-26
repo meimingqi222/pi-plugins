@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWorkflow, DEFAULT_MAX_AGENTS } from "../src/runs/orchestrator.ts";
+import { createAdmission, DEFAULT_ADMISSION_KEY } from "pi-run-core";
 import { createWorkflowRunPaths, readJsonLines, WorkflowJournal } from "../src/runs/journal.ts";
 import type { AgentExecutor } from "../src/runner/agent-runner.ts";
 import type { WorkflowAgentRunInput } from "../src/core/types.ts";
@@ -48,6 +49,93 @@ describe("workflow orchestration", () => {
     expect(result.status).toBe("completed");
     expect(result.value).toBe("echo");
     expect(result.agentCalls).toBe(1);
+  });
+
+  test("two runs share one process-wide admission ceiling", async () => {
+    const admission = createAdmission({ ceiling: 2 });
+    let live = 0;
+    let peak = 0;
+    const executor: AgentExecutor = async () => {
+      live += 1;
+      peak = Math.max(peak, live);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      live -= 1;
+      return { status: "completed", value: "ok", usage: { input: 1, output: 1 } } as never;
+    };
+    const script = "await parallel([async () => agent('a',{}), async () => agent('b',{}), async () => agent('c',{})]); return 1;";
+    const run = (name: string, onProgress?: (progress: any) => void) => runWorkflow({
+      script,
+      args: null,
+      name,
+      cwd: process.cwd(),
+      executor,
+      admission,
+      maxConcurrency: 3,
+      timeoutMs: TIMEOUT_MS,
+      ...(onProgress ? { onProgress } : {}),
+    });
+
+    let sawQueued = false;
+    const [first, second] = await Promise.all([
+      run("one", (progress) => { if (progress.agents.some((agent: any) => agent.status === "queued")) sawQueued = true; }),
+      run("two"),
+    ]);
+
+    expect(first.status).toBe("completed");
+    expect(second.status).toBe("completed");
+    // Six agents requested, one ceiling of two: the run-local caps would have
+    // allowed all six if the ceiling were per run.
+    expect(peak).toBe(2);
+    expect(sawQueued).toBe(true);
+  });
+
+  test("time queued behind another run's ticket does not count against the run timeout", async () => {
+    const admission = createAdmission({ ceiling: 1 });
+    // Hold the only provider ticket well past the run's own timeout. Without
+    // queue-time exclusion the parked run aborts at 300ms never having run;
+    // with it the deadline moves out by the wait and the run finishes.
+    const blocker = await admission.acquire({ runId: "blocker", key: DEFAULT_ADMISSION_KEY });
+    const { executor } = recorder(() => ({ value: "done" }));
+    const running = runWorkflow({
+      script: "return await agent('hi', {});",
+      args: null,
+      name: "t",
+      cwd: process.cwd(),
+      executor,
+      admission,
+      timeoutMs: 300,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    blocker.release();
+    const result = await running;
+    expect(result.status).toBe("completed");
+    expect(result.value).toBe("done");
+  });
+
+  test("post-queue work time still counts against the moved deadline", async () => {
+    // The exclusion is the wait, not a blank cheque: the deadline moves to
+    // `timeoutMs + queuedMs`, and work after the queue is billed against it.
+    const admission = createAdmission({ ceiling: 1 });
+    const blocker = await admission.acquire({ runId: "blocker", key: DEFAULT_ADMISSION_KEY });
+    const { executor } = recorder(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return { value: "done" };
+    });
+    const running = runWorkflow({
+      script: "return await agent('hi', {});",
+      args: null,
+      name: "t",
+      cwd: process.cwd(),
+      executor,
+      admission,
+      timeoutMs: 500,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    blocker.release();
+    const result = await running;
+    // Finished at ~650ms: past the raw 500ms cap, inside the moved ~750ms one.
+    expect(result.status).toBe("completed");
+    expect(result.value).toBe("done");
   });
 
   test("a script that throws is a script failure, not a harness crash", async () => {

@@ -66,6 +66,15 @@ export interface ScriptHostOptions {
   /** Wall-clock cap for the whole script. The worker is terminated when it expires. */
   timeoutMs?: number;
   /**
+   * Live-read accumulator of wall time that does not count against `timeoutMs`.
+   *
+   * The orchestrator adds admission queue waits here while the run is parked
+   * behind other runs' provider tickets; the timer re-arms instead of firing
+   * while excluded time pushes the deadline out. Read at fire time because the
+   * total keeps growing after the timer is first armed.
+   */
+  excludedTime?: { readonly totalMs: number };
+  /**
    * How long agent calls the script left running may delay settlement, so a
    * child that is mid-write can finish instead of being cut off. Their results
    * are unreachable (the worker is gone), so this is a grace period, not a wait
@@ -209,7 +218,20 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
   if (controller.signal.aborted) {
     onAbort();
   } else {
-    timer = setTimeout(() => controller.abort(new Error(`Workflow script timed out after ${timeoutMs}ms`)), timeoutMs);
+    const hostStartedAt = Date.now();
+    const onTimeout = (): void => {
+      // Excluded time (admission queue waits) moves the deadline out while it
+      // accumulates, so a run parked behind other runs is not billed for the
+      // wait. Re-armed rather than armed once because the accumulator keeps
+      // growing after the first fire.
+      const remaining = hostStartedAt + timeoutMs + (options.excludedTime?.totalMs ?? 0) - Date.now();
+      if (remaining > 0) {
+        timer = setTimeout(onTimeout, remaining);
+        return;
+      }
+      controller.abort(new Error(`Workflow script timed out after ${timeoutMs}ms`));
+    };
+    timer = setTimeout(onTimeout, timeoutMs);
   }
 
   worker.on("exit", () => {

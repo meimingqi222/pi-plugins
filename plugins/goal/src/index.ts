@@ -46,6 +46,17 @@ interface WorkRun {
   postCandidateTurns: number;
   /** Goal blocked a tool call after the candidate and requested batch termination. */
   candidateToolBlocked: boolean;
+  /**
+   * Whether this run is subject to the post-candidate tool block.
+   *
+   * A run that *makes* the claim must end so the verifier can judge it. A turn
+   * that merely arrives while a claim is already awaiting verification — a
+   * background result delivered at the settled boundary, for example — did not
+   * make that claim and must be allowed to use tools: blocking it turned a
+   * delivered result into a run that could not act on it and, after two turns,
+   * paused the goal. Set true when this run reports a candidate.
+   */
+  candidateGuard: boolean;
   stopReason?: string;
 }
 
@@ -514,6 +525,10 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     // Consumed per attempt, so a user follow-up inside a continuation-started
     // run is not itself mistaken for goal-driven work.
     const continuationDriven = continuation.consume();
+    // Captured before the status transitions below: a claim already pending at
+    // the start of this turn belongs to an earlier run, so this turn may work.
+    const candidateAwaiting = goal?.candidateState?.phase === "ready" ||
+      goal?.candidateState?.phase === "verifying";
     if (scheduled !== undefined) clearTimeout(scheduled);
     scheduled = undefined;
     endedRun = undefined;
@@ -563,7 +578,18 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
     timer.start();
     goal.workRuns++;
     goal.attemptRuns = (goal.attemptRuns ?? 0) + 1;
-    work = { goalId: goal.id, session: guard.sessionId, index: goal.workRuns, seen: new Set(), objects: new WeakSet(), continuationDriven, contextSeen: false, postCandidateTurns: 0, candidateToolBlocked: false };
+    work = {
+      goalId: goal.id,
+      session: guard.sessionId,
+      index: goal.workRuns,
+      seen: new Set(),
+      objects: new WeakSet(),
+      continuationDriven,
+      contextSeen: false,
+      postCandidateTurns: 0,
+      candidateToolBlocked: false,
+      candidateGuard: !candidateAwaiting,
+    };
     // Refresh before the checkpoint so the run starts from the checklist's
     // current first unchecked item and that step is persisted with it.
     await refreshPlan(goal.id);
@@ -572,6 +598,10 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
   pi.on("message_end", (event, ctx) => account(event.message, work, ctx));
   function candidateAwaitsSettlement(): boolean {
     if (!goal || goal.status !== "active" || !work || work.goalId !== goal.id) return false;
+    // Only the run that makes the claim is forced to stop. A turn that started
+    // while an earlier claim was already pending is ordinary work on the
+    // verifier's evidence and must keep its tools.
+    if (!work.candidateGuard) return false;
     const state = goal.candidateState;
     return state?.phase === "ready" || (state?.phase === "reported" && state.reportedRun === work.index);
   }
@@ -791,6 +821,9 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
         goal.candidateGeneration = (goal.candidateGeneration ?? 0) + 1;
         goal.candidateState = { generation: goal.candidateGeneration, phase: "reported", reportedRun: work.index };
         work.postCandidateTurns = 0;
+        // Whatever this run was allowed at start, it has now made the claim, so
+        // the run is the one that must end for verification.
+        work.candidateGuard = true;
       }
       if (params.kind === "blocked") {
         const key = params.blockerKey?.trim() || params.message.trim();

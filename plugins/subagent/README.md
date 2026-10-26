@@ -146,12 +146,26 @@ integer, overrides it). The cap counts *busy* lanes of both kinds — pi runs a
 tool batch in parallel, so foreground calls share it too: a blocking call past
 the cap waits for a slot instead of being refused, and an idle lane parked
 awaiting a `reply` holds none. A background launch at the cap is still
-refused. Handles and results remain
+refused. This is the plugin's own fleet bound; a spawned child also takes a
+ticket from the process-wide provider admission (`PI_ADMISSION_MAX_CONCURRENCY`,
+default 4) shared with `pi-workflow`, so four lanes plus four workflow runs can
+never put sixteen children on one account. A lane parked idle releases its
+ticket; a `reply` that starts a new turn takes a fresh ticket and holds it
+until the turn settles or the lane parks again, released early on cancel. The
+fleet-cap refusal stays fast — it is checked before the reply queues on the
+provider. Handles and results remain
 in memory for the current session; the most recent 20 settled tasks are kept.
 Switching sessions, navigating the history tree, forking, or shutting down
-cancels active tasks and suppresses their late results. Completed tasks wake
-the parent agent; failures and cancellations appear in the transcript without
-starting another turn.
+cancels active tasks; a task killed by that boundary produces no new offer, so
+its late result is still suppressed.
+
+An answer that *did* settle is offered to a durable ledger before it is sent and
+acknowledged after the host accepts it. If the process exits or the branch is
+left before delivery, reopening the branch replays it once; when a lane answered
+several times, only its newest unread revision is replayed and the older offers
+are discarded. A result the model already read through `show`/`wait`/`log` is
+acknowledged and never replayed. Completed tasks wake the parent agent; failures
+and cancellations appear in the transcript without starting another turn.
 
 `show` reports the current phase and time since the last child event; after 90
 seconds without an event it marks the task as a possible stall. This is a

@@ -19,7 +19,15 @@
  * run can be tested without spawning a process or paying for a model.
  */
 
-import { RunBudget, RunBudgetExceeded, type RunBudgetLimits } from "pi-run-core";
+import {
+  DEFAULT_ADMISSION_KEY,
+  isAdmissionThrottle,
+  processAdmission,
+  RunBudget,
+  RunBudgetExceeded,
+  type Admission,
+  type RunBudgetLimits,
+} from "pi-run-core";
 import { join } from "node:path";
 import { workflowHash } from "../core/hash.ts";
 import { emptyWorkflowUsage, mergeWorkflowUsage, workflowUsageTokens, type WorkflowProgress, type WorkflowProgressAgent, type WorkflowRunResult, type WorkflowUsage } from "../core/types.ts";
@@ -39,8 +47,16 @@ export interface WorkflowRunOptions {
   /** Resume source, when re-running with a previous journal. */
   journal?: WorkflowJournal;
   budget?: RunBudgetLimits;
-  /** Live child agents. Bounds a `parallel()` panel. */
+  /** Live child agents *for this run*. The process-wide cap is `admission`. */
   maxConcurrency?: number;
+  /**
+   * Process-wide provider admission. Defaults to `processAdmission()`.
+   *
+   * A run-level semaphore alone is what allowed four runs to hold sixteen live
+   * children against one provider account; the local cap now only decides how
+   * much of the shared budget this run may occupy.
+   */
+  admission?: Admission;
   /** Wall-clock cap for the whole script, in milliseconds. */
   timeoutMs?: number;
   /** Wall-clock cap for each agent call, in milliseconds. */
@@ -195,6 +211,24 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
   // widen the panel past what the provider tolerates.
   const semaphore = new Semaphore(resolveMaxConcurrency(options.maxConcurrency));
   const writerLock = new Mutex();
+  const admission = options.admission ?? processAdmission();
+  /**
+   * Wall time this run's agents spent waiting for a provider ticket, as the
+   * union of the queued intervals: two agents parked together for one second
+   * cost the provider one second of capacity, not two, so the run is billed
+   * one. The script host's timeout reads it live — a run queued behind other
+   * runs must not reach its own deadline without having run. The interval
+   * still open must count too: a parked agent has not drained yet, so a closed
+   * total alone would let the timer fire mid-wait.
+   */
+  let queueClosedMs = 0;
+  let queueDepth = 0;
+  let queueOpenedAt = 0;
+  const admissionQueueTime = {
+    get totalMs(): number {
+      return queueClosedMs + (queueDepth > 0 ? now() - queueOpenedAt : 0);
+    },
+  };
 
   const agents: WorkflowProgressAgent[] = [];
   let usage: WorkflowUsage = emptyWorkflowUsage();
@@ -294,7 +328,10 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         label: agentOptions.label?.slice(0, 120) || `agent-${index}`,
         task: prompt.slice(0, 200),
         ...(agentOptions.phase ?? currentPhase ? { phase: agentOptions.phase ?? currentPhase } : {}),
-        status: "running",
+        // A call is queued until both the run's local slot and the process-wide
+        // provider admission grant it. Reporting it as running before that hid
+        // the difference between "working" and "waiting for capacity".
+        status: "queued",
         startedAt: now(),
       };
       agents.push(record);
@@ -354,9 +391,31 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         });
       const withSlot = async () => {
         await semaphore.acquire();
+        let ticket: Awaited<ReturnType<Admission["acquire"]>> | undefined;
+        if (queueDepth === 0) queueOpenedAt = now();
+        queueDepth += 1;
         try {
+          // The run-local slot bounds this run; admission bounds the process.
+          // Acquiring both is what turns four runs × four agents from sixteen
+          // live children into at most the provider ceiling.
+          ticket = await admission.acquire({
+            // The workflow run is the admission group, so the scheduler's
+            // round-robin alternates between *runs*. Using the agent id would
+            // give every call its own group and degrade the scheduler to a
+            // global FIFO, which is what lets one wide panel starve a second
+            // run. Within a run the group's queue is FIFO by call order.
+            runId,
+            key: DEFAULT_ADMISSION_KEY,
+            ...(options.signal ? { signal: options.signal } : {}),
+          });
+          record.status = "running";
+          record.startedAt = now();
+          emit();
           return await invoke();
         } finally {
+          queueDepth -= 1;
+          if (queueDepth === 0) queueClosedMs += now() - queueOpenedAt;
+          ticket?.release();
           semaphore.release();
         }
       };
@@ -368,6 +427,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         // while doing nothing, and enough queued writers would starve every
         // read-only agent behind them.
         const outcome = isWritingRole(agentOptions.toolProfile) ? await writerLock.run(withSlot) : await withSlot();
+        admission.observe(DEFAULT_ADMISSION_KEY, "succeeded");
         usage = mergeWorkflowUsage(usage, outcome.usage);
         budget.record(workflowUsageTokens(outcome.usage));
         record.status = "completed";
@@ -395,6 +455,13 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         record.status = "failed";
         record.finishedAt = now();
         const message = error instanceof Error ? error.message : String(error);
+        // A provider that refused the call is telling us the ceiling is too high,
+        // not that this agent is bad. Lower the shared cap for everyone rather
+        // than letting each run discover the same limit separately.
+        admission.observe(
+          DEFAULT_ADMISSION_KEY,
+          isAdmissionThrottle(message) ? "throttled" : "failed",
+        );
         // Carry the reason on the record before it is emitted: the snapshot is
         // what a live reader sees, and `message` is only the last event, so a
         // later emit would erase it.
@@ -440,6 +507,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
       name: options.name,
       callbacks,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      excludedTime: admissionQueueTime,
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch (error) {
