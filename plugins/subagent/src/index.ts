@@ -2,8 +2,8 @@
  * `pi-subagent`: delegate one task to an isolated pi process.
  *
  * The plugin registers a single `subagent` tool. It is deliberately small: the
- * value is isolated single-task work. The caller chooses whether the answer
- * returns in this tool call or arrives as a background completion message.
+ * value is isolated single-task work. Launch returns a handle immediately;
+ * the answer arrives as a background completion message.
  *
  * The child process is run by `pi-agent-runner`, which sets
  * `PI_SUBAGENT_DISABLE=1` in the child's environment — the same one-level rule
@@ -428,236 +428,137 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       promptGuidelines: SUBAGENT_GUIDELINES,
       parameters: SubagentParams,
       async execute(toolCallId, params, signal, onUpdate, ctx) {
-        if (params.background !== false) {
-          if (signal?.aborted) {
-            return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
-          }
-          const cwd = options.cwd ?? ctx.cwd;
-          const agents = (options.discover ?? (() => discoverAgents()))(cwd);
-          if (!resolveAgent(agents, params.agent)) {
-            return {
-              content: [{ type: "text", text: `Unknown agent "${params.agent}". Available agents: ${formatAgentNames(agents)}.` }],
-              details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
-            };
-          }
-          if (registry.atCapacity()) {
-            return {
-              content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Check or cancel one with subagent_tasks.` }],
-              details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
-            };
-          }
-          const sessionId = ctx.sessionManager.getSessionId();
-          const launchedIn = generation;
-          const lease = goalSpend()?.begin(ctx, toolCallId);
-          const childModel = childModelFor(ctx);
-          const childContext = {
-            cwd: ctx.cwd,
-            ...(childModel ? { model: childModel } : {}),
-            ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
-          };
-          try {
-            const resolved = resolveAgent(agents, params.agent);
-            const { record } = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
-              const logPath = subagentLogPath(id, sessionId);
-              registry.setLogPath(id, logPath);
-              // Released on the first idle/turn settle: from then on the lane is
-              // parked awaiting a reply, not occupying the provider.
-              let markIdle!: () => void;
-              const idleRelease = new Promise<void>((resolve) => { markIdle = resolve; });
-              return withAdmission(id, runSignal, () => executeSubagent(params, {
-                ...childContext,
-                signal: runSignal,
-                evidencePath: logPath,
-                evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
-                onEvent: (event) => {
-                  if (generation === launchedIn) hostState.observe(id, event);
-                },
-                onProgress: (progress) => {
-                  registry.setProgress(id, progress);
-                  const lane = registry.get(sessionId, id);
-                  if (lane && generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId)
-                    hostState.progress(lane, { visible: ctx.mode === "rpc", ctx });
-                },
-                // Background lanes ride the live-RPC transport: the child
-                // survives its turn so `reply` can queue or interrupt.
-                rpc: {
-                  onChild: (child) => { liveChildren.set(id, child); },
-                  onIdleChange: (idle) => {
-                    registry.setIdle(id, idle);
-                    if (idle) {
-                      markIdle();
-                      // A reply turn that parked again is done with the provider.
-                      releaseReplyTicket(id);
-                    }
-                    if (uiCtx) attachDownInspect(uiCtx);
-                    if (!idle) {
-                      const lane = registry.get(sessionId, id);
-                      if (lane && generation === launchedIn) hostState.publish(lane);
-                    }
-                    clearIdleTimer(id);
-                    if (idle) {
-                      const idleSince = registry.get(sessionId, id)?.idleSince;
-                      const timer = setTimeout(() => {
-                        if (idleTimers.get(id) !== timer) return;
-                        idleTimers.delete(id);
-                        const current = registry.get(sessionId, id);
-                        if (generation !== launchedIn || current?.status !== "running" || current.idleSince === undefined || current.idleSince !== idleSince) return;
-                        liveChildren.get(id)?.end({ onlyIfIdle: true });
-                      }, keepAliveMs);
-                      timer.unref?.();
-                      idleTimers.set(id, timer);
-                    }
-                  },
-                  // A settled turn IS the answer — deliver it now rather than
-                  // after keepalive expiry ends the process. The lane keeps
-                  // running status; `idleSince` + `result` mark it answered.
-                  onTurnSettled: (turn) => {
-                    markIdle();
-                    // Settled is a parking signal too: the answer is out, so the
-                    // reply turn's ticket goes back before the lane even idles.
-                    releaseReplyTicket(id);
-                    const current = registry.get(sessionId, id);
-                    registry.setTurnResult(id, toSubagentToolResult(turn, resolved?.name ?? params.agent, current?.progress));
-                    const record = registry.get(sessionId, id);
-                    const launch = pending.get(id);
-                    if (!record || !launch?.isCurrent()) return;
-                    hostState.publish(record);
-                    delivery.offer(record, launch);
-                  },
-                  onCommandError: (info) => {
-                    registry.setCommandError(id, `${info.command}: ${info.error}`.slice(0, 200));
-                  },
-                },
-              }, options), idleRelease);
-            }, { alias: params.alias, generation: launchedIn });
-            pending.set(record.id, {
-              ...(lease ? { lease } : {}),
-              isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
-              isIdle: () => ctx.isIdle(),
-              // Ownership for the durable offer; a result must never replay into
-              // a different conversation.
-              sessionId,
-            });
-            // The fleet widget mounts on the first live child: session_start is
-            // the usual source of `uiCtx`, and this lazy refresh covers a /reload
-            // that swapped the extension in mid-session.
-            if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
-            reporter.sync();
-            attachDownInspect(ctx);
-            // The child starts on a later microtask; expose its file before returning the handle.
-            const rawLog = subagentLogPath(record.id, sessionId);
-            registry.setLogPath(record.id, rawLog);
-            const outputFile = ctx.mode === "rpc" ? hostState.liveFile(record) : undefined;
-            return {
-              content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check, wait, reply to, or cancel it.${outputFile ? `\nOutput file: ${outputFile}\n[Pi transcript: ${basename(rawLog)}]` : ""}` }],
-              details: { agent: record.agent, status: "running" as const, taskId: record.id, usage: emptySubagentUsage(), output: "" },
-            };
-          } catch (error) {
-            lease?.finish(0);
-            throw error;
-          }
-        }
-        // Foreground calls share the fleet and its cap. A session-less host takes
-        // the direct path because there is no session to own the lane.
-        const lease = goalSpend()?.begin(ctx, toolCallId);
-        const sessionId = ctx.sessionManager?.getSessionId?.();
-        if (!sessionId) {
-          const childModel = childModelFor(ctx);
-          try {
-            const result = await withAdmission(toolCallId, signal, () => executeSubagent(params, {
-              cwd: ctx.cwd,
-              ...(childModel ? { model: childModel } : {}),
-              ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
-              ...(signal ? { signal } : {}),
-              ...(onUpdate ? { onUpdate } : {}),
-            }, options));
-            lease?.finish(readTokenUsage(result));
-            return result;
-          } catch (error) {
-            lease?.finish(0);
-            throw error;
-          }
-        }
-        const fgGeneration = generation;
-        // Foreground calls share the fleet's concurrency cap: pi runs a tool
-        // batch in parallel, so N blocking calls would otherwise spawn N
-        // children at once. Unlike a background launch, a blocking call waits
-        // for a slot instead of being refused — it is the session's own turn.
-        if (registry.atCapacity()) {
-          try {
-            onUpdate?.({
-              content: [{ type: "text", text: `waiting for a subagent slot (${registry.busyCount()} busy)` }],
-              details: { agent: params.agent, status: "running" as const, usage: emptySubagentUsage(), output: "" },
-            });
-          } catch { /* A progress update cannot fail the call. */ }
-        }
-        const slotGranted = await registry.acquireSlot(signal);
-        if (!slotGranted || signal?.aborted || generation !== fgGeneration || ctx.sessionManager.getSessionId() !== sessionId) {
-          // Granted but already interrupted: hand the slot to the next waiter.
-          if (slotGranted) registry.releaseSlot();
-          lease?.finish(0);
+        if (signal?.aborted) {
           return { content: [{ type: "text", text: "Subagent launch was cancelled." }], details: { agent: params.agent, status: "aborted" as const, usage: emptySubagentUsage(), output: "" } };
         }
-        const fgAgents = (options.discover ?? (() => discoverAgents()))(options.cwd ?? ctx.cwd);
-        const fgResolved = resolveAgent(fgAgents, params.agent);
-        const fgModel = childModelFor(ctx);
-        const launched = registry.launch(fgResolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
-          // A foreground call is the lane that blocks this session, so it is the one
-          // that most needs an evidence file when it wedges — and it was the only
-          // lane without one, which made a hung blocking call undiagnosable.
-          const logPath = subagentLogPath(id, sessionId);
-          registry.setLogPath(id, logPath);
-          return withAdmission(id, runSignal, () => executeSubagent(params, {
-            cwd: ctx.cwd,
-            ...(fgModel ? { model: fgModel } : {}),
-            ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
-            signal: runSignal,
-            evidencePath: logPath,
-            evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
-            onEvent: (event) => {
-              if (generation === fgGeneration) hostState.observe(id, event);
-            },
-            ...(onUpdate && ctx.mode !== "rpc" ? { onUpdate } : {}),
-            onProgress: (progress) => {
-              registry.setProgress(id, progress);
-              const lane = registry.get(sessionId, id);
-              if (lane && generation === fgGeneration && ctx.sessionManager.getSessionId() === sessionId)
-                hostState.progress(lane, {
-                  hostId: toolCallId,
-                  // RPC partial results stream even while pi defers passive custom messages.
-                  ...(ctx.mode === "rpc" ? { visible: true, onUpdate, ctx } : {}),
-                });
-            },
-          }, options));
-        }, { kind: "foreground", alias: params.alias, generation, slotHeld: true });
-        const onAbort = () => registry.abort(launched.record.id);
-        signal?.addEventListener("abort", onAbort, { once: true });
-        if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
-        reporter.sync();
-        attachDownInspect(ctx);
+        const cwd = options.cwd ?? ctx.cwd;
+        const agents = (options.discover ?? (() => discoverAgents()))(cwd);
+        if (!resolveAgent(agents, params.agent)) {
+          return {
+            content: [{ type: "text", text: `Unknown agent "${params.agent}". Available agents: ${formatAgentNames(agents)}.` }],
+            details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
+          };
+        }
+        if (registry.atCapacity()) {
+          return {
+            content: [{ type: "text", text: `At most ${registry.activeLimit} subagents may run at once. Check or cancel one with subagent_tasks.` }],
+            details: { agent: params.agent, status: "failed" as const, usage: emptySubagentUsage(), output: "" },
+          };
+        }
+        const sessionId = ctx.sessionManager.getSessionId();
+        const launchedIn = generation;
+        const lease = goalSpend()?.begin(ctx, toolCallId);
+        const childModel = childModelFor(ctx);
+        const childContext = {
+          cwd: ctx.cwd,
+          ...(childModel ? { model: childModel } : {}),
+          ...(ctx.thinkingLevel ? { effort: ctx.thinkingLevel } : {}),
+        };
         try {
-          await launched.done;
-          const settled = registry.get(sessionId, launched.record.id);
-          if (settled && generation === fgGeneration && ctx.sessionManager.getSessionId() === sessionId) {
-            hostState.publish(settled, toolCallId);
-          }
-          const result = settled?.result ?? toSubagentToolResult({
-            status: "failed",
-            errorMessage: settled?.errorMessage ?? "Subagent call failed.",
-            usage: emptySubagentUsage(),
-          }, fgResolved?.name ?? params.agent);
-          lease?.finish(readTokenUsage(result));
-          return result;
+          const resolved = resolveAgent(agents, params.agent);
+          const { record } = registry.launch(resolved?.name ?? params.agent, params.task, sessionId, (runSignal, id) => {
+            const logPath = subagentLogPath(id, sessionId);
+            registry.setLogPath(id, logPath);
+            // Released on the first idle/turn settle: from then on the lane is
+            // parked awaiting a reply, not occupying the provider.
+            let markIdle!: () => void;
+            const idleRelease = new Promise<void>((resolve) => { markIdle = resolve; });
+            return withAdmission(id, runSignal, () => executeSubagent(params, {
+              ...childContext,
+              signal: runSignal,
+              evidencePath: logPath,
+              evidenceMaxBytes: SUBAGENT_LOG_MAX_BYTES,
+              onEvent: (event) => {
+                if (generation === launchedIn) hostState.observe(id, event);
+              },
+              onProgress: (progress) => {
+                registry.setProgress(id, progress);
+                const lane = registry.get(sessionId, id);
+                if (lane && generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId)
+                  hostState.progress(lane, { visible: ctx.mode === "rpc", ctx });
+              },
+              // Background lanes ride the live-RPC transport: the child
+              // survives its turn so `reply` can queue or interrupt.
+              rpc: {
+                onChild: (child) => { liveChildren.set(id, child); },
+                onIdleChange: (idle) => {
+                  registry.setIdle(id, idle);
+                  if (idle) {
+                    markIdle();
+                    // A reply turn that parked again is done with the provider.
+                    releaseReplyTicket(id);
+                  }
+                  if (uiCtx) attachDownInspect(uiCtx);
+                  if (!idle) {
+                    const lane = registry.get(sessionId, id);
+                    if (lane && generation === launchedIn) hostState.publish(lane);
+                  }
+                  clearIdleTimer(id);
+                  if (idle) {
+                    const idleSince = registry.get(sessionId, id)?.idleSince;
+                    const timer = setTimeout(() => {
+                      if (idleTimers.get(id) !== timer) return;
+                      idleTimers.delete(id);
+                      const current = registry.get(sessionId, id);
+                      if (generation !== launchedIn || current?.status !== "running" || current.idleSince === undefined || current.idleSince !== idleSince) return;
+                      liveChildren.get(id)?.end({ onlyIfIdle: true });
+                    }, keepAliveMs);
+                    timer.unref?.();
+                    idleTimers.set(id, timer);
+                  }
+                },
+                // A settled turn IS the answer — deliver it now rather than
+                // after keepalive expiry ends the process. The lane keeps
+                // running status; `idleSince` + `result` mark it answered.
+                onTurnSettled: (turn) => {
+                  markIdle();
+                  // Settled is a parking signal too: the answer is out, so the
+                  // reply turn's ticket goes back before the lane even idles.
+                  releaseReplyTicket(id);
+                  const current = registry.get(sessionId, id);
+                  registry.setTurnResult(id, toSubagentToolResult(turn, resolved?.name ?? params.agent, current?.progress));
+                  const record = registry.get(sessionId, id);
+                  const launch = pending.get(id);
+                  if (!record || !launch?.isCurrent()) return;
+                  hostState.publish(record);
+                  delivery.offer(record, launch);
+                },
+                onCommandError: (info) => {
+                  registry.setCommandError(id, `${info.command}: ${info.error}`.slice(0, 200));
+                },
+              },
+            }, options), idleRelease);
+          }, { alias: params.alias, generation: launchedIn });
+          pending.set(record.id, {
+            ...(lease ? { lease } : {}),
+            isCurrent: () => generation === launchedIn && ctx.sessionManager.getSessionId() === sessionId,
+            isIdle: () => ctx.isIdle(),
+            // Ownership for the durable offer; a result must never replay into
+            // a different conversation.
+            sessionId,
+          });
+          // The fleet widget mounts on the first live child: session_start is
+          // the usual source of `uiCtx`, and this lazy refresh covers a /reload
+          // that swapped the extension in mid-session.
+          if (ctx.mode === "tui" && ctx.hasUI) uiCtx = ctx;
+          reporter.sync();
+          attachDownInspect(ctx);
+          // The child starts on a later microtask; expose its file before returning the handle.
+          const rawLog = subagentLogPath(record.id, sessionId);
+          registry.setLogPath(record.id, rawLog);
+          const outputFile = ctx.mode === "rpc" ? hostState.liveFile(record) : undefined;
+          return {
+            content: [{ type: "text", text: `Subagent ${record.id} (${record.agent}) started in the background. Continue independent work; its answer will arrive when it finishes. Use subagent_tasks to check, wait, reply to, or cancel it.${outputFile ? `\nOutput file: ${outputFile}\n[Pi transcript: ${basename(rawLog)}]` : ""}` }],
+            details: { agent: record.agent, status: "running" as const, taskId: record.id, usage: emptySubagentUsage(), output: "" },
+          };
         } catch (error) {
           lease?.finish(0);
           throw error;
-        } finally {
-          signal?.removeEventListener("abort", onAbort);
         }
       },
       renderCall(args, theme) {
         const task = preview(args.task, 100);
-        const title = `${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", preview(args.agent, 40))}${args.background ? theme.fg("muted", " · background") : ""}`;
+        const title = `${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", preview(args.agent, 40))}`;
         return new Text(`${title}\n  ${theme.fg("dim", task)}`, 0, 0);
       },
       renderResult(result, { expanded, isPartial }, theme) {
@@ -688,7 +589,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       promptSnippet: "Inspect a background subagent's status, recent events, or diagnostic log; cancel by task ID",
       parameters: Type.Object({
         action: Type.Union([Type.Literal("list"), Type.Literal("show"), Type.Literal("events"), Type.Literal("log"), Type.Literal("cancel"), Type.Literal("wait"), Type.Literal("reply")]),
-        id: Type.Optional(Type.String({ description: "Task ID returned by subagent(background=true); required for show, events, log, cancel, wait, or reply." })),
+        id: Type.Optional(Type.String({ description: "Task ID returned by subagent; required for show, events, log, cancel, wait, or reply." })),
         timeout: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_TIMEOUT_MAX_SECONDS, description: `Seconds to wait for the task to settle (0–${WAIT_TIMEOUT_MAX_SECONDS}, default ${WAIT_TIMEOUT_DEFAULT_SECONDS}).` })),
         prompt: Type.Optional(Type.String({ description: "Follow-up message for a live lane; required for reply." })),
         interrupt: Type.Optional(Type.Boolean({ description: "Reply semantics for a lane mid-turn: true steers (injects after the current tool calls), false queues a follow_up after the turn. Ignored for an idle lane, which always starts a new turn." })),

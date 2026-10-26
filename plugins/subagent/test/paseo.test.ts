@@ -16,14 +16,17 @@ const usage = {
   totalTokens: 0,
 };
 
-test.each(["foreground", "background", "default"] as const)(
+test.each(["legacy-false", "background", "default"] as const)(
   "%s RPC launch reports readable progress before the child finishes",
   async (kind) => {
     const logDir = mkdtempSync(join(tmpdir(), "pi-paseo-launch-"));
     const oldLogDir = process.env.PI_SUBAGENT_LOG_DIR;
+    const oldClient = process.env.PI_RPC_CLIENT;
+    process.env.PI_RPC_CLIENT = "paseo";
     process.env.PI_SUBAGENT_LOG_DIR = logDir;
     const tools: Array<{ execute: (...args: unknown[]) => Promise<unknown> }> = [];
-    const messages: Array<{ content: string; display: boolean; details: { id: string; status: string } }> = [];
+    const messages: Array<{ content: string; display: boolean; details: { id: string; status: string; outputFile?: string } }> = [];
+    const notices: string[] = [];
     const listeners = new Map<string, () => void>();
     let finish!: (result: AgentRunResult) => void;
     let started!: () => void;
@@ -49,6 +52,7 @@ test.each(["foreground", "background", "default"] as const)(
     })(pi);
     const call = tools[0]!.execute("live-call", { subagent_type: "review", prompt: "inspect", timeout: 1800, ...(kind === "default" ? {} : { background: kind === "background" }) }, undefined, undefined, {
       cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "live-session" }, isIdle: () => false,
+      ui: { notify: (text: string) => notices.push(text) },
     });
     try {
       await ready;
@@ -56,21 +60,24 @@ test.each(["foreground", "background", "default"] as const)(
       const progress = messages.find((message) => message.display && message.content.includes("starting"));
       expect(progress).toBeDefined();
       expect(progress!.details.status).toBe("running");
-      if (kind === "foreground") expect(progress!.details.id).toBe("live-call");
-      else expect(progress!.details.id).toMatch(/^sa-/u);
-      if (kind !== "foreground") {
-        const launched = await call as { content: Array<{ text: string }> };
-        const file = launched.content[0]!.text.match(/^Output file: (.+)$/mu)?.[1];
-        expect(file).toBeDefined();
-        expect(readFileSync(file!, "utf8")).toContain("inspect");
-        observe?.({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "read-live", name: "read", arguments: { path: "live-source.ts" } }] } });
-        expect(readFileSync(file!, "utf8")).toContain("live-source.ts");
-      }
+      expect(progress!.details.id).toMatch(/^sa-/u);
+      const launched = await call as { content: Array<{ text: string }> };
+      const file = launched.content[0]!.text.match(/^Output file: (.+)$/mu)?.[1];
+      expect(file).toBeDefined();
+      expect(readFileSync(file!, "utf8")).toContain("inspect");
+      expect(notices).toHaveLength(1);
+      const notice = JSON.parse(notices[0]!.slice(notices[0]!.indexOf(" ") + 1));
+      expect(notice.agentId).toBe(progress!.details.id);
+      expect(notice.file).toBe(file);
+      observe?.({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "read-live", name: "read", arguments: { path: "live-source.ts" } }] } });
+      expect(readFileSync(file!, "utf8")).toContain("live-source.ts");
     } finally {
       finish({ status: "completed", text: "done", usage });
       await call;
       await new Promise((resolve) => setTimeout(resolve, 0));
       listeners.get("session_shutdown")?.();
+      if (oldClient === undefined) delete process.env.PI_RPC_CLIENT;
+      else process.env.PI_RPC_CLIENT = oldClient;
       if (oldLogDir === undefined) delete process.env.PI_SUBAGENT_LOG_DIR;
       else process.env.PI_SUBAGENT_LOG_DIR = oldLogDir;
       rmSync(logDir, { recursive: true, force: true });
@@ -238,14 +245,14 @@ test("legacy spawn arguments normalize to the host contract without shadowing an
       task: "inspect",
       background: true,
     }),
-  ).toEqual({ subagent_type: "review", prompt: "inspect", background: true });
+  ).toEqual({ subagent_type: "review", prompt: "inspect" });
   expect(
     prepareHostArguments({ subagent_type: "review", prompt: "inspect" }),
   ).toEqual({ subagent_type: "review", prompt: "inspect" });
 });
 
 test.each(["completed", "failed", "thrown"] as const)(
-  "foreground %s exposes its transcript under the spawn call identity",
+  "background %s exposes its transcript under the task identity",
   async (outcome) => {
     const dir = mkdtempSync(join(tmpdir(), "pi-paseo-foreground-"));
     const oldDir = process.env.PI_SUBAGENT_LOG_DIR;
@@ -296,25 +303,20 @@ test.each(["completed", "failed", "thrown"] as const)(
       },
     })(pi);
     try {
-      const result = await tools[0]!.execute(
-        "foreground-spawn",
-        { subagent_type: "review", prompt: "inspect", background: false },
-        undefined,
-        undefined,
-        {
-          cwd: process.cwd(),
-          sessionManager: { getSessionId: () => "foreground-session" },
-          isIdle: () => true,
-        },
+      const ctx = {
+        cwd: process.cwd(), mode: "rpc", sessionManager: { getSessionId: () => "transcript-session" }, isIdle: () => true,
+      };
+      const launched = await tools[0]!.execute(
+        "spawn", { subagent_type: "review", prompt: "inspect" }, undefined, undefined, ctx,
       );
-      expect(result.details.agentId).toBe("foreground-spawn");
-      expect(result.details.nativeStatus).toBe(
-        outcome === "completed" ? "completed" : "failed",
-      );
+      const id = String(launched.details.taskId);
+      const waited = await tools[1]!.execute("wait", { action: "wait", id }, undefined, undefined, ctx);
+      const lane = waited.details as { status: string };
+      expect(lane.status).toBe(outcome === "completed" ? "completed" : "failed");
       const update = messages.find(
         (message) => message.customType === "subagent-update" && message.details.outputFile,
       )!;
-      expect(update.details.id).toBe("foreground-spawn");
+      expect(update.details.id).toBe(id);
       const rows = readFileSync(update.details.outputFile!, "utf8")
         .trim()
         .split("\n")

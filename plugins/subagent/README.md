@@ -19,12 +19,12 @@ one:
 | Question | *do this one thing, here* | *do this large piece of work now* |
 | Shape | one delegated task | a script that batches many |
 | Context | one isolated child | N isolated children |
-| Result | task ID immediately by default; completion message when it settles; explicit foreground mode returns the answer in the call | a background message when it settles |
+| Result | task ID immediately; completion message when it settles | a background message when it settles |
 | Consent | none needed | explicit opt-in by rule |
 
-`subagent` is the single-task path. It runs in the background by default and
-returns a task ID immediately. Set `background: false` explicitly when the next
-step needs the answer and the call must block until completion.
+`subagent` is the single-task path. It always runs in the background and
+returns a task ID immediately. Use `subagent_tasks` with `action: "wait"` when
+the next step needs its answer. There is no execution-mode parameter.
 `pi-workflow` exists for work too wide or too structured for
 that, and is deliberately gated behind an explicit opt-in because a fan-out is a
 spend decision. Use `subagent` for one delegated task; use a workflow for many.
@@ -47,16 +47,14 @@ Reload pi to load the updated schema. Old recorded launches are not rewritten.
   "subagent_type": "explore",        // built in; no agent file needed
   "prompt": "Find every place the session store is read, and summarise the callers.",
   "model": "provider/model", // optional; overrides this call's agent definition
-  "background": true         // optional; defaults to true; false blocks for the answer
 }
 ```
 
 The subagent starts with a **fresh context**: it cannot see this conversation, so
 the `prompt` must state the goal, the relevant paths, and what a good answer looks
-like. Its final text comes back in the tool result (capped at 50 KB to the model;
-the full text stays in the tool details). The child's token usage is returned on
-the tool result as well in foreground mode. In background mode, the tool returns
-a task ID and the answer arrives as a completion message. `subagent_tasks` can
+like. Launch returns a task ID; the final answer arrives as a completion message.
+Use `show` or `wait` to read the answer explicitly. Returned text is capped at
+50 KB; the full text and token usage remain in task details. `subagent_tasks` can
 list tasks, show a task's status and answer, or cancel a running task:
 
 ```jsonc
@@ -142,11 +140,8 @@ built-in. The `agent` argument accepts an optional `alias` for the display
 name shown in the fleet widget and panel.
 
 At most four subagents run at once (`PI_SUBAGENT_MAX_CONCURRENCY`, a positive
-integer, overrides it). The cap counts *busy* lanes of both kinds — pi runs a
-tool batch in parallel, so foreground calls share it too: a blocking call past
-the cap waits for a slot instead of being refused, and an idle lane parked
-awaiting a `reply` holds none. A background launch at the cap is still
-refused. This is the plugin's own fleet bound; a spawned child also takes a
+integer, overrides it). The cap counts busy lanes; an idle lane parked awaiting
+a `reply` holds none. A launch at the cap is refused. This is the plugin's own fleet bound; a spawned child also takes a
 ticket from the process-wide provider admission (`PI_ADMISSION_MAX_CONCURRENCY`,
 default 4) shared with `pi-workflow`, so four lanes plus four workflow runs can
 never put sixteen children on one account. A lane parked idle releases its
@@ -221,9 +216,8 @@ scrollback cannot describe work that is still in flight:
   stable row per child (icon, alias, task, elapsed, output tokens), folded past
   six rows — and disappears when the last child settles. Rows are deliberately
   stable: live tool calls and streamed text would churn every row on every
-  child event. Foreground calls register as lanes too — a blocking call no
-  longer looks like an idle session; they never occupy a background slot and
-  cannot be cancelled by id.
+  child event. Every launch is addressable by task ID and can be inspected,
+  replied to, or cancelled.
 - **`/subagents`** prints the same listing the model's `subagent_tasks`
   produces. **`/subagents live`** switches the main message area to the
   subagent view. A single child opens directly into its live transcript;
@@ -391,7 +385,7 @@ suite in several parallel reviewers.
 Use `subagent(..., timeout: 10800)` for a three-hour task, or set
 `PI_SUBAGENT_TIMEOUT_SECONDS=10800` in the parent Pi environment. Allowed values
 are 1–10800 seconds (maximum three hours); an explicit call parameter takes
-precedence. Both foreground and background children receive this budget.
+precedence. All children receive this budget.
 Failures report the last observed activity; diagnostic log paths stay in tool
 details and explicit `subagent_tasks log` output.
 
@@ -411,27 +405,16 @@ belongs there, and both consumers get it.
 ## Paseo child pages
 
 With the optional [Paseo companion](../../integrations/paseo-ui/README.md),
-foreground progress and background launch cards open a plugin-owned live
-output screen. It reads raw event deltas and partial tool results while the
-child is running, without waiting for the native child-page attachment. Update
-both plugins and reload Pi to enable the entry on new cards. The native child
-page behavior described below is unchanged.
+background launch cards open a plugin-owned live output screen. It reads raw
+event deltas and partial tool results while the child is running. Update both
+plugins and reload Pi to enable the entry on new cards.
 
-RPC background launches expose an `Output file:` at startup. On Paseo hosts
-with child-file following, the page receives completed assistant messages,
-tool calls and results while the child works. The private file is append-only
-and bounded, with one file per turn; follow-up turns announce a fresh path
-through the existing host runtime notification.
-
-Foreground calls report live activity through their parent's partial tool
-result. Paseo currently registers a foreground child file only when that
-blocking call returns, so its separate child page remains unavailable mid-run.
-Paseo receives `outputFile` on a terminal `subagent-update`. That file is a
-bounded pi-message JSONL snapshot containing the task, completed assistant
-messages (including thinking and tool calls), tool results, and the final
-answer or failure/cancellation reason. Both foreground and background calls
-publish a transcript. This uses the existing Paseo adapter without modifying
-Paseo or adding configuration.
+RPC launches expose an `Output file:` at startup. On Paseo hosts with child-file
+following, the native page receives completed assistant messages, tool calls
+and results while the child works. The private file is append-only and bounded,
+with one file per turn; follow-up turns announce a fresh path through the host
+runtime notification. The companion's terminal button additionally shows
+unfinished text deltas and partial tool output.
 
 Paseo 0.10.3 hydrates child sessions only when a turn settles, not while that
 turn is streaming. Replies expose a new immutable file containing only the

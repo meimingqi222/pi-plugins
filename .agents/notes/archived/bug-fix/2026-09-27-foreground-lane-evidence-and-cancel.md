@@ -1,6 +1,8 @@
 # Agent Note: A foreground call gets the evidence file and the refusal a background lane has
 
 Status: implemented
+Archived: 2026-10-26
+Superseded-by: 2026-10-08-subagent-background-default.md
 
 ## Problem
 

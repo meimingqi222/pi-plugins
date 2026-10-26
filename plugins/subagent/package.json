@@ -1,7 +1,7 @@
 {
 	"name": "pi-subagent",
 	"version": "0.1.0",
-	"description": "Delegate a single task to an isolated subagent: background execution with automatic answer delivery by default, or explicit blocking execution.",
+	"description": "Delegate a single task to an isolated subagent: background execution with automatic answer delivery.",
 	"type": "module",
 	"main": "./src/index.ts",
 	"exports": { ".": "./src/index.ts", "./transcript": "./src/transcript.ts", "./logs": "./src/logs.ts" },

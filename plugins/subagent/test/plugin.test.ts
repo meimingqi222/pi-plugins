@@ -12,6 +12,7 @@ import { SubagentParams } from "../src/tool.ts";
 interface CapturedTool {
   name: string;
   description: string;
+  parameters: { properties: Record<string, unknown> };
   promptGuidelines?: string[];
   execute?: (...args: any[]) => Promise<any>;
   renderCall?: (...args: any[]) => { render(width: number): string[] };
@@ -87,14 +88,15 @@ describe("subagentsDisabled", () => {
 });
 
 describe("the extension registers delegation and task tools", () => {
-  test("the model-facing schema and guidance name background as the default and false as blocking", () => {
+  test("the model-facing contract only exposes background execution", () => {
     const { pi, tools } = fakePi();
     subagentExtension()(pi);
-    expect(SubagentParams.properties.background).toMatchObject({ default: true, description: expect.stringContaining("Set false explicitly") });
-    expect(tools[0]!.description).toContain("By default the child runs in the background");
-    expect(tools[0]!.promptGuidelines?.join(" ")).toContain("background=false");
+    expect("background" in SubagentParams.properties).toBe(false);
+    expect("background" in tools[0]!.parameters.properties).toBe(false);
+    expect(tools[0]!.description).toContain("always runs in the background");
+    expect(tools[0]!.promptGuidelines?.join(" ")).not.toContain("background=false");
   });
-  test.each(["default", "background", "foreground"] as const)("%s execution mode returns a handle unless foreground is explicitly requested", async (mode) => {
+  test.each(["default", "background", "foreground"] as const)("%s legacy execution argument still returns a background handle", async (mode) => {
     const { pi, tools, emit } = fakePi();
     let finish!: (value: any) => void;
     subagentExtension({
@@ -107,19 +109,12 @@ describe("the extension registers delegation and task tools", () => {
     finish({ status: "completed", text: "Inspection done", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
     const result = await call;
     emit("session_shutdown", {}, ctx);
-    if (mode === "foreground") {
-      expect(early).toBeNull();
-      expect(result.details.status).toBe("completed");
-      expect(result.details.output).toBe("Inspection done");
-    } else {
-      expect(early).not.toBeNull();
-      expect(result.details.taskId).toStartWith("sa-");
-      expect(result.content[0].text).toContain("started in the background");
-    }
+    expect(early).not.toBeNull();
+    expect(result.details.taskId).toStartWith("sa-");
+    expect(result.content[0].text).toContain("started in the background");
   });
   test("shows the selected agent, task and live tool activity", async () => {
     const { pi, tools } = fakePi();
-    const updates: any[] = [];
     subagentExtension({
       discover: () => [{ name: "explore", description: "read", systemPrompt: "Explore", filePath: "explore.md" }],
       executor: async (input) => {
@@ -135,11 +130,11 @@ describe("the extension registers delegation and task tools", () => {
     const call = tool.renderCall!({ agent: "explore", task: "Inspect pi-workflow" }, theme).render(120).join("\n");
     expect(call).toContain("explore");
     expect(call).toContain("Inspect pi-workflow");
-    const result = await tool.execute!("call-activity", { agent: "explore", task: "Inspect pi-workflow", background: false }, undefined, (update: any) => updates.push(update), { cwd: "/repo" });
-    expect(updates.length).toBeGreaterThan(1);
-    const running = tool.renderResult!(updates[1], { expanded: false, isPartial: true }, theme).render(120).join("\n");
-    expect(running).toContain("explore · running · using grep plugins/workflow/src");
-    const done = tool.renderResult!(result, { expanded: true, isPartial: false }, theme).render(120).join("\n");
+    const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "activity-session" }, isIdle: () => true };
+    const launched = await tool.execute!("call-activity", { agent: "explore", task: "Inspect pi-workflow" }, undefined, undefined, ctx);
+    await tools[1]!.execute!("wait-activity", { action: "wait", id: launched.details.taskId }, undefined, undefined, ctx);
+    const shown = await tools[1]!.execute!("show-activity", { action: "show", id: launched.details.taskId }, undefined, undefined, ctx);
+    const done = tool.renderResult!(shown.details.result, { expanded: true, isPartial: false }, theme).render(120).join("\n");
     expect(done).toContain("explore · completed · 2 tools");
     expect(done).toContain("grep plugins/workflow/src → read");
     expect(done).toContain("Found the runner");
@@ -162,7 +157,7 @@ describe("the extension registers delegation and task tools", () => {
     expect(colors).not.toContain("error");
   });
 
-  test("a normal host gets foreground/background delegation and a task control tool", () => {
+  test("a normal host gets background delegation and a task control tool", () => {
     const { pi, tools } = fakePi();
     subagentExtension()(pi);
     expect(tools.length).toBe(2);
@@ -177,7 +172,7 @@ describe("the extension registers delegation and task tools", () => {
     expect(tools.length).toBe(0);
   });
 
-  test("reports foreground child usage to a goal service loaded later", async () => {
+  test("reports child usage to a goal service loaded later", async () => {
     const { pi, tools } = fakePi();
     const reported: number[] = [];
     let childModel: string | undefined;
@@ -191,7 +186,9 @@ describe("the extension registers delegation and task tools", () => {
     pi.events.emit("pi-goal:spend-service:v1", { begin: () => ({ finish: (tokens: number) => reported.push(tokens) }) });
     await tools[0]!.execute!("call-1", { agent: "scout", task: "x", background: false }, undefined, undefined, {
       cwd: "/repo", model: { provider: "parent", id: "model" }, thinkingLevel: "high",
+      sessionManager: { getSessionId: () => "usage-session" }, isIdle: () => true,
     });
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(reported).toEqual([10]);
     expect(childModel).toBe("parent/model");
   });
@@ -283,7 +280,7 @@ describe("the extension registers delegation and task tools", () => {
     expect(record.content[0].text).toContain("Still running after 0s");
   });
 
-  test("a foreground call writes the same evidence file a background lane does", async () => {
+  test("a background launch writes an evidence file", async () => {
     const { mkdtemp, rm, writeFile, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -302,9 +299,8 @@ describe("the extension registers delegation and task tools", () => {
         },
       })(pi);
       const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-fg" } };
-      await tools[0]!.execute!("fg-log", { agent: "explore", task: "Inspect", background: false }, undefined, undefined, ctx);
-      // The blocking call is the lane that most needs a stream to read afterwards,
-      // and it used to be the only one with no file at all.
+      const launched = await tools[0]!.execute!("bg-log", { agent: "explore", task: "Inspect" }, undefined, undefined, ctx);
+      await tools[1]!.execute!("wait-log", { action: "wait", id: launched.details.taskId }, undefined, undefined, ctx);
       expect(evidencePath).toBeDefined();
       expect(evidencePath!).toContain("session-fg");
       expect(evidencePath!.endsWith(".jsonl")).toBe(true);
@@ -316,20 +312,17 @@ describe("the extension registers delegation and task tools", () => {
     }
   });
 
-  test("cancel explains a foreground call instead of reporting a settled lane", async () => {
+  test("every launched task can be cancelled", async () => {
     const { pi, tools } = fakePi();
     let finish: ((value: any) => void) | undefined;
     subagentExtension({ executor: () => new Promise((resolve) => { finish = resolve; }) })(pi);
     const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session-a" } };
     const call = tools[0]!.execute!("fg-1", { agent: "explore", task: "Inspect", background: false }, undefined, undefined, ctx);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // A foreground lane is listed (it is the point of registering one), so the
-    // model can name it — and must be told why it cannot be cancelled.
     const listed = await tools[1]!.execute!("list-fg", { action: "list" }, undefined, undefined, ctx);
     const id = listed.details[0]!.id as string;
     const cancelled = await tools[1]!.execute!("cancel-fg", { action: "cancel", id }, undefined, undefined, ctx);
-    expect(cancelled.content[0].text).toContain("foreground call");
-    // Refusing is not cancelling: the call is still the session's own turn.
+    expect(cancelled.content[0].text).toContain("Stopping");
     expect(listed.details[0]!.status).toBe("running");
     finish!({ status: "completed", text: "ok", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 } });
     await call;

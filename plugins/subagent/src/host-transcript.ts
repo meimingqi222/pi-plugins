@@ -23,6 +23,16 @@ export class HostTranscript {
   private liveWeight = 0;
   private liveSealed = false;
   private liveLastText = "";
+  /**
+   * The task text written as the live file's first user message.
+   *
+   * A host child page needs a prompt before the child emits anything, so the
+   * task is seeded at `startLive`. The child then echoes that same prompt as
+   * its own first user message (`Task: …`), which would show the task twice.
+   * The seed is remembered until the first observed message so the echo can be
+   * recognised and skipped.
+   */
+  private liveSeed?: string;
 
   /** A host follower reads one stable, append-only file while a background turn runs. */
   startLive(logPath: string, task: string): string | undefined {
@@ -37,7 +47,11 @@ export class HostTranscript {
     this.liveBytes = 0;
     this.liveWeight = 0;
     this.liveLastText = "";
-    if (this.entries[0]?.message.role !== "user") this.appendLive(textEntry("user", task));
+    this.liveSeed = undefined;
+    if (this.entries[0]?.message.role !== "user") {
+      this.appendLive(textEntry("user", task));
+      this.liveSeed = boundText(task);
+    }
     for (const entry of this.entries) this.appendLive(entry);
     this.entries = [];
     this.bytes = 0;
@@ -81,6 +95,12 @@ export class HostTranscript {
       bounded.responseId = `host-${randomUUID()}`;
     const entry = { message: bounded, timestamp: new Date().toISOString() };
     if (this.livePath && !this.liveSealed) {
+      // The seed is only a placeholder for the child's own prompt. Compare the
+      // first message: an echo of the same task is already in the file, and a
+      // second copy is what a host child page shows as two identical prompts.
+      const seed = this.liveSeed;
+      this.liveSeed = undefined;
+      if (seed !== undefined && bounded.role === "user" && samePrompt(messageText(bounded), seed)) return;
       if (!this.appendLive(entry)) this.omitted = true;
       return;
     }
@@ -112,6 +132,7 @@ export class HostTranscript {
         if (!this.appendLive(textEntry("assistant", summary), true)) return undefined;
       }
       this.liveSealed = true;
+      this.liveSeed = undefined;
       this.published = true;
       this.lastSummary = summary;
       this.omitted = false;
@@ -157,11 +178,36 @@ export class HostTranscript {
   }
 }
 
+function boundText(text: string): string {
+  return text.length > 8000 ? text.slice(0, 8000) + "… [truncated]" : text;
+}
+
 function textEntry(role: string, text: string): Entry {
   return {
-    message: { role, ...(role === "assistant" ? { responseId: `host-${randomUUID()}` } : {}), content: [{ type: "text", text: boundValue(text) }] },
+    message: { role, ...(role === "assistant" ? { responseId: `host-${randomUUID()}` } : {}), content: [{ type: "text", text: boundText(text) }] },
     timestamp: new Date().toISOString(),
   };
+}
+
+/** The text of a transcript message, whether its content is a string or parts. */
+function messageText(message: Record<string, unknown>): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content)
+    ? content.map((part) => String(object(part)?.text ?? "")).join("")
+    : "";
+}
+
+/**
+ * Whether a child's user message is an echo of the seeded task.
+ *
+ * A spawner frames the prompt it sends (`Task: …` is pi's own subagent
+ * convention), so the prefix is not part of the task and must not defeat the
+ * comparison.
+ */
+function samePrompt(a: string, b: string): boolean {
+  const body = (text: string): string => text.trim().replace(/^Task:\s*/iu, "").trim();
+  return body(a) === body(b);
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -176,8 +222,7 @@ function messageWeight(message: Record<string, unknown>): number {
 
 /** Bound tool arguments/output as well as text; images are omitted from the transcript. */
 function boundValue(value: unknown, depth = 0): unknown {
-  if (typeof value === "string")
-    return value.length > 8000 ? value.slice(0, 8000) + "… [truncated]" : value;
+  if (typeof value === "string") return boundText(value);
   if (value === null || typeof value !== "object") return value;
   if (depth > 6) return "[nested data omitted]";
   if (Array.isArray(value))

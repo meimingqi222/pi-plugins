@@ -19,7 +19,7 @@ records, bounds message data and timeline weight, and publishes private,
 immutable pi-message snapshots before its host update. Raw log paths remain
 private in public Lane views; the host receives a registry path resolver.
 
-Both foreground and background launches expose transcripts. Replies drain only
+All new launches run in the background and expose transcripts. Replies drain only
 new entries to a new file. Assistant response IDs are unique across snapshots,
 so the history mapper cannot overwrite earlier turns with reused index IDs.
 Failure/cancellation always includes an explanatory terminal message. Session
@@ -44,7 +44,7 @@ is truncated, and transcript files count toward the existing 200-file retention.
 - `plugins/subagent/test/host-transcript.test.ts` locks message selection,
   duplicate suppression, immutable reply deltas, byte/item bounds and abort text.
 - `plugins/subagent/test/paseo.test.ts` locks background failure transcripts and
-  foreground spawn-call correlation using actual plugin execution, including
+  background task correlation using actual plugin execution, including
   timeout and thrown executor failures. Foreground exceptions return structured
   failed details so Paseo can correlate the subsequent transcript notification.
 - `plugins/agent-runner/test/rpc-child.test.ts` locks observer-before-settlement

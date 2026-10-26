@@ -75,7 +75,7 @@ export function prepareHostArguments(value: unknown): HostParams {
   if (!value || typeof value !== "object")
     throw new Error("Subagent arguments must be an object.");
   const raw = value as Record<string, unknown>;
-  const { agent: oldAgent, task: oldTask, ...rest } = raw;
+  const { agent: oldAgent, task: oldTask, background: _legacyBackground, ...rest } = raw;
   return {
     ...rest,
     subagent_type: raw.subagent_type ?? oldAgent,
@@ -169,7 +169,7 @@ export class HostSubagentState {
   >();
   private readonly transcripts = new Map<string, HostTranscript>();
   private readonly liveAnnouncements = new Map<string, string>();
-  /** Attach the background spawn result before it returns, so Paseo can follow immediately. */
+  /** Create a stable file before settlement so the host can follow a running child. */
   liveFile(lane: Lane): string | undefined {
     const logPath = this.logPath(lane);
     if (!logPath) return;

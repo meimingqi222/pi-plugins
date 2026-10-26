@@ -36,11 +36,9 @@ and closed per turn. Existing foreground immutable snapshots remain supported.
 Filesystem errors cannot fail child execution. Completed messages stream;
 individual model text tokens are not copied into the child file.
 
-The referenced Paseo source registers foreground child files only after the
-blocking spawn call returns. Foreground parent cards can update during a run;
-the native foreground child page still cannot hydrate early without a host
-adapter change. Older hosts without file following show the transcript at
-settlement. No Paseo source is modified.
+New tool launches are background-only, as recorded in
+`2026-10-08-subagent-background-default.md`; no foreground host adapter change
+is required. Older hosts without file following show transcripts at settlement.
 
 ## Verification
 

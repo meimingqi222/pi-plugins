@@ -323,8 +323,9 @@ describe("goal safety boundaries", () => {
   })(env.pi);
   await run(env.commands.get("goal"), "task", env.ctx);
   await env.emit("agent_start");
-  const result = await env.tools.get("subagent").execute("real-child", { agent: "scout", task: "inspect", background: false }, undefined, undefined, env.ctx);
-  expect(result.content[0].text).toBe("done");
+  const launched = await env.tools.get("subagent").execute("real-child", { agent: "scout", task: "inspect" }, undefined, undefined, env.ctx);
+  const result = await env.tools.get("subagent_tasks").execute("wait-child", { action: "wait", id: launched.details.taskId }, undefined, undefined, env.ctx);
+  expect(result.content[0].text).toContain("done");
   expect((await state(env)).used).toBe(9);
  });
  test("verification waits for a background delegation and ignores its late duplicate", async () => {

@@ -1,6 +1,8 @@
 # Agent Note: Session teardown cancels pending subagent admissions
 
 Status: implemented
+Archived: 2026-10-26
+Superseded-by: 2026-10-08-subagent-background-default.md
 
 ## Problem
 

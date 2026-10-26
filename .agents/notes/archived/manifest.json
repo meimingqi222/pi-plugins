@@ -1,3 +1,6 @@
 {
+  "archived/bug-fix/2026-09-27-foreground-lane-evidence-and-cancel.md": "e40a2c1666e297d59ba93a6d3766ae49e8d77713623077a686fee5c808d37f51",
+  "archived/bug-fix/2026-09-28-subagent-foreground-concurrency.md": "ddb9ed7c3a255dd6b4a07d5e8e8031a4325be7e4cc69e3f49a4919dee3cb9a88",
+  "archived/bug-fix/2026-10-07-subagent-session-admission.md": "d9c4ba0c65007d4b7eb5bec980b586236f7781ea0b55d8571c60692ef757d338",
   "archived/testing/2026-09-27-goal-lifecycle-test-waits.md": "6bb70782794fb10814fb7d7e597d9ecbbe98c522a9c179bf91027ddd7529b1aa"
 }

@@ -1,6 +1,8 @@
 # Agent Note: Foreground subagent calls share the fleet's concurrency cap
 
 Status: implemented
+Archived: 2026-10-26
+Superseded-by: 2026-10-08-subagent-background-default.md
 Partly-superseded-by: 2026-10-07-subagent-reply-admission.md
 
 ## Problem

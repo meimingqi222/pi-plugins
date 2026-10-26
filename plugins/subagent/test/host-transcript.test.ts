@@ -36,6 +36,46 @@ test("a background host transcript is available before completion and appends wi
   }
 });
 
+test("a live transcript does not repeat the task when the child echoes its prompt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-live-echo-"));
+  try {
+    const transcript = new HostTranscript();
+    const path = transcript.startLive(join(dir, "raw.jsonl"), "inspect sources")!;
+    // The seed lets a host child page show the prompt before the child speaks.
+    // The child then sends the same prompt itself, framed with `Task:`; appending
+    // that copy is what a host renders as two identical prompt bubbles.
+    transcript.observe({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Task: inspect sources" }] } });
+    const rows = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const prompts = rows.filter((row) => row.message.role === "user");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].message.content[0].text).toBe("inspect sources");
+    // A later, genuinely different user message is a new turn and is kept.
+    transcript.observe({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "retry" }] } });
+    const after = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(after.filter((row) => row.message.role === "user").map((row) => row.message.content[0].text)).toEqual([
+      "inspect sources",
+      "retry",
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a live transcript keeps a first user message that is not the seeded task", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-live-other-"));
+  try {
+    const transcript = new HostTranscript();
+    const path = transcript.startLive(join(dir, "raw.jsonl"), "inspect sources")!;
+    // Only an echo of the seeded task is a duplicate. Anything else is the
+    // child's own first turn and must not be dropped.
+    transcript.observe({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "review the diff" }] } });
+    const rows = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.message.content[0].text)).toEqual(["inspect sources", "review the diff"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("live transcripts keep the host item budget bounded and reserve settlement", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-host-live-cap-"));
   try {

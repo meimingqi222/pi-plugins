@@ -13,7 +13,7 @@ can be installed without pulling in its siblings.
 | [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
 | [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
 | [workflow](plugins/workflow) | `pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
-| [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: wait for the answer or let it run in the background. One-level fan-out, user-scoped agent definitions. |
+| [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: runs in the background with automatic answer delivery. One-level fan-out, user-scoped agent definitions. |
 | [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
 | [morph-search](plugins/morph-search) | `pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
 | [permissions](plugins/permissions) | `pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized prompts, an auto-mode reviewer model, and an optional `sandbox-exec`/`bwrap` sandbox. |
@@ -179,10 +179,10 @@ does not modify Paseo source. Older versions use plain text. The companion is
 independent of the Pi extensions and is installed separately.
 
 Background status defaults to passive messages delivered at a safe turn
-boundary. A blocking subagent call streams a live card instead, because its
-partial result carries the same status while the child runs. Foreground
-subagent progress also streams through tool updates. See the companion
-documentation for installation and version limits.
+boundary. Subagent launches always return a background task handle and expose
+a live transcript immediately to supporting hosts. Use `subagent_tasks.wait`
+when the parent needs the answer. See the companion documentation for
+installation and version limits.
 
 ## Regression notes
 

@@ -79,11 +79,10 @@ releases the observation. The underlying history messages remain unchanged.
 
 By default, RPC status uses passive Pi custom messages. It does not trigger a
 model turn. Pi defers these messages while the parent is executing, until a
-safe turn boundary. Foreground subagent tool progress uses `onUpdate` and can
-stream during the call. The companion renders that partial result as a live
-card, so a blocking subagent call shows its activity, completed tools and
-status while the child works. Background lanes publish through passive
-messages, so their cards appear at the next boundary.
+safe turn boundary. Subagents run in the background and publish through
+passive messages, so their parent cards appear at the next boundary. Their
+launch result immediately exposes a live transcript to the native child page.
+Historical blocking-call rows remain readable through the existing renderer.
 
 Cards cover the default `message` transport only. The app restricts timeline
 transformers to a closed set of agent item types that excludes `notification`,
@@ -94,13 +93,13 @@ through that transport instead of at a turn boundary; it applies to all four
 stateful plugins. States are deduplicated and coalesced at a two-second cadence,
 terminal states bypass the delay, and session changes discard queued updates.
 
-On hosts with Pi child-file following, RPC background launches expose an
-append-only transcript immediately. Their child pages receive completed model
-messages, tool calls and tool results during execution. Follow-up turns attach
-a fresh file through the host's existing runtime notification. Foreground
-calls show their current activity in the parent's live card; the native child
-page still loads after the blocking tool returns because the host does not
-register foreground transcript files from partial results.
+On hosts with Pi child-file following, RPC launches expose an append-only
+transcript immediately. Their child pages receive completed model messages,
+tool calls and tool results during execution. Follow-up turns attach a fresh
+file through the host's runtime notification. `pi-subagent` always launches
+background work; use `subagent_tasks.wait` when the next step needs its answer.
+The companion's terminal button additionally shows raw text deltas and partial
+tool output.
 
 The companion does not add live subagent child-page support to an older Paseo
 version. Paseo 0.10.3 installations keep their existing terminal
