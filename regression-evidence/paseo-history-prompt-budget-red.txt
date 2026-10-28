@@ -1,0 +1,52 @@
+bun test v1.4.2 (744846f84)
+
+integrations/paseo-ui/test/live-timeline.test.tsx:
+(pass) thinking and finished tools are compact disclosure rows instead of expanded logs [36.55ms]
+(pass) unfinished tool output remains visible and failed calls retain their details [5.57ms]
+(pass) native column, row density and tool icons match the host timeline [1.03ms]
+(pass) disclosure keys stay with the same activity when the window advances [0.26ms]
+(pass) thinking row renders with native Info icon [0.67ms]
+78 | test("truncated expanded history remains escapable instead of offering a no-op show-all action", () => {
+79 |   const output = { state: "available" as const, revision: "fixture:all", earlierDataOmitted: true, totalBlocks: 2001, blocks: [{ id: "last", kind: "assistant" as const, text: "latest" }] };
+80 |   const changes: boolean[] = [];
+81 |   const element = HistoryControls({ output, expanded: true, onExpandedChange: value => changes.push(value), colors });
+82 |   const html = renderToStaticMarkup(element);
+83 |   expect(html).toContain("Show recent only");
+                    ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Show recent only"
+Received: "<div style=\"align-items:center;gap:6px;padding-top:10px;padding-bottom:10px\"><span style=\"color:#777;font-size:12px\">Earlier output omitted</span><button aria-label=\"Show all output\"><span style=\"font-size:12px;color:#222\">Show all output</span></button></div>"
+
+      at <anonymous> (<repo>/integrations/paseo-ui/test/live-timeline.test.tsx:83:16)
+(fail) truncated expanded history remains escapable instead of offering a no-op show-all action [5.34ms]
+
+integrations/paseo-ui/test/live-output.test.ts:
+(pass) a bounded transcript reference survives the native subagent text protocol [3.53ms]
+(pass) polling retries failures without overlapping and drops in-flight updates after navigation [33.92ms]
+(pass) tail and response limits are explicit and incomplete writes are deferred [31.87ms]
+(pass) live reader shows unfinished deltas, tool output and authoritative completion without duplicates [7.79ms]
+(pass) live reader denies traversal, native-session logs and symlinks outside its root [4.70ms]
+(pass) activity identities survive bounded-tail shifts, repeated commands and completion [60.92ms]
+(pass) identical text blocks retain absolute byte identities as the scan and response windows slide [25.72ms]
+(pass) all: true returns complete history and extracts prompt from transcript head [14.59ms]
+154 |   const log = "session-sa009.jsonl";
+155 |   const event = (role: string, text: string) => JSON.stringify({ type: "message_end", message: { role, content: [{ type: "text", text }] } }) + "\n";
+156 |   try {
+157 |     writeFileSync(join(root, log), event("user", "p".repeat(700_000)) + event("assistant", "latest answer"));
+158 |     const output = await readLiveOutput({ log }, root);
+159 |     expect(output.prompt!.length).toBeLessThanOrEqual(16_000);
+                                        ^
+error: expect(received).toBeLessThanOrEqual(expected)
+
+Expected: <= 16000
+Received: 700000
+
+      at <anonymous> (<repo>/integrations/paseo-ui/test/live-output.test.ts:159:35)
+(fail) long prompts share the serialized response budget with output blocks [3.49ms]
+(pass) expanded history reports remaining omissions at its display limit [9.10ms]
+
+ 14 pass
+ 2 fail
+ 69 expect() calls
+Ran 16 tests across 2 files. [457.00ms]

@@ -125,3 +125,61 @@ test("identical text blocks retain absolute byte identities as the scan and resp
     expect(after.blocks.at(-1)?.id).not.toBe(before.blocks.at(-1)?.id);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("all: true returns complete history and extracts prompt from transcript head", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-live-all-"));
+  const log = "session-sa008.jsonl";
+  const path = join(root, log);
+  const prompt = "You are reviewing recent commits for logic bugs.";
+  const promptEvent = JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: prompt }] } }) + "\n";
+  const rows = Array.from({ length: 150 }, (_, i) => JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}` }] } })).join("\n") + "\n";
+  try {
+    writeFileSync(path, promptEvent + " ".repeat(2 * 1024 * 1024) + "\n" + rows);
+    const recent = await readLiveOutput({ log }, root);
+    expect(recent.earlierDataOmitted).toBe(true);
+    expect(recent.blocks).toHaveLength(120);
+    expect(recent.prompt).toBe(prompt);
+
+    const all = await readLiveOutput({ log, all: true }, root);
+    expect(all.earlierDataOmitted).toBe(false);
+    expect(all.blocks).toHaveLength(150);
+    expect(all.prompt).toBe(prompt);
+    expect(all.blocks[0].text).toBe("step 0");
+    expect(all.blocks.at(-1)?.text).toBe("step 149");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("long prompts share the serialized response budget with output blocks", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-live-prompt-cap-"));
+  const log = "session-sa009.jsonl";
+  const event = (role: string, text: string) => JSON.stringify({ type: "message_end", message: { role, content: [{ type: "text", text }] } }) + "\n";
+  try {
+    writeFileSync(join(root, log), event("user", "p".repeat(700_000)) + event("assistant", "latest answer"));
+    const output = await readLiveOutput({ log }, root);
+    expect(output.prompt!.length).toBeLessThanOrEqual(16_000);
+    expect(output.promptTruncated).toBe(true);
+    expect(output.blocks.at(-1)?.text).toBe("latest answer");
+    expect(JSON.stringify(output).length).toBeLessThanOrEqual(256 * 1024);
+
+    // JSON escaping costs more than the string's own length. All fields and
+    // array separators, not just block text, must fit the returned envelope.
+    writeFileSync(join(root, log), event("user", "\0".repeat(16_000)) + Array.from({ length: 100 }, (_, i) => event("assistant", `${i}:` + "\0".repeat(4000))).join(""));
+    for (const all of [false, true]) {
+      const escaped = await readLiveOutput({ log, all }, root);
+      expect(JSON.stringify(escaped).length).toBeLessThanOrEqual((all ? 2 * 1024 : 256) * 1024);
+      expect(escaped.blocks.at(-1)?.text.startsWith("99:")).toBe(true);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("expanded history reports remaining omissions at its display limit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-live-expanded-cap-"));
+  const log = "session-sa010.jsonl";
+  try {
+    writeFileSync(join(root, log), Array.from({ length: 2001 }, (_, i) => JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}` }] } })).join("\n") + "\n");
+    const output = await readLiveOutput({ log, all: true }, root);
+    expect(output.blocks).toHaveLength(2000);
+    expect(output.earlierDataOmitted).toBe(true);
+    expect(output.blocks.at(-1)?.text).toBe("step 2000");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -1,0 +1,29 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/host-transcript.test.ts:
+19 |     if (message.role === "toolResult") {
+20 |       expect(pending.has(message.toolCallId)).toBe(true);
+21 |       pending.delete(message.toolCallId);
+22 |     }
+23 |   }
+24 |   expect([...pending]).toEqual([]);
+                            ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "pending",
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at expectPairedTools (<repo>/plugins/subagent/test/host-transcript.test.ts:24:24)
+      at <anonymous> (<repo>/plugins/subagent/test/host-transcript.test.ts:74:5)
+(fail) settlement closes an admitted tool whose result never arrived [11.37ms]
+
+ 0 pass
+ 12 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [586.00ms]

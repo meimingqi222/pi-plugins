@@ -419,6 +419,13 @@ with one file per turn; follow-up turns announce a fresh path through the host
 runtime notification. The companion's terminal button additionally shows
 unfinished text deltas and partial tool output.
 
+The native page is a finite preview. When its display budget fills, it immediately
+shows a limit notice instead of silently looking stuck. Already shown tool calls
+still receive bounded results; omitted calls never leave standalone JSON results.
+For current activity beyond this preview, open the task's output button in the
+parent conversation or ask the parent agent to check its status. The companion
+screen reads the raw execution log independently of the native preview limit.
+
 Paseo 0.10.3 hydrates child sessions only when a turn settles, not while that
 turn is streaming. Replies expose a new immutable file containing only the
 new messages, so earlier answers remain visible without repeating history.

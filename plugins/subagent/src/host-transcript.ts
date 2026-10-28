@@ -9,6 +9,14 @@ interface Entry {
   timestamp: string;
 }
 
+const PREVIEW_BYTES = 1024 * 1024;
+const PREVIEW_WEIGHT = 150;
+// Paseo stops at 2 MiB / 200 mapped items. Leave room to drain at most
+// twenty admitted calls (one text result each), an explanation and settlement.
+const MAX_PENDING_TOOLS = 20;
+const TOOL_RESULT_BYTES = 32 * 1024;
+const LIMIT_NOTICE = "Later execution entries omitted: this native preview reached its display limit and is no longer live. This does not mean execution has stopped. For current activity and output, return to the parent task and open its output button, or ask the parent agent for status.";
+
 /** Keep complete messages, never streaming starts/deltas or repeated end snapshots. */
 export class HostTranscript {
   private entries: Entry[] = [];
@@ -23,6 +31,9 @@ export class HostTranscript {
   private liveWeight = 0;
   private liveSealed = false;
   private liveLastText = "";
+  private liveCapped = false;
+  private liveLimitNotified = false;
+  private readonly livePendingTools = new Map<string, string>();
   /**
    * The task text written as the live file's first user message.
    *
@@ -47,12 +58,15 @@ export class HostTranscript {
     this.liveBytes = 0;
     this.liveWeight = 0;
     this.liveLastText = "";
+    this.liveCapped = false;
+    this.liveLimitNotified = false;
+    this.livePendingTools.clear();
     this.liveSeed = undefined;
     if (this.entries[0]?.message.role !== "user") {
-      this.appendLive(textEntry("user", task));
+      this.writeLiveEntry(textEntry("user", task));
       this.liveSeed = boundText(task);
     }
-    for (const entry of this.entries) this.appendLive(entry);
+    for (const entry of this.entries) this.writeLiveEntry(entry);
     this.entries = [];
     this.bytes = 0;
     this.weight = 0;
@@ -60,9 +74,8 @@ export class HostTranscript {
     return path;
   }
 
-  private appendLive(entry: Entry, terminal = false): boolean {
+  private appendLive(entry: Entry): boolean {
     const encoded = `${JSON.stringify(entry)}\n`;
-    if (!terminal && (this.liveBytes + Buffer.byteLength(encoded) > 1024 * 1024 || this.liveWeight + messageWeight(entry.message) > 150)) return false;
     try {
       appendFileSync(this.livePath!, encoded, { encoding: "utf8", mode: 0o600 });
       this.liveBytes += Buffer.byteLength(encoded);
@@ -71,6 +84,41 @@ export class HostTranscript {
         ? entry.message.content.map(part => object(part)?.text ?? "").join("") : "";
       return true;
     } catch { return false; }
+  }
+
+  private capLive(): void {
+    this.liveCapped = true;
+    this.omitted = true;
+    if (!this.liveLimitNotified) this.liveLimitNotified = this.appendLive(textEntry("assistant", LIMIT_NOTICE));
+  }
+
+  private writeLiveEntry(entry: Entry): boolean {
+    const message = entry.message;
+    if (message.role === "toolResult") {
+      const id = String(message.toolCallId);
+      // Never send a result whose call was omitted, including during replay of
+      // a bounded pre-launch buffer. The host would render an unknown JSON tool.
+      if (!this.livePendingTools.has(id)) return false;
+      const result = previewMessage({ ...message, toolName: this.livePendingTools.get(id) })!;
+      if (!this.appendLive({ ...entry, message: result })) return false;
+      this.livePendingTools.delete(id);
+    } else {
+      if (this.liveCapped) return false;
+      const calls = toolCalls(message);
+      if (this.liveBytes + Buffer.byteLength(JSON.stringify(entry)) + 1 > PREVIEW_BYTES
+        || this.liveWeight + messageWeight(message) > PREVIEW_WEIGHT
+        || this.livePendingTools.size + calls.length > MAX_PENDING_TOOLS
+        || calls.some(call => Buffer.byteLength(JSON.stringify({ id: call.id, name: call.name })) > 8 * 1024)) {
+        this.capLive();
+        return false;
+      }
+      if (!this.appendLive(entry)) return false;
+      for (const call of calls) this.livePendingTools.set(String(call.id), String(call.name));
+    }
+    // Results for admitted calls may use the reserved headroom even after the
+    // ordinary preview closes. A lighter later message must not sneak through.
+    if (this.liveWeight >= PREVIEW_WEIGHT || this.liveBytes >= PREVIEW_BYTES) this.capLive();
+    return true;
   }
 
   observe(value: unknown): void {
@@ -82,12 +130,13 @@ export class HostTranscript {
       !["user", "assistant", "toolResult"].includes(String(message.role))
     )
       return;
-    const bounded = object(boundValue(message));
+    const bounded = previewMessage(message);
     if (!bounded) return;
     const encoded = JSON.stringify(bounded);
     if (encoded === this.lastMessage) return;
     if (Buffer.byteLength(encoded) > 128 * 1024) {
       this.omitted = true;
+      if (this.livePath && !this.liveSealed) this.capLive();
       return;
     }
     this.lastMessage = encoded;
@@ -101,7 +150,7 @@ export class HostTranscript {
       const seed = this.liveSeed;
       this.liveSeed = undefined;
       if (seed !== undefined && bounded.role === "user" && samePrompt(messageText(bounded), seed)) return;
-      if (!this.appendLive(entry)) this.omitted = true;
+      if (!this.writeLiveEntry(entry)) this.omitted = true;
       return;
     }
     this.entries.push(entry);
@@ -127,9 +176,17 @@ export class HostTranscript {
         ? result?.output || "Subagent completed without text."
         : `Subagent ${status}: ${result?.errorMessage || result?.output || status}`;
     if (this.livePath && !this.liveSealed) {
-      if (this.omitted) this.appendLive(textEntry("assistant", "Later execution entries omitted by transcript limits."), true);
+      // A cancelled child can settle before its outstanding tool returns. Close
+      // the preview row explicitly instead of leaving a permanent running tool.
+      for (const [id, name] of this.livePendingTools) {
+        if (!this.writeLiveEntry({ timestamp: new Date().toISOString(), message: {
+          role: "toolResult", toolCallId: id, toolName: name, isError: status !== "completed",
+          content: [{ type: "text", text: "The task settled before this tool's result was available in the preview. See the final task status below." }],
+        } })) return undefined;
+      }
+      if (this.omitted && !this.liveLimitNotified) this.capLive();
       if (status !== "completed" || this.liveLastText !== boundValue(summary)) {
-        if (!this.appendLive(textEntry("assistant", summary), true)) return undefined;
+        if (!this.appendLive(textEntry("assistant", summary))) return undefined;
       }
       this.liveSealed = true;
       this.liveSeed = undefined;
@@ -140,7 +197,9 @@ export class HostTranscript {
     }
     if (this.published && !this.entries.length && summary === this.lastSummary)
       return;
-    const entries = [...this.entries];
+    const paired = pairedEntries(this.entries);
+    const entries = paired.entries;
+    this.omitted ||= paired.omitted;
     if (!this.published && entries[0]?.message.role !== "user")
       entries.unshift(textEntry("user", task));
     if (this.omitted)
@@ -218,6 +277,52 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function messageWeight(message: Record<string, unknown>): number {
   return 1 + (Array.isArray(message.content) ? message.content.length : 1);
+}
+
+function toolCalls(message: Record<string, unknown>): Record<string, unknown>[] {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return [];
+  return message.content.map(object).filter((part): part is Record<string, unknown> => part?.type === "toolCall" && typeof part.id === "string");
+}
+
+function previewMessage(message: Record<string, unknown>): Record<string, unknown> | undefined {
+  const bounded = object(boundValue(message));
+  if (!bounded || bounded.role !== "toolResult") return bounded;
+  // Reserve a predictable result size and mapped-item cost for admitted calls.
+  // The full result remains in the raw execution log used by the output screen.
+  bounded.content = [{ type: "text", text: boundText(messageText(bounded)) }];
+  if (Buffer.byteLength(JSON.stringify(bounded)) > TOOL_RESULT_BYTES) {
+    const details = object(bounded.details);
+    return {
+      role: bounded.role, toolCallId: bounded.toolCallId, toolName: bounded.toolName,
+      // Even control characters can occupy six bytes each in JSON. Together
+      // with admitted call metadata, this fallback always fits the 32 KiB slot.
+      isError: bounded.isError, content: [{ type: "text", text: messageText(bounded).slice(0, 3000) + "… [truncated]" }],
+      ...(typeof details?.exitCode === "number" ? { details: { exitCode: details.exitCode } } : {}),
+    };
+  }
+  return bounded;
+}
+
+/** A rolling completed-turn buffer may begin or end in the middle of a batch. */
+function pairedEntries(entries: Entry[]): { entries: Entry[]; omitted: boolean } {
+  const calls = new Set(entries.flatMap(entry => toolCalls(entry.message).map(call => String(call.id))));
+  const results = new Set(entries.filter(entry => entry.message.role === "toolResult").map(entry => String(entry.message.toolCallId)));
+  let omitted = false;
+  const paired = entries.flatMap(entry => {
+    const message = entry.message;
+    if (message.role === "toolResult") {
+      if (calls.has(String(message.toolCallId))) return [entry];
+      omitted = true;
+      // Preserve useful evidence without inventing a command or emitting an
+      // orphan tool row that the host can only display as its raw JSON envelope.
+      return [textEntry("assistant", `Earlier tool call omitted from this preview; retained ${String(message.toolName ?? "tool")} output:\n${messageText(message)}`)];
+    }
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return [entry];
+    const content = message.content.filter(part => object(part)?.type !== "toolCall" || results.has(String(object(part)?.id)));
+    omitted ||= content.length !== message.content.length;
+    return content.length ? [{ ...entry, message: { ...message, content } }] : [];
+  });
+  return { entries: paired, omitted };
 }
 
 /** Bound tool arguments/output as well as text; images are omitted from the transcript. */

@@ -19,7 +19,7 @@ export default function contribute(client: PluginClientContext) {
     client.addTimelineTransformer({ id: "pi-work-status-row", query: { itemType: "tool_call" }, transform: transformStatusToolCall }),
     client.addTimelineTransformer({ id: "pi-task-inspection", query: { itemType: "tool_call" }, transform: transformTaskInspection }),
   ];
-  const read = (log: string) => client.rpc(liveOutputRpc, { log });
+  const read = (log: string, options?: { all?: boolean }) => client.rpc(liveOutputRpc, { log, ...options });
   const disposeScreen = client.addScreen({ id: "subagent-output", title: "Subagent output", Component: props => <LiveScreen {...props} read={read} /> });
   const disposeRenderer = client.addTimelineRenderer({ kind: "pi-work-status", version: 1, schema: workStatusSchema, Component: props => <SyncedWorkCard {...props} store={statuses} onOpen={props.item.data.liveLog ? () => client.openScreen({ screenId: "subagent-output", params: { log: props.item.data.liveLog!, id: props.item.data.id, title: props.item.data.title, agentId: props.agentId } }) : undefined} /> });
   return () => { statuses.dispose(); disposeScreen(); disposeRenderer(); for (const cleanup of cleanups) cleanup(); };

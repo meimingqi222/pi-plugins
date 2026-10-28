@@ -6,6 +6,93 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostTranscript } from "../src/host-transcript.ts";
 
+function transcriptRows(path: string): Array<{ message: Record<string, any> }> {
+  return readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
+}
+
+function expectPairedTools(path: string): void {
+  const pending = new Set<string>();
+  for (const { message } of transcriptRows(path)) {
+    for (const part of Array.isArray(message.content) ? message.content : []) {
+      if (part.type === "toolCall") pending.add(part.id);
+    }
+    if (message.role === "toolResult") {
+      expect(pending.has(message.toolCallId)).toBe(true);
+      pending.delete(message.toolCallId);
+    }
+  }
+  expect([...pending]).toEqual([]);
+}
+
+test("a full live preview announces its limit immediately and never admits an orphan result", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-limit-"));
+  try {
+    const transcript = new HostTranscript();
+    const path = transcript.startLive(join(dir, "raw.jsonl"), "inspect")!;
+    for (let i = 0; i < 73; i++) transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}` }] } });
+    transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "review" }, { type: "text", text: "check" }, { type: "toolCall", id: "overflow", name: "bash", arguments: { command: "true" } }] } });
+    // The native page must explain the stopped preview while execution is
+    // still active, instead of waiting until the child eventually settles.
+    expect(readFileSync(path, "utf8")).toContain("display limit");
+    transcript.observe({ type: "message_end", message: { role: "toolResult", toolCallId: "overflow", toolName: "bash", content: [{ type: "text", text: "orphan output" }] } });
+    transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "lighter message after overflow" }] } });
+    expect(readFileSync(path, "utf8")).not.toContain("orphan output");
+    expect(readFileSync(path, "utf8")).not.toContain("lighter message after overflow");
+    expectPairedTools(path);
+    transcript.snapshot(join(dir, "raw.jsonl"), "inspect", "completed", { output: "final answer" });
+    expect(readFileSync(path, "utf8")).toContain("final answer");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test.each(["items", "bytes", "control characters"])("admitted tool batches drain bounded results and settlement within Paseo read limits (%s)", mode => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-drain-"));
+  try {
+    const transcript = new HostTranscript();
+    const path = transcript.startLive(join(dir, "raw.jsonl"), "inspect")!;
+    for (let i = 0; i < (mode === "bytes" ? 42 : 63); i++) transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}:` + (mode === "bytes" ? "字".repeat(8000) : "") }] } });
+    const ids = Array.from({ length: 20 }, (_, i) => `call-${i}`);
+    transcript.observe({ type: "message_end", message: { role: "assistant", content: ids.map(id => ({ type: "toolCall", id, name: "bash", arguments: { command: "true" } })) } });
+    for (const id of ids) transcript.observe({ type: "message_end", message: { role: "toolResult", toolCallId: id, toolName: "bash", content: Array.from({ length: 20 }, () => ({ type: "text", text: (mode === "control characters" ? "\0" : "字").repeat(8000) })) } });
+    expect(transcriptRows(path).filter(row => row.message.role === "toolResult")).toHaveLength(20);
+    expectPairedTools(path);
+    expect(readFileSync(path, "utf8")).toContain("display limit");
+    transcript.snapshot(join(dir, "raw.jsonl"), "inspect", "completed", { output: "done" });
+    const rows = transcriptRows(path);
+    expect(rows.reduce((sum, row) => sum + 1 + (Array.isArray(row.message.content) ? row.message.content.length : 1), 0)).toBeLessThan(200);
+    expect(statSync(path).size).toBeLessThan(2 * 1024 * 1024);
+    expect(readFileSync(path, "utf8")).toContain("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("settlement closes an admitted tool whose result never arrived", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-pending-"));
+  try {
+    const transcript = new HostTranscript();
+    const path = transcript.startLive(join(dir, "raw.jsonl"), "inspect")!;
+    transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "pending", name: "bash", arguments: { command: "sleep 30" } }] } });
+    transcript.snapshot(join(dir, "raw.jsonl"), "inspect", "aborted", { output: "cancelled" });
+    expectPairedTools(path);
+    const result = transcriptRows(path).find(row => row.message.role === "toolResult")!.message;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("before this tool's result was available");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("bounded completed snapshots omit tool results whose calls fell out of the retained window", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-host-window-"));
+  try {
+    const transcript = new HostTranscript();
+    for (let i = 0; i < 80; i++) {
+      transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "review" }, { type: "toolCall", id: `call-${i}`, name: "read", arguments: { path: "src.ts" } }] } });
+      transcript.observe({ type: "message_end", message: { role: "toolResult", toolCallId: `call-${i}`, toolName: "read", content: [{ type: "text", text: "output" }] } });
+    }
+    transcript.observe({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "tail" }] } });
+    const path = transcript.snapshot(join(dir, "raw.jsonl"), "inspect", "completed", { output: "done" })!;
+    expectPairedTools(path);
+    expect(readFileSync(path, "utf8")).toContain("Earlier tool call omitted");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a background host transcript is available before completion and appends without replacing its path", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-host-live-"));
   try {

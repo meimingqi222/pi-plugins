@@ -38,6 +38,8 @@ export interface FoldedTranscript {
 	blocks: TranscriptBlock[];
 	/** The log reader scanned a tail; blocks before it are absent, not missing. */
 	earlierDataOmitted: boolean;
+	/** The initial task prompt supplied by the parent user or coordinator. */
+	prompt?: string;
 }
 
 const ARGS_PREVIEW_CHARS = 120;
@@ -92,6 +94,7 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean, li
 	const TEXT_LIMIT = limits.text ?? TEXT_PREVIEW_CHARS;
 	const THINKING_LIMIT = limits.thinking ?? THINKING_PREVIEW_CHARS;
 	const RESULT_LIMIT = limits.result ?? RESULT_PREVIEW_CHARS;
+	let prompt: string | undefined;
 	const blocks: TranscriptBlock[] = [];
 	const pendingTools = new Map<string, PendingTool>();
 	// In-flight assistant stream: text and thinking deltas accumulate until
@@ -144,6 +147,7 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean, li
 			case "message_start": {
 				const message = isRecord(event.message) ? event.message : undefined;
 				if (message?.role === "assistant") streamOrigin = messageId(message) ?? eventId;
+				else if (!prompt && message?.role === "user") prompt = contentText(message.content);
 				break;
 			}
 			case "message_update": {
@@ -160,6 +164,10 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean, li
 			}
 			case "message_end": {
 				const message = isRecord(event.message) ? event.message : undefined;
+				if (message?.role === "user" && !prompt) {
+					prompt = contentText(message.content);
+					break;
+				}
 				if (!message || message.role !== "assistant") break;
 				const origin = messageId(message) ?? streamOrigin ?? eventId;
 				streamOrigin = undefined;
@@ -233,7 +241,7 @@ export function foldSubagentLog(lines: string[], earlierDataOmitted: boolean, li
 		}
 	}
 	flushStream();
-	return { blocks, earlierDataOmitted };
+	return { blocks, earlierDataOmitted, ...(prompt ? { prompt } : {}) };
 }
 
 /**

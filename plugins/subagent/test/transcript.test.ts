@@ -62,6 +62,16 @@ describe("foldSubagentLog", () => {
 		const { blocks } = foldSubagentLog(lines, false);
 		expect(blocks[0]!.text.length).toBeLessThanOrEqual(1_501);
 	});
+
+	test("captures initial user prompt without emitting an artificial block", () => {
+		const lines = [
+			JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Please review the PR" }] } }),
+			JSON.stringify({ type: "message_end", message: assistantMessage }),
+		];
+		const { blocks, prompt } = foldSubagentLog(lines, false);
+		expect(prompt).toBe("Please review the PR");
+		expect(blocks.map((block) => block.kind)).toEqual(["assistant", "tool"]);
+	});
 });
 
 describe("renderTranscript", () => {

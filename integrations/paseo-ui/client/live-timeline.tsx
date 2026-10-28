@@ -1,5 +1,5 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { nativeTimelineStyle as styles } from "./native-timeline-style.ts";
 import type { LiveOutput } from "../shared/live-output.ts";
@@ -31,14 +31,27 @@ function toolSummary(block: Block): { label: string; icon: string; preview: stri
   return { label, icon, preview: preview.replace(/\s+/g, " ").trim() };
 }
 
-function ActivityRow({ block, colors }: { block: Block; colors: Colors }) {
+function arePropsEqual(prev: { block: Block; colors: Colors }, next: { block: Block; colors: Colors }): boolean {
+  if (prev.colors !== next.colors) return false;
+  const a = prev.block;
+  const b = next.block;
+  return a.id === b.id &&
+    a.kind === b.kind &&
+    a.text === b.text &&
+    a.name === b.name &&
+    a.live === b.live &&
+    a.result === b.result &&
+    a.isError === b.isError;
+}
+
+const ActivityRow = memo(function ActivityRow({ block, colors }: { block: Block; colors: Colors }) {
   // Follow execution by default, but respect a user's explicit disclosure choice
   // across polling updates. Completion collapses an untouched running row.
   const [override, setOverride] = useState<boolean>();
   const running = block.kind === "tool" && (block.live || block.result === undefined);
   const expanded = override ?? Boolean(running || block.isError);
   const { label, icon, preview } = block.kind === "thinking"
-    ? { label: "Thinking", icon: "Brain", preview: "" }
+    ? { label: "Thinking", icon: "Info", preview: "" }
     : toolSummary(block);
   const color = block.isError ? colors.statusDanger : expanded ? colors.foreground : colors.foregroundMuted;
   return <View style={styles.activity}>
@@ -52,7 +65,7 @@ function ActivityRow({ block, colors }: { block: Block; colors: Colors }) {
       {block.result !== undefined ? <Text selectable style={{ fontFamily: "monospace", fontSize: 12, lineHeight: 18, color: block.isError ? colors.statusDanger : colors.foregroundMuted }}>{block.result}</Text> : null}
     </View> : null}
   </View>;
-}
+}, arePropsEqual);
 
 export function LiveTimeline({ blocks, colors }: { blocks: Block[]; colors: Colors }) {
   return <View style={styles.column}>
