@@ -256,6 +256,52 @@ describe("pi-permissions extension wiring", () => {
     expect(options).not.toContain("Always allow in this project");
   });
 
+  test("a dangerous prompt defaults to deny, not to the first allow", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "git push -f" } });
+    const options = ui.selectCalls[0]!.options;
+    // A terminal select focuses its first option, so the order is the default.
+    // A dangerous call must not be one carriage return away from approval.
+    expect(options[0]).toBe("Deny");
+    expect(options.indexOf("Deny")).toBeLessThan(options.indexOf("Allow once"));
+  });
+
+  test("a grey prompt still leads with allow-once", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    // The reversal is scoped to the dangerous tier: inverting the everyday
+    // prompt would train the opposite reflex and make every grey call cost an
+    // extra keystroke.
+    expect(ui.selectCalls[0]!.options[0]).toBe("Allow once");
+  });
+
+  test("the dialog labels its fields and shows the command as a block", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    // Grey, so the header reads "Approve" rather than "DANGEROUS".
+    await toolCall({ toolName: "bash", input: { command: "npm test" } });
+    const title = ui.selectCalls[0]!.title;
+    expect(title).toContain("[pi-permissions] Approve bash");
+    expect(title).toContain("Reason: ");
+    expect(title).toContain("Target:");
+    // Indented, so the command reads as a command rather than as prose.
+    expect(title).toContain("\n  npm test");
+  });
+
+  test("a dangerous dialog keeps the tier in its header and still blocks the command", async () => {
+    process.env.PI_PERMISSIONS_MODE = "ask";
+    const ui = freshUi();
+    const { toolCall } = setup(ui);
+    await toolCall({ toolName: "bash", input: { command: "git push -f" } });
+    expect(ui.selectCalls[0]!.title).toContain("[pi-permissions] DANGEROUS bash");
+    expect(ui.selectCalls[0]!.title).toContain("\n  git push -f");
+  });
+
   test("an always-allow rule persists under the realpath'd cwd and is read back", async () => {
     const real = fs.mkdtempSync(path.join(dir, "real-"));
     const link = path.join(dir, "link");
@@ -508,21 +554,35 @@ describe("pi-permissions extension wiring", () => {
     expect(ui.selectCalls[0]!.title).toContain("looks unrelated");
   });
 
-  test("auto: reviewer sees the command past the 240-char display summary", async () => {
+  test("auto: the reviewer payload stays unbounded while the dialog folds explicitly", async () => {
     process.env.PI_PERMISSIONS_MODE = "auto";
     writeGlobalConfig({ reviewer: { model: "test/small" } });
     const ui = freshUi();
     const { ctx, toolCall } = setup(ui, { registry: { reply: { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"ask","reason":"needs a look"}' }] } } });
     const marker = "TAIL-MARKER-9f2c";
-    const command = `mytool --flag ${"x".repeat(240)} && echo ${marker}`;
+    // Past the display bound: the dialog must say it folded rather than cut
+    // mid-token (a cut reads as a different command than the one about to run),
+    // and the reviewer must still see the whole thing.
+    const command = `mytool --flag ${"x".repeat(900)} && echo ${marker}`;
     await toolCall({ toolName: "bash", input: { command } });
     const context = ctx.registry.calls[0] as { messages: { content: { text: string }[] }[] };
     const payload = JSON.parse(context.messages[0]!.content[0]!.text) as { toolInput: string };
     expect(payload.toolInput).toContain(marker);
-    // The human dialog keeps the bounded summary.
     expect(ui.selectCalls.length).toBe(1);
-    expect(ui.selectCalls[0]!.title).toContain("…");
+    expect(ui.selectCalls[0]!.title).toContain("more characters");
     expect(ui.selectCalls[0]!.title).not.toContain(marker);
+  });
+
+  test("auto: a command inside the display bound is shown whole, newlines intact", async () => {
+    process.env.PI_PERMISSIONS_MODE = "auto";
+    writeGlobalConfig({ reviewer: { model: "test/small" } });
+    const ui = freshUi();
+    const { toolCall } = setup(ui, { registry: { reply: { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"ask","reason":"needs a look"}' }] } } });
+    const command = "cd /tmp && python3 - <<'PY'\nimport os\nprint(1)\nPY";
+    await toolCall({ toolName: "bash", input: { command } });
+    expect(ui.selectCalls.length).toBe(1);
+    expect(ui.selectCalls[0]!.title).toContain("import os");
+    expect(ui.selectCalls[0]!.title).not.toContain("more lines");
   });
 
   test("auto: the reviewer payload keeps the command's newlines", async () => {

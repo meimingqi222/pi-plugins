@@ -13,14 +13,21 @@ function surface(tag: "div" | "span") {
   };
 }
 mock.module("react-native", () => ({ View: surface("div"), Text: surface("span"), Pressable: surface("div"), ScrollView: surface("div"), Switch: surface("span") }));
-mock.module("@getpaseo/plugin/client/react-native", () => ({ Icon: surface("span") }));
+// The icon's *name* is the thing under test (the tool's own glyph must survive
+// expansion), so the mock keeps it.
+mock.module("@getpaseo/plugin/client/react-native", () => ({
+  Icon: ({ name }: { name: string }) => createElement("span", { "data-icon": name }),
+}));
 const { WorkCard } = await import("../client/work-card.tsx");
 const { SyncedWorkCard } = await import("../client/synced-work-card.tsx");
 
 const colors = { surface1: "#171a1f", border: "#343b44", foreground: "#edf0f4", foregroundMuted: "#a9b1bd", accent: "#65b9ee", statusSuccess: "#75be8c", statusDanger: "#ee8b82" };
-function render(data: WorkStatus, palette = colors): string {
+function render(data: WorkStatus, palette = colors, expanded = false): string {
   const props = { item: { type: "plugin", kind: "pi-work-status", version: 1, data }, theme: { colors: palette } } as unknown as PluginTimelineItemProps<WorkStatus>;
-  return renderToStaticMarkup(createElement(WorkCard, props));
+  const html = renderToStaticMarkup(createElement(WorkCard, props));
+  // The component owns its disclosure state; a test that needs the open card
+  // drives the same toggle the row's press handler does.
+  return expanded ? html.replace('aria-expanded="false"', 'aria-expanded="true"') : html;
 }
 
 test("duplicate inspection and status references render exactly one task disclosure", () => {
@@ -29,21 +36,49 @@ test("duplicate inspection and status references render exactly one task disclos
   const renderReference = (source: string) => renderToStaticMarkup(createElement(SyncedWorkCard, { agentId: "parent", store, item: { type: "plugin", kind: "pi-work-status", version: 1, data: { ...latest, source } }, theme: { colors } } as any));
   expect(renderReference("tool:wait")).toBe("");
   const html = renderReference("tool:terminal");
-  expect(html.match(/Collapse Subagent:/g)).toHaveLength(1);
-  expect(html).toContain("52 tools completed");
+  // One disclosure per task, and it starts collapsed even though the task failed.
+  expect(html.match(/Expand Subagent:/g)).toHaveLength(1);
+  expect(html).not.toContain("Collapse Subagent:");
+  // The failure reason is the one thing that earns space while collapsed.
   expect(html).toContain("Provider failed");
+  // Collapsed by default: the metric and the description live behind the
+  // disclosure, so a run of failures does not stack expanded cards.
+  expect(html).not.toContain("52 tools completed");
+  expect(html).not.toContain("Review source files");
+});
+
+test("the tool's own icon leads the row and the disclosure chevron trails it", () => {
+  // Expanding used to swap the leading icon for the disclosure chevron, which
+  // erased the only cue saying whether the row was Shell, Subagent, Workflow or
+  // Goal — the card became unidentifiable at the exact moment it grew.
+  const kinds = [
+    { kind: "Bash", icon: "SquareTerminal" },
+    { kind: "Subagent", icon: "Bot" },
+    { kind: "Workflow", icon: "GitMerge" },
+    { kind: "Goal", icon: "Target" },
+  ] as const;
+  for (const { kind, icon } of kinds) {
+    const html = render({ kind, id: "sa-1", title: "t", status: "completed", description: "d", activity: "a", metric: "m" } as WorkStatus);
+    expect(html).toContain(`data-icon="${icon}"`);
+    // The chevron is a different element, and it sits after the status text.
+    const chevron = html.indexOf('data-icon="ChevronRight"');
+    expect(chevron).toBeGreaterThan(html.indexOf(`data-icon="${icon}"`));
+    expect(chevron).toBeGreaterThan(html.indexOf("Done"));
+  }
 });
 
 test("cards render task, execution state, failure reason and budget with the host theme", () => {
   const data: WorkStatus = { kind: "Subagent", id: "sa-review", title: "检查工具调用的并发行为", status: "failed", description: "Review source files", activity: "Child timed out while reading sources", metric: "3 tools completed" };
   const html = render(data);
-  expect(html).toContain("Collapse Subagent:");
+  expect(html).toContain("Expand Subagent:");
   expect(html).toContain("Failed");
   expect(html).toContain(data.title);
   expect(html).toContain(data.activity);
   expect(html).toContain("#ee8b82");
+  // Budget exhaustion is a failure, in the same seven words the terminal uses.
   const goal = render({ ...data, kind: "Goal", status: "budget_limited", metric: "100/100 tokens" });
-  expect(goal).toContain("Budget reached");
+  expect(goal).toContain("Failed");
+  expect(goal).not.toContain("Budget reached");
   expect(goal).not.toContain("100/100 tokens");
 });
 
@@ -56,15 +91,22 @@ test("bash cards show readable terminal states without placeholder commands or r
   expect(stopped).not.toContain("Background command");
   expect(stopped).not.toContain("exit unknown");
   const completed = render({ ...bash, title: "bun run typecheck", status: "exited", activity: "exit 0" });
-  expect(completed).toContain("Completed");
+  // A clean exit is "Done", not "Completed": one word per state, shared with the
+  // terminal's own glyph for it.
+  expect(completed).toContain("Done");
+  expect(completed).not.toContain("Completed");
   expect(completed).toContain("bun run typecheck");
   expect(completed).not.toContain("exit 0");
   const failed = render({ ...bash, status: "failed", activity: "exit 2" });
   expect(failed).toContain("Failed");
   expect(failed).toContain("Exit code 2");
   expect(failed).toContain(colors.statusDanger);
-  expect(render({ ...bash, status: "timedout" })).toContain("Timed out");
-  expect(render({ ...bash, status: "interrupted" })).toContain("Interrupted");
+  // A timeout is a stall, and an interruption is a stop: both were their own
+  // words before, which is how one child ended up described three ways.
+  expect(render({ ...bash, status: "timedout" })).toContain("Stalled");
+  expect(render({ ...bash, status: "timedout" })).not.toContain("Timed out");
+  expect(render({ ...bash, status: "interrupted" })).toContain("Stopped");
+  expect(render({ ...bash, status: "interrupted" })).not.toContain("Interrupted");
 });
 
 test("optional preview renders the same cards at mobile and desktop widths", () => {
@@ -95,17 +137,17 @@ test.each(["completed", "failed", "aborted"] as const)("historical subagent laun
   const latest: WorkStatus = { ...original, title: "New alias", description: "Changed description", status, activity: status === "failed" ? "Child failed" : status, metric: "72 tools completed" };
   const props = { item: { type: "plugin", kind: "pi-work-status", version: 1, data: original }, theme: { colors }, latest };
   const html = renderToStaticMarkup(createElement(WorkCard, props as any));
-  expect(html).toContain(status === "completed" ? "Completed" : status === "failed" ? "Failed" : "Cancelled");
+  // One word per state, the same seven the terminal renders.
+  expect(html).toContain(status === "completed" ? "Done" : status === "failed" ? "Failed" : "Stopped");
   expect(html).not.toContain("Running");
   expect(html).not.toContain("Background");
   expect(html).toContain("review");
   if (status === "failed") {
-    expect(html).toContain("72 tools completed");
-    expect(html).toContain("Original task description");
-  } else {
-    expect(html).not.toContain("72 tools completed");
-    expect(html).not.toContain("Original task description");
+    // The failure reason is the one thing that earns space while collapsed.
+    expect(html).toContain("Child failed");
   }
+  expect(html).not.toContain("72 tools completed");
+  expect(html).not.toContain("Original task description");
   expect(html).not.toContain("Changed description");
   expect(html).not.toContain("New alias");
 });

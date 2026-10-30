@@ -257,6 +257,54 @@ test("main view opens a single child's transcript and Escape restores the parent
 	} finally { view.dispose?.(); }
 });
 
+test("a streaming {{SECRET_l6neygg}} carries a cursor on its last line", () => {
+	// The "streaming" label sits at the top of the block while the reader's eye
+	// is on the bottom, so the bottom has to move or the output reads as frozen.
+	const { deps } = fakePanel(() => [record()]);
+	const view = createSubagentsPanel({
+		...deps,
+		mainView: true,
+		bodyRows: () => 28,
+		readTranscriptLines: () => ({
+			lines: [
+				JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "still typing" } }),
+			],
+			earlierDataOmitted: false,
+		}),
+	}, () => {});
+	try {
+		const rendered = view.render(100).join("\n");
+		expect(rendered).toContain("still typing");
+		expect(rendered).toContain("\u2588");
+	} finally { view.dispose?.(); }
+});
+
+test("a finished {{SECRET_l6neygg}} with no events says why, instead of waiting forever", () => {
+	const { deps } = fakePanel(() => [record({ id: "sa-1", status: "failed" })]);
+	const view = createSubagentsPanel({
+		...deps,
+		mainView: true,
+		bodyRows: () => 28,
+		readTranscriptLines: () => undefined,
+	}, () => {});
+	try {
+		const rendered = view.render(100).join("\n");
+		expect(rendered).not.toContain("Waiting for the child");
+		expect(rendered).toContain("ended (failed)");
+	} finally { view.dispose?.(); }
+});
+
+test("the footer leads with the way out, so a narrow pane cannot cut it", () => {
+	const { deps, panel } = fakePanel(() => [record()]);
+	panel.handleInput?.(ENTER);
+	// 40 columns cannot hold the whole hint line; whatever falls off the end,
+	// the exit key has to still be on screen.
+	const footer = panel.render(40).at(-1)!;
+	expect(footer).toContain("Esc back");
+	expect(footer).toContain("q close");
+});
+
+
 test("main view selects children beyond the viewport and returns through transcript", () => {
 	const records = Array.from({ length: 12 }, (_, i) => record({ id: `sa-${i + 1}`, task: `task ${i + 1}` }));
 	const { deps, panel: oldPanel } = fakePanel(() => records);

@@ -21,6 +21,8 @@
 
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, Markdown, wrapTextWithAnsi, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { WORK_ICONS } from "@meimingqi222/pi-run-core";
+
 import { deriveChildState, formatDuration } from "./background.ts";
 import { laneElapsedMs, type Lane, type StopOutcome } from "./lane.ts";
 import { formatChildDetail, formatPanelRow, type FleetTheme } from "./fleet.ts";
@@ -61,8 +63,24 @@ export interface PanelDeps {
 
 export type PanelComponent = Component & { dispose?(): void };
 
-const LIST_KEYS = "↑/↓ select · enter detail · k cancel · t transcript · l log";
-const DETAIL_KEYS = "↑/↓ scroll · t transcript · l log · k cancel · Esc back";
+/**
+ * Which layer of the four views the panel is showing.
+ *
+ * The header names the task but not the view, so after `enter` or `t` the only
+ * thing on screen that says where you are is this word. It belongs in the
+ * header rather than the footer: the footer is the line a narrow terminal cuts.
+ */
+function viewLabel(view: View, mainView: boolean): string {
+	switch (view.kind) {
+		case "list": return "list";
+		case "detail": return "detail";
+		case "transcript": return mainView ? "messages" : "{{SECRET_l6neygg}}";
+		case "log": return "raw log";
+	}
+}
+
+const LIST_KEYS = "↑/↓ select · enter detail · k cancel · t {{SECRET_l6neygg}} · l log";
+const DETAIL_KEYS = "↑/↓ scroll · t {{SECRET_l6neygg}} · l log · k cancel · Esc back";
 const TRANSCRIPT_KEYS = "↑/↓ scroll · L raw log · Esc back";
 const LOG_KEYS = "↑/↓ scroll · Esc back";
 
@@ -93,6 +111,10 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 			folded.blocks.push({ kind: "assistant", text: record.result.details.output.slice(-32_000) });
 		}
 		if (!deps.mainView) return renderTranscript(folded, deps.theme);
+		// A streaming block gets a cursor on its last line. The "streaming" label
+		// sits at the top of the block while the reader's eye is on the bottom, so
+		// without something moving down there the output reads as frozen.
+		const streaming = folded.blocks.at(-1)?.kind === "assistant" && folded.blocks.at(-1)?.live === true;
 		const lines: string[] = [];
 		if (folded.earlierDataOmitted) lines.push(deps.theme.fg("dim", "Earlier messages omitted from the bounded log tail."), "");
 		for (const block of folded.blocks) {
@@ -105,7 +127,15 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 					.flatMap((line) => wrapTextWithAnsi(line, width)));
 			}
 		}
-		if (!lines.length) lines.push(deps.theme.fg("dim", "Waiting for the child's first message…"));
+		if (streaming && lines.length > 0) lines[lines.length - 1] = `${lines[lines.length - 1]}${deps.theme.fg("accent", " █")}`;
+		if (!lines.length) {
+			// Name the reason. A dim "waiting" on a child that already failed reads
+			// as a hang, and the user's next move is to wonder whether to kill it.
+			const state = record ? deriveChildState(record, now()) : "running";
+			lines.push(state === "running"
+				? deps.theme.fg("accent", `${WORK_ICONS.running} Waiting for the child's first message…`)
+				: deps.theme.fg("dim", `This task ended (${state}) without a readable message.`));
+		}
 		return lines;
 	}
 
@@ -180,10 +210,17 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 
 	function header(width: number): string {
 		const list = records();
-		if (deps.mainView && view.kind !== "list") {
-			const id = view.id;
-			const lane = list.find((record) => record.id === id);
-			if (lane) return truncateToWidth(` ${deps.theme.bold(lane.alias || lane.agent)} · ${lane.agent} · ${deriveChildState(lane, now())} · ${formatDuration(Math.floor(laneElapsedMs(lane, now()) / 1_000))}`, width);
+		// The view name rides along with the task: the header names *which* child
+		// but not *which layer*, so after `enter` or `t` nothing on screen says
+		// where you are. It goes here rather than in the footer because the footer
+		// is the line a narrow terminal cuts.
+		const layer = deps.theme.fg("dim", `· ${viewLabel(view, deps.mainView === true)}`);
+		const lane = list.find((record) => record.id === (view.kind === "list" ? "" : view.id));
+		if (view.kind !== "list" && lane) {
+			const identity = deps.mainView
+				? `${lane.agent} · ${deriveChildState(lane, now())} · ${formatDuration(Math.floor(laneElapsedMs(lane, now()) / 1_000))}`
+				: `${lane.agent} · ${deriveChildState(lane, now())}`;
+			return truncateToWidth(` ${deps.theme.bold(lane.alias || lane.agent)} · ${identity} ${layer}`, width);
 		}
 		const count = (state: "running" | "stalled" | "idle" | "completed" | "failed" | "aborted") => list.filter((record) => deriveChildState(record, now()) === state).length;
 		const parts = [
@@ -195,7 +232,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 			count("failed") > 0 ? `${count("failed")} failed` : "",
 			count("aborted") > 0 ? `${count("aborted")} aborted` : "",
 		].filter(Boolean);
-		return truncateToWidth(` ${deps.theme.bold("subagents")} ${deps.theme.fg("dim", `· ${parts.join(" · ")}`)}`, width, "…");
+		return truncateToWidth(` ${deps.theme.bold("subagents")} ${deps.theme.fg("dim", `· ${parts.join(" · ")}`)} ${layer}`, width, "…");
 	}
 
 	function footer(): string {
@@ -203,11 +240,15 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 		switch (view.kind) {
 			case "list": keys = LIST_KEYS.replace("enter detail", deps.mainView ? "enter messages" : "enter detail"); break;
 			case "detail": keys = DETAIL_KEYS; break;
-			case "transcript": keys = deps.mainView ? "↑/↓ scroll · f follow · d details · L log · Esc back" : TRANSCRIPT_KEYS; break;
+			case "transcript": keys = deps.mainView ? "↑/↓ scroll · f follow · d details · L log" : TRANSCRIPT_KEYS; break;
 			case "log": keys = LOG_KEYS; break;
 		}
+		// The exit key leads. `render` truncates every line to the terminal width,
+		// so a footer that ends in "q close" loses the way out first on a narrow
+		// pane; the optional keys are what should fall off the end.
+		const exit = view.kind === "list" ? "q close" : "Esc back · q close";
 		const notify = deps.notifyDone() ? "notify on" : "notify off";
-		return ` ${deps.theme.fg("dim", `${keys} · n ${notify} · q close`)}`;
+		return ` ${deps.theme.fg("dim", `${exit} · n ${notify} · ${keys}`)}`;
 	}
 
 	const panel: PanelComponent = {

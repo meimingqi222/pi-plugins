@@ -1,5 +1,17 @@
 import { z } from "zod";
 
+/**
+ * The seven states a piece of work can be in, mirroring `pi-run-core`'s
+ * `WorkState`.
+ *
+ * Duplicated rather than imported on purpose: this package ships to Paseo as a
+ * standalone plugin, and reaching into `pi-run-core` would drag the pi TUI
+ * dependency chain into it for one string union. The terminal glyphs and colours
+ * for these states live in `pi-run-core/src/work-surface.ts`; if that list
+ * changes, change this one in the same commit.
+ */
+export type WorkState = "queued" | "running" | "idle" | "stalled" | "succeeded" | "failed" | "stopped";
+
 // Only raw execution evidence names, never host-session files or arbitrary paths.
 export const liveLogSchema = z.string().max(220).regex(/^[A-Za-z0-9._-]+-sa(?:[0-9]+|-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/u);
 

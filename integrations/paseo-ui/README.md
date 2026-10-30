@@ -30,13 +30,24 @@ call holds one live card in place of its tool row and returns to the native row
 once the child settles, followed by its terminal status card.
 
 Bash, Subagent, Workflow and Goal share the native tool-row density, icon size
-and disclosure layout. Normal rows start collapsed with a single-line task or
+and disclosure layout. Every row starts collapsed with a single-line task or
 command summary and a muted status. Click the row to expand the saved command,
-task description, activity, task ID and metrics; PID stays in these details.
-Failures start expanded, while manual disclosure choices survive status updates.
-Shell uses the native terminal icon and other extension tools use its generic
-Wrench icon. Running labels follow the native foreground/opacity treatment;
-completed rows return to muted text instead of a green status badge.
+task description, activity, task ID and usage; PID stays in these details.
+Failures stay collapsed too and carry a one-line red summary instead, so a run
+of consecutive failures does not stack expanded cards and push earlier context
+off the timeline. A manual disclosure choice survives status updates.
+Shell uses the native terminal icon, and Subagent, Workflow and Goal use Bot,
+GitMerge and Target rather than one shared generic icon: the leading badge is
+what says which kind of work a row is, so the disclosure chevron moved to the
+trailing edge instead of replacing it. Running labels follow the native
+foreground/opacity treatment; completed rows return to muted text instead of a
+green status badge.
+
+Status words are the same seven the terminal renders, so a card and the fleet
+row for one child never disagree: Queued, Running, Idle, Stalled, Done,
+Failed, Stopped. `exited(0)`/`complete` read Done, `timedout`/`no_progress`
+read Stalled, `aborted`/`killed`/`interrupted` read Stopped, and
+`budget_limited`/`blocked` read Failed.
 
 Click the separate terminal button on a subagent row to open the plugin output screen.
 Foreground progress and background launch cards expose this entry before the

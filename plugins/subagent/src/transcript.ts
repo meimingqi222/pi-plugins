@@ -14,6 +14,8 @@
  * the whole run.
  */
 
+import { WORK_ICONS } from "@meimingqi222/pi-run-core";
+
 interface TranscriptTheme {
 	fg(color: string, text: string): string;
 }
@@ -272,7 +274,14 @@ export function renderTranscript(folded: FoldedTranscript, theme: TranscriptThem
 				break;
 			}
 			case "tool": {
-				const marker = block.isError ? theme.fg("error", "  ✗") : block.result === undefined ? theme.fg("accent", "  ●") : theme.fg("success", "  ✓");
+				// The shared glyphs, not a private set: `✗` is not one column wide in
+				// plenty of terminal fonts, which shifts every indented line under it,
+				// and the fleet widget already renders this state as `×`.
+				const marker = block.isError
+					? theme.fg("error", `  ${WORK_ICONS.failed}`)
+					: block.result === undefined
+						? theme.fg("accent", `  ${WORK_ICONS.running}`)
+					: theme.fg("success", `  ${WORK_ICONS.succeeded}`);
 				lines.push(`${marker} ${theme.fg("dim", body)}`);
 				if (block.result) {
 					for (const line of block.result.split("\n").slice(0, 8)) {

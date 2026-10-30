@@ -25,7 +25,7 @@ export const OPT_ALLOW_ONCE = "Allow once";
 export const OPT_ALLOW_SESSION = "Allow for this session";
 export const OPT_ALLOW_ALWAYS = "Always allow in this project";
 export const OPT_DENY = "Deny";
-export const OPT_DENY_FEEDBACK = "Deny with feedback…";
+export const OPT_DENY_FEEDBACK = "Deny and explain to the agent…";
 
 /** Label for the directory grant offered on a dangerous call outside the workspace. */
 export function optionAllowDirectory(directory: string): string {
@@ -46,10 +46,52 @@ export function describeInput(tool: string, input: Record<string, unknown>): str
   return String(key).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/gu, "");
 }
 
-/** One line, bounded — what the approval dialog shows. */
+/** Longest command lines the dialog keeps verbatim before folding the rest. */
+const COMMAND_BLOCK_LINES = 4;
+/** Soft-wrap column: past this a line folds rather than being cut mid-token. */
+const COMMAND_BLOCK_WIDTH = 80;
+/** Raw characters formatted before the block folds, with the elision stated. */
+const COMMAND_BLOCK_MAX_CHARS = 600;
+
+/**
+ * The command as an indented block — what the approval dialog shows.
+ *
+ * Newlines survive on purpose. Flattening a heredoc, a pipeline or a
+ * multi-line `python -c` into one line destroys the structure a reviewer needs
+ * in order to see an injection in, which is the one thing this dialog exists
+ * for. A line past the wrap column folds instead of being cut, because a cut
+ * reads as a different command than the one about to run.
+ *
+ * Every elision is stated, in lines or in characters. A silently shortened
+ * command is the failure mode this replaces: the dialog would show a command
+ * that is not the one about to run.
+ */
+export function formatCommandBlock(command: string): string {
+  const truncated = command.length > COMMAND_BLOCK_MAX_CHARS;
+  const bounded = truncated ? command.slice(0, COMMAND_BLOCK_MAX_CHARS) : command;
+  const lines = bounded.split("\n");
+  const kept: string[] = [];
+  for (const line of lines.slice(0, COMMAND_BLOCK_LINES)) {
+    if (line.length <= COMMAND_BLOCK_WIDTH) {
+      kept.push(`  ${line}`);
+      continue;
+    }
+    for (let index = 0; index < line.length; index += COMMAND_BLOCK_WIDTH) {
+      kept.push(`  ${line.slice(index, index + COMMAND_BLOCK_WIDTH)}`);
+    }
+  }
+  const hiddenLines = lines.length - COMMAND_BLOCK_LINES;
+  if (hiddenLines > 0) kept.push(`  … ${hiddenLines} more lines`);
+  else if (truncated) kept.push(`  … ${command.length - COMMAND_BLOCK_MAX_CHARS} more characters`);
+  return kept.join("\n");
+}
+
+/** The bounded command block for the approval dialog. */
 export function summarizeInput(tool: string, input: Record<string, unknown>): string {
-  const flat = describeInput(tool, input).replace(/\s*\n\s*/gu, " ");
-  return flat.length > 240 ? `${flat.slice(0, 240)}…` : flat;
+  // Not pre-sliced: `formatCommandBlock` bounds the text itself and is the only
+  // place that knows an elision happened, so it is the only place that can
+  // state it. Slicing here would hide the cut from the marker.
+  return formatCommandBlock(describeInput(tool, input));
 }
 
 /**
@@ -102,19 +144,35 @@ export function createPrompter() {
   };
 
   async function run(opts: PromptOptions): Promise<PromptOutcome> {
-    const title = `[pi-permissions] ${opts.dangerous ? "DANGEROUS" : "Approve"} ${opts.toolName}\n${opts.reason}\n${opts.summary}`;
+    // Labelled fields, not one run-on line: tool, reason and target are three
+    // different kinds of fact, and a reviewer has about a second to find the
+    // one that matters before deciding.
+    const title = [
+      `[pi-permissions] ${opts.dangerous ? "DANGEROUS" : "Approve"} ${opts.toolName}`,
+      `Reason: ${opts.reason}`,
+      "Target:",
+      opts.summary,
+    ].join("\n");
     const directoryOption = opts.grantDirectory ? optionAllowDirectory(opts.grantDirectory) : undefined;
-    const options = [OPT_ALLOW_ONCE];
-    if (!opts.dangerous && opts.allowSession) {
-      options.push(OPT_ALLOW_SESSION);
-      if (!opts.readOnly && opts.allowRules.length > 0) options.push(OPT_ALLOW_ALWAYS);
-    } else if (directoryOption) {
+    // A terminal `select` focuses its first option, so the order *is* the
+    // default. "Allow once" first on a dangerous call trains a carriage-return
+    // reflex that authorises exactly the calls this tier exists to stop; deny
+    // has to be the option the reflex reaches.
+    const options: string[] = [];
+    if (opts.dangerous) {
+      options.push(OPT_DENY, OPT_DENY_FEEDBACK, OPT_ALLOW_ONCE);
       // Dangerous calls offer no rule-based grant (a rule cannot lift the tier),
       // but a directory the user vouches for is exactly what additionalDirectories
       // is for — the same shape as the workspace itself.
-      options.push(directoryOption);
+      if (directoryOption) options.push(directoryOption);
+    } else {
+      options.push(OPT_ALLOW_ONCE);
+      if (opts.allowSession) {
+        options.push(OPT_ALLOW_SESSION);
+        if (!opts.readOnly && opts.allowRules.length > 0) options.push(OPT_ALLOW_ALWAYS);
+      }
+      options.push(OPT_DENY, OPT_DENY_FEEDBACK);
     }
-    options.push(OPT_DENY, OPT_DENY_FEEDBACK);
     const choice = await opts.deps.select(title, options, { signal: opts.deps.signal });
     if (opts.deps.signal?.aborted || !choice || !options.includes(choice)) return { outcome: "deny", rules: [] };
     if (choice === OPT_ALLOW_ONCE) return { outcome: "allow-once", rules: opts.allowRules };

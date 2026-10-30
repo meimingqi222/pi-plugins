@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { WORK_ICONS } from "@meimingqi222/pi-run-core";
+
 import { foldSubagentLog, renderTranscript } from "../src/transcript.ts";
 
 const THEME = {
@@ -85,5 +87,30 @@ describe("renderTranscript", () => {
 
 	test("an empty fold says so rather than rendering nothing", () => {
 		expect(renderTranscript({ blocks: [], earlierDataOmitted: false }, THEME).join("\n")).toContain("no readable events");
+	});
+
+	test("a failed tool uses the shared one-column glyph, not a private one", () => {
+		// `✗` is wider than one column in plenty of terminal fonts, so every
+		// indented line under it shifts; the fleet widget already renders this
+		// state as `×`, and the transcript must not disagree with it.
+		const lines = renderTranscript(
+			{ blocks: [{ kind: "tool", text: "bash(git push -f)", isError: true, result: "rejected" }], earlierDataOmitted: false },
+			THEME,
+		);
+		expect(lines[0]).toContain(WORK_ICONS.failed);
+		expect(lines[0]).not.toContain("✗");
+	});
+
+	test("a finished tool and a running one use the shared glyphs too", () => {
+		const done = renderTranscript(
+			{ blocks: [{ kind: "tool", text: "bash(npm test)", result: "ok" }], earlierDataOmitted: false },
+			THEME,
+		);
+		expect(done[0]).toContain(WORK_ICONS.succeeded);
+		const running = renderTranscript(
+			{ blocks: [{ kind: "tool", text: "bash(npm test)" }], earlierDataOmitted: false },
+			THEME,
+		);
+		expect(running[0]).toContain(WORK_ICONS.running);
 	});
 });

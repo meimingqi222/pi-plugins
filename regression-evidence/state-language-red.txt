@@ -1,0 +1,31 @@
+# red-run proof for 2026-10-30-one-work-state-language
+# the private ✗/●/✓ markers restored; the new tests must fail
+ent/test/transcript.test.ts:
+(pass) foldSubagentLog > folds a finished assistant message with its tool call and result [4.44ms]
+(pass) foldSubagentLog > streaming text deltas fold into a live assistant block [0.27ms]
+(pass) foldSubagentLog > a tool start without a message part still earns a row, and its end pairs to it [0.39ms]
+(pass) foldSubagentLog > non-JSON lines and a truncation marker never crash the fold [1.63ms]
+(pass) foldSubagentLog > long text is bounded per block [0.23ms]
+(pass) foldSubagentLog > captures initial user prompt without emitting an artificial block [0.15ms]
+(pass) renderTranscript > renders bounded lines with the omission marker up front [0.82ms]
+(pass) renderTranscript > an empty fold says so rather than rendering nothing [0.04ms]
+ 95 | 		// state as `×`, and the transcript must not disagree with it.
+ 96 | 		const lines = renderTranscript(
+ 97 | 			{ blocks: [{ kind: "tool", text: "bash(git push -f)", isError: true, result: "rejected" }], earlierDataOmitted: false },
+ 98 | 			THEME,
+ 99 | 		);
+100 | 		expect(lines[0]).toContain(WORK_ICONS.failed);
+                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "×"
+Received: "  ✗ bash(git push -f)"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/transcript.test.ts:100:20)
+(fail) renderTranscript > a failed tool uses the shared one-column glyph, not a private one [6.09ms]
+(pass) renderTranscript > a finished tool and a running one use the shared glyphs too [0.12ms]
+
+ 9 pass
+ 1 fail
+ 23 expect() calls
+Ran 10 tests across 1 file. [165.00ms]
