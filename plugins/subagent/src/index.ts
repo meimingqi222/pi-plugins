@@ -93,7 +93,11 @@ export function resolveLaneLimit(env: NodeJS.ProcessEnv = process.env): number {
 export function subagentExtension(options: SubagentExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     if (options.enabled === false || subagentsDisabled()) return;
-    sweepSubagentLogs();
+    // Not in the factory: `pi --print` and RPC load extensions without a
+    // session, and this is synchronous I/O over up to 200 files that would land
+    // before startup. The guide is explicit that long-lived work belongs to
+    // `session_start`.
+    pi.on("session_start", () => { sweepSubagentLogs(); });
     const goalSpend = connectGoalSpend(pi);
     let generation = 0;
     const delivery = new SubagentResultDelivery(pi);

@@ -70,6 +70,19 @@ export class ResumeLog {
   }
 
   /**
+   * Cached entries not yet consumed.
+   *
+   * What a resumed panel's budget check subtracts: a call whose hash is still
+   * cached costs nothing, and charging it against this run's agent budget
+   * refuses work the earlier run already paid for.
+   */
+  get remaining(): number {
+    let total = 0;
+    for (const list of this.byHash.values()) total += list.length;
+    return total;
+  }
+
+  /**
    * The cached result for this call, or `undefined` to run it live.
    *
    * A miss consumes nothing and disables nothing: later calls keep looking,

@@ -322,9 +322,14 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
       budget.admit(calls);
     },
     check(calls) {
-      // A resumed panel may contain only cached work; live calls still admit individually.
-      if (options.journal?.resume.hasCachedEntries) return;
-      budget.check(calls);
+      // A resumed panel is not free just because the run is resumed — only the
+      // calls whose hash is still cached cost nothing, and the rest are live.
+      // Skipping the check outright let a resumed 100-task panel under a 64-agent
+      // budget run a prefix and degrade the remainder to null, which is the
+      // "refused whole" guarantee broken quietly instead of loudly.
+      const coverable = options.journal?.resume.remaining ?? 0;
+      if (coverable >= calls) return;
+      budget.check(Math.max(1, calls - coverable));
     },
     async agent(prompt, agentOptions: WorkflowAgentOptions, signal: AbortSignal) {
       const index = sequence;

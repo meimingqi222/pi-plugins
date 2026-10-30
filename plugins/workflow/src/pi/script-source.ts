@@ -13,7 +13,7 @@
  */
 
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, mkdir, readFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createWorkflowRunPaths } from "../runs/journal.ts";
@@ -131,6 +131,30 @@ export function normalizeSavedName(name: string): string {
  * Requiring exactly one is deliberate: accepting more than one would mean
  * silently picking a winner, and the caller cannot tell which script ran.
  */
+/**
+ * Read a script without loading an unbounded file first.
+ *
+ * `readFile` into a string and *then* checking the size is the wrong order: a
+ * multi-gigabyte script is already in the heap by the time the limit is
+ * enforced, so the check protects the parser and not the process. `stat` is one
+ * cheap syscall and refuses the obvious case; the read is still capped, because
+ * a file can grow between the two.
+ */
+async function readBounded(sourcePath: string): Promise<string> {
+  const info = await stat(sourcePath);
+  if (info.size > MAX_SCRIPT_BYTES) {
+    throw new Error(`Workflow script is ${info.size} bytes; the limit is ${MAX_SCRIPT_BYTES}`);
+  }
+  const handle = await open(sourcePath, "r");
+  try {
+    const buffer = Buffer.alloc(MAX_SCRIPT_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead ?? 0).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function resolveWorkflowSource(
   cwd: string,
   request: WorkflowRequest,
@@ -155,7 +179,7 @@ export async function resolveWorkflowSource(
     if (!isInside(cwd, sourcePath)) {
       throw new Error("workflow scriptPath must stay inside the working directory");
     }
-    script = await readFile(sourcePath, "utf8");
+    script = await readBounded(sourcePath);
     name = path.basename(sourcePath, path.extname(sourcePath));
   } else {
     const saved = normalizeSavedName(request.name ?? "");
@@ -171,7 +195,7 @@ export async function resolveWorkflowSource(
     if (!sourcePath) {
       throw new Error(`Saved workflow "${saved}" was not found in ${roots.project} or ${roots.user}`);
     }
-    script = await readFile(sourcePath, "utf8");
+    script = await readBounded(sourcePath);
     name = saved;
   }
 

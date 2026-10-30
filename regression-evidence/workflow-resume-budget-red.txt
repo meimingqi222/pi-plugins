@@ -1,0 +1,23 @@
+# red-run proof: a resumed panel is charged for its live calls only
+# the `if (hasCachedEntries) return;` skip restored
+
+efault panel is capped at four concurrent agents [34.50ms]
+(pass) workflow concurrency > maxConcurrency above four is clamped to four [36.50ms]
+(pass) workflow concurrency > a throwing task becomes null without failing the panel [12.46ms]
+(pass) workflow observability on disk > a failed call is journaled, not only the successes [13.89ms]
+(pass) workflow observability on disk > a failed agent carries its reason into the live progress snapshot [12.53ms]
+(pass) workflow observability on disk > progress.json is written and ends with the terminal status [15.05ms]
+(pass) workflow observability on disk > a run the budget stopped reports that, and a run that merely overspent still completed [27.09ms]
+(pass) workflow observability on disk > the run's per-agent timeout and evidence path reach the executor [15.42ms]
+(pass) run status > an externally stopped run is aborted, a thrown script is failed [0.89ms]
+(pass) provider concurrency ceiling > defaults to four and clamps the request to it [0.14ms]
+(pass) provider concurrency ceiling > a panel is bounded by the ceiling with no request [33.34ms]
+(pass) provider concurrency ceiling > a request above the ceiling is clamped, not refused [44.37ms]
+
+1 tests failed:
+(fail) workflow enforcement > a resumed panel is charged only for the calls the cache cannot cover [34.77ms]
+
+ 38 pass
+ 1 fail
+ 99 expect() calls
+Ran 39 tests across 1 file. [4.44s]

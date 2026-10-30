@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { runWorkflow, DEFAULT_MAX_AGENTS } from "../src/runs/orchestrator.ts";
 import { createAdmission, DEFAULT_ADMISSION_KEY } from "@meimingqi222/pi-run-core";
 import { createWorkflowRunPaths, readJsonLines, WorkflowJournal } from "../src/runs/journal.ts";
+import { emptyWorkflowUsage, type WorkflowJournalEntry } from "../src/core/types.ts";
+import { workflowHash } from "../src/core/hash.ts";
 import type { AgentExecutor } from "../src/runner/agent-runner.ts";
 import type { WorkflowAgentRunInput } from "../src/core/types.ts";
 
@@ -16,6 +18,22 @@ import type { WorkflowAgentRunInput } from "../src/core/types.ts";
 const TIMEOUT_MS = 8_000;
 
 /** An executor that records calls and returns a scripted reply. */
+function journalEntry(seq: number, callHash: string, status: "completed" | "failed"): WorkflowJournalEntry {
+  return {
+    schemaVersion: 1,
+    seq,
+    callId: `c${seq}`,
+    callHash,
+    prompt: "p",
+    options: {},
+    status,
+    ...(status === "failed" ? { error: "earlier failure" } : { result: { ok: true } }),
+    usage: emptyWorkflowUsage(),
+    attempt: 1,
+    createdAt: 1_000 + seq,
+  };
+}
+
 function recorder(
   reply: (input: WorkflowAgentRunInput) =>
     | Partial<{ value: unknown; text: string; status: "completed" | "failed"; errorMessage: string }>
@@ -359,6 +377,58 @@ describe("workflow enforcement", () => {
     });
     expect(result.status).toBe("failed");
     expect(result.stopReason).toContain("budget");
+  });
+
+  test("a resumed panel is charged only for the calls the cache cannot cover", async () => {
+    // The guarantee "a panel that would exceed the budget is refused rather than
+    // partially run" has to survive a resume. Skipping the check for a resumed
+    // run let a four-call panel under a two-agent budget run three live children
+    // — the cache absorbed one, and the other three were admitted unchecked.
+    const root = await mkdtemp(join(tmpdir(), "pi-wf-resume-budget-"));
+    try {
+      const prompts = ["a", "b", "c", "d"];
+      const script = `return await parallel([${prompts.map((prompt) => `async () => agent('${prompt}', {})`).join(", ")}]);`;
+      const hashes = prompts.map((prompt) => workflowHash({ prompt, options: {} }));
+
+      // Seed a previous run's journal on disk, then open the run under test with
+      // `resumeFrom` — the resume cache is built at open time from the file, so
+      // appending to the same journal afterwards would not be visible to it.
+      const seed = async (runId: string, cached: number) => {
+        const paths = createWorkflowRunPaths(root, runId);
+        const journal = await WorkflowJournal.open(paths, script);
+        for (let seq = 0; seq < cached; seq += 1) {
+          await journal.append(journalEntry(seq, hashes[seq]!, "completed"));
+        }
+        await journal.flush();
+        return WorkflowJournal.open(createWorkflowRunPaths(root, `${runId}-resumed`), script, paths);
+      };
+
+      // Three of four cached, one live: a one-agent budget is enough, and the
+      // cache is what makes it enough.
+      const cheap = recorder(() => ({ value: 1 }));
+      const resumed = await runWorkflow({
+        script, args: null, name: "t", cwd: process.cwd(),
+        executor: cheap.executor, budget: { agents: 1 }, timeoutMs: TIMEOUT_MS,
+        journal: await seed("wf_cheap", 3),
+      });
+      expect(resumed.status).toBe("completed");
+      expect(cheap.inputs).toHaveLength(1);
+      expect(cheap.inputs[0]!.prompt).toBe("d");
+
+      // One of four cached, three live, two-agent budget: refused whole. The old
+      // skip let all three run, which is the over-admission this pins.
+      const live = recorder(() => ({ value: 1 }));
+      const refused = await runWorkflow({
+        script, args: null, name: "t", cwd: process.cwd(),
+        executor: live.executor, budget: { agents: 2 }, timeoutMs: TIMEOUT_MS,
+        journal: await seed("wf_tight", 1),
+      });
+      expect(refused.status).toBe("failed");
+      expect(refused.stopReason).toContain("budget");
+      expect(live.inputs).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("a panel refused by the budget starts no child at all", async () => {
