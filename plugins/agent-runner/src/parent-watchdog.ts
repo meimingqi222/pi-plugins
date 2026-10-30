@@ -93,8 +93,14 @@ export function startParentWatchdog(childPid: number | undefined, options: Watch
       stdio: "ignore",
       detached: true,
       windowsHide: true,
+      // A minimal environment, deliberately. The watchdog's whole job is to read
+      // two pids and signal one group, so it has no business holding a copy of
+      // the parent's environment — which on this host is every provider key the
+      // session carries. Spawning without `env` would inherit all of it by
+      // default, so the set is stated instead: the four values the program reads,
+      // plus `PATH` because a runtime occasionally resolves a helper through it.
       env: {
-        ...process.env,
+        PATH: process.env.PATH ?? "",
         PI_WATCHDOG_PARENT_PID: String(process.pid),
         PI_WATCHDOG_CHILD_PID: String(childPid),
         PI_WATCHDOG_POLL_MS: String(options.pollMs ?? DEFAULT_POLL_MS),

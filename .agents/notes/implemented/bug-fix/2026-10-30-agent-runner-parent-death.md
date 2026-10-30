@@ -56,6 +56,14 @@ failure. Its exit is bounded by the three conditions above instead.
 
 ## Consequences
 
+- **The watchdog runs with a minimal environment.** It reads two pids and
+  signals one group, so it has no business holding a copy of the parent's
+  environment — which on a host running this plugin is every provider key the
+  session carries. Omitting `env` would inherit all of it by default, so the set
+  is stated: `PATH`, plus the four values the program reads.
+
+
+
 - One extra short-lived process per agent run. It is `stdio: "ignore"`, sleeps
   in a one-second interval, and is stopped as soon as the run settles.
 - Still best effort: `SIGKILL` the watchdog as well and the orphan window
@@ -66,8 +74,10 @@ failure. Its exit is bounded by the three conditions above instead.
 
 ## Verification
 
-- `plugins/agent-runner/test/parent-watchdog.test.ts` — `the child dies when its
-  parent is SIGKILLed` drives a real parent process that arms the watchdog and
+- `plugins/agent-runner/test/parent-watchdog.test.ts` — `the watchdog is given a
+  minimal environment, not the parent's` plants a marker in the parent's
+  environment and asserts it does not reach the child, alongside `the child dies
+  when its parent is SIGKILLed` drives a real parent process that arms the watchdog and
   then `process.kill(process.pid, "SIGKILL")`s itself, and asserts the victim is
   alive the instant the parent dies and dead shortly after. Plus the no-pid,
   Windows, idempotent-stop, grandchild-group and lifetime-cap cases.
@@ -76,3 +86,4 @@ failure. Its exit is bounded by the three conditions above instead.
   fix is the removal of that one call.
 
 Proved: Proved: the first version of `parent-watchdog.ts` kept the `timer.unref()` copied from `executor.ts`; `plugins/agent-runner/test/parent-watchdog.test.ts::the child dies when its parent is SIGKILLed` then failed with the victim still alive 800 ms after the parent's death, because the unref'd interval let the watchdog's event loop empty before the parent died. Removing that one call is the fix.
+\n\nProved: `regression-evidence/watchdog-env-red.txt` — restoring `...process.env` in the spawn options makes the minimal-environment test fail with the planted marker arriving in the child (`Received: "do-not-propagate"`).\n

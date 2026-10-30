@@ -1,0 +1,24 @@
+# red-run proof: the watchdog gets a minimal environment
+# `...process.env` restored in the spawn options
+
+startParentWatchdog > a grandchild in the group dies with the child when the parent goes [158.06ms]
+(pass) startParentWatchdog > the child dies when its parent is SIGKILLed [638.94ms]
+144 |       else process.env[marker] = previous;
+145 |     }
+146 | 
+147 |     expect(spawned).toHaveLength(1);
+148 |     const env = spawned[0]!.options.env as Record<string, string>;
+149 |     expect(env[marker]).toBeUndefined();
+                              ^
+error: expect(received).toBeUndefined()
+
+Received: "do-not-propagate"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/agent-runner/test/parent-watchdog.test.ts:149:25)
+(fail) startParentWatchdog > the watchdog is given a minimal environment, not the parent's [2.29ms]
+(pass) startParentWatchdog > a wedged watchdog stops itself at its lifetime cap [426.34ms]
+
+ 6 pass
+ 1 fail
+ 11 expect() calls
+Ran 7 tests across 1 file. [1360.00ms]

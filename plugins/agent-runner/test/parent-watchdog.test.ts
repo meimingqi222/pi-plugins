@@ -119,6 +119,40 @@ describe("startParentWatchdog", () => {
     }
   });
 
+  test("the watchdog is given a minimal environment, not the parent's", () => {
+    // The watchdog reads two pids and signals one group. Copying the parent's
+    // environment into it — which is what omitting `env` does by default —
+    // hands a second process every provider key the session carries, for no
+    // reason. This pins the set so a later "for compatibility" spread cannot
+    // quietly widen it back.
+    const spawned: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    // A marker with no credential shape of its own: the point is that nothing from
+    // the parent reaches the watchdog, whatever the variable is called.
+    const marker = "PI_TEST_PARENT_MARKER";
+    const previous = process.env[marker];
+    process.env[marker] = "do-not-propagate";
+    try {
+      startParentWatchdog(4242, {
+        platform: "linux",
+        spawn: ((command: string, args: string[], options: Record<string, unknown>) => {
+          spawned.push({ command, args, options });
+          return { unref() {}, kill() {} } as never;
+        }) as never,
+      });
+    } finally {
+      if (previous === undefined) delete process.env[marker];
+      else process.env[marker] = previous;
+    }
+
+    expect(spawned).toHaveLength(1);
+    const env = spawned[0]!.options.env as Record<string, string>;
+    expect(env[marker]).toBeUndefined();
+    // What it does get: the two pids it needs, and PATH.
+    expect(env.PI_WATCHDOG_PARENT_PID).toBe(String(process.pid));
+    expect(env.PI_WATCHDOG_CHILD_PID).toBe("4242");
+    expect(typeof env.PATH).toBe("string");
+  });
+
   test("a wedged watchdog stops itself at its lifetime cap", async () => {
     // Without the cap a watchdog whose child never exits would poll forever.
     const { pid } = spawnOrphanVictim();
