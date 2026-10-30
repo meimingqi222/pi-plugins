@@ -15,5 +15,14 @@ export function installRedactBridge(pi: ExtensionAPI) {
   return {
     // A throwing service must propagate to the hook's fallback, never send raw.
     redact<T>(value: T): T { return service ? service.redactJson(value) as T : value; },
+    /**
+     * Whether a redactor answered at all.
+     *
+     * Distinct from "redaction is paused": a service that reports itself
+     * disabled is the user's explicit choice and the payload goes out as they
+     * asked. No service at all is an unexamined gap, and a caller that would
+     * otherwise upload unredacted has to treat the two differently.
+     */
+    available(): boolean { return service !== undefined; },
   };
 }

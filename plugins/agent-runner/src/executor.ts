@@ -23,6 +23,7 @@ import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { jsonRunArgs, resolvePiInvocation, type PiInvocation } from "./spawn.ts";
 import { killAgentTree } from "./process.ts";
+import { startParentWatchdog } from "./parent-watchdog.ts";
 import {
   createEvidenceWriter,
   createJsonLineReader,
@@ -199,6 +200,11 @@ export interface AgentExecutorOptions {
   extraArgs?: string[];
   /** Temp root override for testing prompt preparation failures. */
   systemPromptRoot?: string;
+  /**
+   * Parent-death watchdog tuning. Omitted entirely it still runs with its
+   * defaults; pass `{ pollMs: 0 }`-style overrides only from tests.
+   */
+  watchdog?: { pollMs?: number; maxLifetimeMs?: number };
 }
 
 /** Fifteen minutes: long enough for a real delegated task, short enough to bound a hung child. */
@@ -620,6 +626,14 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
           windowsHide: true,
         });
 
+        // The child leads its own group, so it survives this terminal going
+        // away — and also survives *us* being SIGKILLed, which would leave it
+        // burning provider budget with no owner. The watchdog closes that
+        // window; it is best effort and the README says so.
+        const stopWatchdog = startParentWatchdog(child.pid, {
+          ...(options.watchdog ? { pollMs: options.watchdog.pollMs, maxLifetimeMs: options.watchdog.maxLifetimeMs } : {}),
+        });
+
         const state = emptyStreamState();
         let stderr = "";
         let settled = false;
@@ -724,6 +738,10 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         async function finish(): Promise<void> {
           if (settled) return;
           settled = true;
+          // The run is over, so the watchdog has nothing left to guard. Stopping
+          // it here rather than waiting out its poll interval keeps a burst of
+          // short agents from leaving a trail of one-second processes.
+          stopWatchdog();
           if (timer) clearTimeout(timer);
           if (stallTimer) clearInterval(stallTimer);
           if (terminationTimer) clearTimeout(terminationTimer);

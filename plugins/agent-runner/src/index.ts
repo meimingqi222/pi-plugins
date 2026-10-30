@@ -45,6 +45,7 @@ export {
   type AgentUsage,
   type StreamState,
 } from "./executor.ts";
+export { startParentWatchdog, type WatchdogOptions } from "./parent-watchdog.ts";
 export {
   rpcRunArgs,
   spawnRpcChild,

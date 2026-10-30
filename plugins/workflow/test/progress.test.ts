@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatWorkflowStatus, listWorkflowRuns } from "../src/runs/progress.ts";
@@ -253,5 +253,64 @@ describe("run listing details", () => {
     // Once as a legend, not once per run.
     expect(text.split("no journal").length - 1).toBe(1);
     expect(text).toContain("2 runs");
+  });
+  test("listing reads a bounded window, not every journal", async () => {
+    // The expensive mistake: `/workflows` on a project with hundreds of runs
+    // opened every journal to show twenty. Prove it by making the journals
+    // outside the window unreadable — a directory where a file is expected —
+    // so reading one throws instead of quietly costing time.
+    const root = await mkdtemp(join(tmpdir(), "pi-wf-progress-list-"));
+    try {
+      const runsRoot = join(root, ".pi", "workflows", "runs");
+      await mkdir(runsRoot, { recursive: true });
+      const limit = 1;
+      // window = max(limit * 4, limit + 16) = 17, so twenty runs leaves three
+      // outside it.
+      const total = 20;
+      for (let index = 0; index < total; index += 1) {
+        const dir = join(runsRoot, `wf_${String(index).padStart(3, "0")}`);
+        await mkdir(dir, { recursive: true });
+        const journal = join(dir, "journal.jsonl");
+        if (index < total - 3) {
+          await writeFile(journal, line(1, "completed", { createdAt: 1_000 + index }), "utf8");
+          // Newest mtimes on the runs that must be read.
+          await utimes(dir, new Date(Date.now() - index * 1_000), new Date(Date.now() - index * 1_000));
+        } else {
+          // Oldest, and unreadable: reading this journal is the failure.
+          await mkdir(journal, { recursive: true });
+          await utimes(dir, new Date(Date.now() - index * 60_000), new Date(Date.now() - index * 60_000));
+        }
+      }
+      const summaries = await listWorkflowRuns(root, limit);
+      expect(summaries).toHaveLength(limit);
+      expect(summaries[0]!.runId).toBe("wf_016");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a long run that wrote early still lists before a short recent one", async () => {
+    // mtime lags a long-lived run: it wrote its first entries long ago and has
+    // been quiet since. The window must be wide enough that startedAt, not
+    // mtime, decides the order.
+    const root = await mkdtemp(join(tmpdir(), "pi-wf-progress-order-"));
+    try {
+      const runsRoot = join(root, ".pi", "workflows", "runs");
+      await mkdir(runsRoot, { recursive: true });
+      const long = join(runsRoot, "wf_long");
+      await mkdir(long, { recursive: true });
+      await writeFile(join(long, "journal.jsonl"), line(1, "completed", { createdAt: 5_000 }), "utf8");
+      const older = new Date(Date.now() - 30_000);
+      await utimes(long, older, older);
+
+      const short = join(runsRoot, "wf_short");
+      await mkdir(short, { recursive: true });
+      await writeFile(join(short, "journal.jsonl"), line(1, "completed", { createdAt: 9_000 }), "utf8");
+
+      const summaries = await listWorkflowRuns(root, 5);
+      expect(summaries.map((summary) => summary.runId)).toEqual(["wf_short", "wf_long"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

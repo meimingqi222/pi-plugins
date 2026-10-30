@@ -180,9 +180,28 @@ export default function morphSearch(pi: ExtensionAPI): void {
   if (config?.compact.enabled) {
     const compactConfig = config;
     const redactor = installRedactBridge(pi);
-    pi.on("session_before_compact", async (event) => {
+    // Warned once, not once per compaction: the condition is a property of the
+    // installation, and a notice on every compaction is noise that trains the
+    // user to dismiss it.
+    let warnedNoRedactor = false;
+    pi.on("session_before_compact", async (event, ctx) => {
       if (event.signal.aborted) return { cancel: true };
       if (!compactConfig.apiKey) return;
+      // Fail closed on the missing redactor. This upload is the same shape
+      // pi-permissions fails closed on: with no redactor installed the whole
+      // transcript — secrets included — would leave the machine, and
+      // compaction is opt-in enough that falling back to pi's default summariser
+      // costs nothing but a worse summary. A *paused* redactor is different and
+      // is allowed through: the user asked for that explicitly.
+      if (!redactor.available()) {
+        if (!warnedNoRedactor) {
+          warnedNoRedactor = true;
+          try {
+            ctx.ui.notify("pi-morph-search: compaction is enabled but pi-redact is not installed, so the {{SECRET_l6neygg}} was not uploaded. Install pi-redact or turn compaction off.", "warning");
+          } catch { /* A closed UI must not turn the fallback into a failure. */ }
+        }
+        return;
+      }
       const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore, previousSummary } = event.preparation;
       const messages = compactMessagesFromPi([...messagesToSummarize, ...turnPrefixMessages]);
       // Pi supplies earlier compacted history separately from the new messages.

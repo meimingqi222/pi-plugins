@@ -90,10 +90,30 @@ export async function listWorkflowRuns(cwd: string, limit = 20): Promise<Workflo
     return [];
   }
 
-  const summaries: WorkflowRunSummary[] = [];
+  // Reading every journal to list twenty runs is the expensive mistake: a
+  // project with a few hundred runs read hundreds of megabytes on every
+  // `/workflows`. The directory mtime is a cheap prefilter for "recent", so the
+  // journals are opened newest-first and only a bounded window is read.
+  //
+  // The window is a multiple of `limit`, not `limit` itself, because the final
+  // order is `startedAt` and a directory's mtime can lag the run it holds — a
+  // long run writes early and often, a short one writes once at the end. The
+  // margin absorbs that reordering; it is a listing of recent runs, and a run
+  // old enough to fall outside it was already outside the page.
+  const window = Math.max(limit * 4, limit + 16);
+  const candidates: Array<{ runId: string; dir: string; mtimeMs: number }> = [];
   for (const runId of entries) {
     const dir = path.join(runsRoot, runId);
-    const summary = await readRunSummary(runId, dir);
+    try {
+      const info = await stat(dir);
+      if (info.isDirectory()) candidates.push({ runId, dir, mtimeMs: info.mtimeMs });
+    } catch { /* A run that vanished mid-listing is not an error. */ }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const summaries: WorkflowRunSummary[] = [];
+  for (const candidate of candidates.slice(0, window)) {
+    const summary = await readRunSummary(candidate.runId, candidate.dir);
     if (summary) summaries.push(summary);
   }
   summaries.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));

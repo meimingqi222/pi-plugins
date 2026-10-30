@@ -178,13 +178,21 @@ class Semaphore {
       return;
     }
     await new Promise<void>((resolve) => this.waiting.push(resolve));
-    this.active += 1;
+    // The slot was handed over by `release`; counting it here as well would
+    // double-book the capacity the semaphore exists to bound.
   }
 
   release(): void {
-    this.active -= 1;
     const next = this.waiting.shift();
-    if (next) next();
+    // Transfer the slot rather than freeing it: `active` only drops when nobody
+    // is waiting. Decrementing first and letting the waiter re-increment leaves
+    // a window — the waiter resumes in a later microtask — where a fresh
+    // `acquire` sees a free slot and takes it, so two callers hold one permit.
+    if (next) {
+      next();
+      return;
+    }
+    this.active -= 1;
   }
 }
 

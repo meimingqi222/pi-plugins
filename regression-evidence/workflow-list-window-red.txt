@@ -1,0 +1,31 @@
+# red-run proof: listWorkflowRuns bounded to a window
+# `const window = entries.length;` restored (read every journal)
+
+86ms]
+(pass) run listing format > an unjournaled run is reported from its progress snapshot [2.37ms]
+(pass) run listing details > a long error is cut at a word boundary and marked [0.35ms]
+(pass) run listing details > an inline task description is not printed as a run name [1.05ms]
+(pass) run listing details > unjournaled runs are explained once, as a legend [0.23ms]
+71 | }
+72 | 
+73 | export async function readJsonLines<T>(filePath: string): Promise<T[]> {
+74 |   let content: string;
+75 |   try {
+76 |     content = await readFile(filePath, "utf8");
+                         ^
+EISDIR: illegal operation on a directory, read
+ syscall: "read",
+   errno: -21,
+    code: "EISDIR"
+
+      at async readJsonLines (/Users/yuqiang/work/code/pi-plugins/plugins/workflow/src/runs/journal.ts:76:21)
+      at async readRunSummary (/Users/yuqiang/work/code/pi-plugins/plugins/workflow/src/runs/progress.ts:133:25)
+      at async listWorkflowRuns (/Users/yuqiang/work/code/pi-plugins/plugins/workflow/src/runs/progress.ts:116:27)
+      at async <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/workflow/test/progress.test.ts:284:31)
+(fail) run listing details > listing reads a bounded window, not every journal [19.18ms]
+(pass) run listing details > a long run that wrote early still lists before a short recent one [3.44ms]
+
+ 13 pass
+ 1 fail
+ 40 expect() calls
+Ran 14 tests across 1 file. [139.00ms]
