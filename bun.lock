@@ -158,6 +158,13 @@
         "@earendil-works/pi-coding-agent": ">=1.0.0",
       },
     },
+    "plugins/pi-theme-mytheme": {
+      "name": "@meimingqi222/pi-theme-mytheme",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
+      },
+    },
     "plugins/redact": {
       "name": "@meimingqi222/pi-redact",
       "version": "0.1.0",
@@ -494,6 +501,8 @@
     "@meimingqi222/pi-run-core": ["@meimingqi222/pi-run-core@workspace:plugins/run-core"],
 
     "@meimingqi222/pi-subagent": ["@meimingqi222/pi-subagent@workspace:plugins/subagent"],
+
+    "@meimingqi222/pi-theme-mytheme": ["@meimingqi222/pi-theme-mytheme@workspace:plugins/pi-theme-mytheme"],
 
     "@meimingqi222/pi-workflow": ["@meimingqi222/pi-workflow@workspace:plugins/workflow"],
 

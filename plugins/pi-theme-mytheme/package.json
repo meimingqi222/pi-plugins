@@ -1,0 +1,26 @@
+{
+	"name": "@meimingqi222/pi-theme-mytheme",
+	"version": "0.1.0",
+	"description": "A calm pi theme: one violet accent, low-chroma surfaces, and markdown that stops shouting.",
+	"type": "module",
+	"pi": {
+		"themes": ["./themes/*.json"]
+	},
+	"files": [
+		"themes",
+		"README.md"
+	],
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-theme"
+	],
+	"license": "MIT"
+}

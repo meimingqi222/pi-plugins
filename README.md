@@ -18,6 +18,7 @@ can be installed without pulling in its siblings.
 | [morph-search](plugins/morph-search) | `@meimingqi222/pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
 | [permissions](plugins/permissions) | `@meimingqi222/pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized prompts, an auto-mode reviewer model, and an optional `sandbox-exec`/`bwrap` sandbox. |
 | [paste-image](plugins/paste-image) | `@meimingqi222/pi-paste-image` | A pasted or drag-dropped image path is read, attached as image content and replaced with `[#image N]`, so no path- or URL-shaped reference ever reaches the provider. |
+| [pi-theme-mytheme](plugins/pi-theme-mytheme) | `@meimingqi222/pi-theme-mytheme` | A calm theme for pi: one violet accent, low-chroma surfaces, and markdown that stops shouting. Data only — no extension code. |
 
 ### Not a plugin: `@meimingqi222/pi-run-core`
 
