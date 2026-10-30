@@ -18,6 +18,8 @@ export interface BgBashDetails extends BashToolDetails {
 	exitCode: number | null;
 	durationMs: number;
 	logPath?: string;
+	/** The log stream failed after opening; the file is not the full output. */
+	logLost?: boolean;
 }
 
 export function durationMs(job: Job, now = Date.now()): number {
@@ -234,7 +236,8 @@ export function formatJobStatus(job: Job): string {
 		`PID: ${job.pid ?? "unknown"}`,
 		`Elapsed: ${elapsed}`,
 		job.exitCode === null ? undefined : `Exit code: ${job.exitCode}`,
-		job.logPath ? `Log: ${job.logPath}` : undefined,
+		job.logPath && !job.logLost ? `Log: ${job.logPath}` : undefined,
+		job.logLost ? `Log unavailable (the log file could not be written; output is in memory only)` : undefined,
 	]
 		.filter((line): line is string => Boolean(line))
 		.join("\n");
@@ -253,8 +256,11 @@ export function detailsFor(
 		status: job.status,
 		exitCode: job.exitCode,
 		durationMs: durationMs(job, now),
-		logPath: job.logPath,
-		fullOutputPath: result.truncated ? job.logPath : undefined,
+		// Not the log path when the stream died: the details drive the TUI's
+		// "Full output" affordance, and offering a file that stops mid-run is the
+		// same lie in a clickable form.
+		logPath: job.logLost ? undefined : job.logPath,
+		fullOutputPath: result.truncated && !job.logLost ? job.logPath : undefined,
 		truncation: result.truncated ? result : undefined,
 	};
 }

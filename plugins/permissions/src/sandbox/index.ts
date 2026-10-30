@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import type { PolicyEnv, SandboxSettings } from "../types.ts";
-import { expandPattern } from "../path-policy.ts";
+import { CREDENTIAL_MASK_PATHS, expandPattern } from "../path-policy.ts";
 import { normalizePath } from "../paths.ts";
 
 export interface SandboxAvailability {
@@ -99,11 +99,6 @@ export function detectSandbox(env: PolicyEnv, deps: SandboxDeps = sandboxDeps())
   return { supported: false, available: false, detail: `unavailable on ${env.platform} (policy only)` };
 }
 
-/** Directory-class credential roots the sandbox must hide (§12.2). */
-const DENY_READ_DIRS = ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud", "~/.azure", "~/.kube"];
-
-const DENY_READ_FILES = ["~/.pi/agent/auth.json"];
-
 /** Common package/tool caches: without them `npm install` etc. fail and users disable the sandbox. */
 const CACHE_DIRS = [
   "~/.npm",
@@ -138,7 +133,10 @@ export function resolveSandboxPolicy(env: PolicyEnv, settings: SandboxSettings, 
     writable.add(env.realpath(normalizePath(expandPattern(extra, env), env)));
   }
   const denyRead = new Set<string>();
-  for (const pattern of [...DENY_READ_DIRS, ...DENY_READ_FILES, ...settings.denyRead]) {
+  // Derived from the credential policy rather than kept as a second list: a
+  // private copy used to omit ~/.npmrc, ~/.netrc, ~/.pypirc, ~/.git-credentials
+  // and ~/.docker, so the strictest mode readable an npm token.
+  for (const pattern of [...CREDENTIAL_MASK_PATHS, ...settings.denyRead]) {
     denyRead.add(env.realpath(normalizePath(expandPattern(pattern, env), env)));
   }
   // A writable path that is also deny-listed must not write: keep it readable

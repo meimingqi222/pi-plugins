@@ -194,7 +194,7 @@ function formatResult(job: Job): string {
 		`Started: ${new Date(job.startedAt).toISOString()}`,
 		`Ended: ${formatEndedAt(job)}`,
 		`Duration: ${formatElapsed(job)}`,
-		`Log: ${job.logPath ?? "unavailable"}`,
+		`Log: ${job.logLost ? "unavailable (the log file could not be written; output is in memory only)" : job.logPath ?? "unavailable"}`,
 	];
 	const output = jobOutput(job);
 	if (output === undefined) lines.push("Output unavailable (log missing or expired).");

@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -278,7 +278,14 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
         ctx.ui.notify(`pi-goal: refusing to write the plan — ${path} exists and is not a regular file.`, "warning");
         return;
       }
-      await writeFile(path, renderPlan(goal.objective, plan), { encoding: "utf-8", mode: 0o600 });
+      // Temp file then rename. A plain `writeFile` truncates in place, so a crash
+      // mid-write leaves a half checklist that the next run reads as progress;
+      // the gating criteria live in the snapshot, but a truncated file is still
+      // the thing the user is shown. `rename` is atomic on the same filesystem,
+      // so a reader sees either the old plan or the whole new one.
+      const staging = `${path}.tmp`;
+      await writeFile(staging, renderPlan(goal.objective, plan), { encoding: "utf-8", mode: 0o600 });
+      await rename(staging, path);
       // Writing is an await too: a clear landing in it leaves no goal to attach
       // the plan to. The file stays because local session state cannot prove
       // that no branch or fork references it.

@@ -34,6 +34,13 @@ export interface Job {
 	endedAt?: number;
 	exitCode: number | null;
 	logPath?: string;
+	/**
+	 * The log stream failed after opening — ENOSPC, a deleted directory — so
+	 * nothing after that point reached the file. Without this flag the notice
+	 * still advertises `Full output: <path>`, and a model reading a silently
+	 * truncated log reports a build as passing.
+	 */
+	logLost?: boolean;
 	output: TailBuffer;
 	/** Kills the process tree; set by the runner once the child exists. */
 	kill?: (signal?: NodeJS.Signals) => void;

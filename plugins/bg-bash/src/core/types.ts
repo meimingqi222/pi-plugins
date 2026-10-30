@@ -38,6 +38,12 @@ export interface RunningCommand {
 	kill(signal?: NodeJS.Signals): void;
 	/** Stop forwarding the abort signal to this command (used when it backgrounds). */
 	detach(): void;
+	/**
+	 * Whether the log stream failed after opening. Read after `result` settles:
+	 * a destroyed stream silently drops every later chunk, and the job's status
+	 * says nothing about it.
+	 */
+	logLost(): boolean;
 }
 
 /** Map a finished run onto the job status the model will read. */

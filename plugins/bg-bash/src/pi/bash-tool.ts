@@ -159,6 +159,9 @@ export function createBgBashTool(runtime: Runtime): ToolDefinition<typeof schema
 				void running.result.then((outcome) => {
 					// An old completion must not settle a new job that inherited the id.
 					if (runtime.registry.get(job.id) !== job) return;
+					// The log is read only after the stream has been closed by
+					// `finish`, so a mid-run failure is visible here and not before.
+					if (running.logLost()) job.logLost = true;
 					runtime.registry.finish(job.id, outcome);
 					runtime.deliver(job, outcome, ctx, isCurrent);
 				});

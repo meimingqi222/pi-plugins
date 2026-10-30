@@ -28,7 +28,14 @@ export const ENV_LOG_RETENTION_DAYS = "PI_BG_BASH_LOG_RETENTION_DAYS";
 /** Logs older than this are deleted on session start. `0` disables the sweep. */
 export const DEFAULT_LOG_RETENTION_DAYS = 7;
 
-/** After the age sweep, at most this many log files are kept (newest first). */
+/**
+ * Ceiling on log files kept when retention cannot bound them.
+ *
+ * Only reached when retention is long enough that a directory can hold more
+ * than this many *unexpired* logs, which is the one case where the age rule
+ * alone leaves the directory unbounded. It never deletes an unexpired log to
+ * satisfy the number — see `sweepLogDir`.
+ */
 export const MAX_LOG_FILES = 200;
 const PROJECT_FILE = join(".pi", "bg-bash.json");
 const GLOBAL_FILE = join(".pi", "bg-bash.json");
@@ -83,8 +90,21 @@ function sanitizeFileName(name: string): string {
 }
 
 /**
- * Delete log files past the retention window, then cap the directory at
- * MAX_LOG_FILES (newest kept). Runs on session start; never throws.
+ * Delete log files past the retention window. Runs on session start; never throws.
+ *
+ * The count cap is deliberately *not* a second deletion rule over the survivors.
+ * It used to be: after the age sweep, anything past MAX_LOG_FILES was unlinked
+ * newest-kept — and the survivors are by definition unexpired, so the cap could
+ * only ever delete a live log. A second pi process holding two hundred older
+ * logs made a new session's sweep take the oldest, and a *quiet* job — running,
+ * but not writing, so its mtime looked old — lost the very file its
+ * "Full output:" notice still pointed at, and the model then read a truncated
+ * log and reported a build as passing.
+ *
+ * So the cap now only trims when the directory holds more than MAX_LOG_FILES
+ * files that are all still inside retention, which is the single case the age
+ * rule cannot bound. Even then it takes the oldest, and a job writing to its log
+ * moves that file to the front of the queue.
  */
 export function sweepLogDir(dir = defaultLogDir(), now = Date.now()): void {
 	const retentionDays = parseSeconds(process.env[ENV_LOG_RETENTION_DAYS]) ?? DEFAULT_LOG_RETENTION_DAYS;
@@ -115,12 +135,17 @@ export function sweepLogDir(dir = defaultLogDir(), now = Date.now()): void {
 			survivors.push({ name, mtimeMs });
 		}
 	}
-	survivors.sort((a, b) => b.mtimeMs - a.mtimeMs);
-	for (const entry of survivors.slice(MAX_LOG_FILES)) {
-		try {
-			unlinkSync(join(dir, entry.name));
-		} catch {
-			// Best effort.
+	// Retention could not bound the directory: everything in it is unexpired and
+	// there is more of it than the ceiling. Trim the oldest, which a job writing
+	// to its log escapes by definition — output moves its mtime to the front.
+	if (survivors.length > MAX_LOG_FILES) {
+		survivors.sort((a, b) => a.mtimeMs - b.mtimeMs);
+		for (const entry of survivors.slice(0, survivors.length - MAX_LOG_FILES)) {
+			try {
+				unlinkSync(join(dir, entry.name));
+			} catch {
+				// Best effort.
+			}
 		}
 	}
 }

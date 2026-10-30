@@ -41,7 +41,17 @@ export function restoreLatestRun<T extends RunSnapshotBase>(
   entryType: string,
   validate: SnapshotValidator<T>,
 ): T | undefined {
-  const entries = ctx.sessionManager.getBranch();
+  // Guarded like `DeliveryLedger.pending`, which wraps the identical call. A
+  // session manager torn down under a `session_start` handler used to throw here
+  // and take the caller's restore with it, leaving the status bar and the
+  // context on stale state until the next boundary. "No snapshot" is the honest
+  // answer when the branch cannot be read.
+  let entries: unknown[];
+  try {
+    entries = ctx.sessionManager.getBranch();
+  } catch {
+    return undefined;
+  }
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index] as { type?: string; customType?: string; data?: unknown };
     if (entry?.type !== "custom" || entry.customType !== entryType) continue;

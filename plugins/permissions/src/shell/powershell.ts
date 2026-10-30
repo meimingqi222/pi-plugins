@@ -11,6 +11,8 @@ import { tierRank } from "../types.ts";
 
 const READ_CMDLETS = new Set(["get-content", "gc", "cat", "type"]);
 const WRITE_CMDLETS = new Set(["set-content", "out-file", "add-content", "new-item", "remove-item", "copy-item", "move-item", "rename-item"]);
+/** Cmdlets that enumerate a tree rather than read one file. */
+const ENUMERATE_CMDLETS = new Set(["get-childitem", "gci", "dir", "ls"]);
 
 function unquote(token: string): string {
   return token.replace(/^["']|["']$/gu, "");
@@ -34,8 +36,13 @@ export function analyzePowerShell(text: string, env: PolicyEnv): ShellAnalysis {
       const redirects: { op: ">" | ">>" | "<" | "&>" | "other"; target?: string }[] = [];
       for (let index = 1; index < tokens.length; index += 1) {
         const token = tokens[index]!;
-        if (token === ">" || token === ">>") {
-          redirects.push({ op: token as ">" | ">", target: tokens[index + 1] === undefined ? undefined : unquote(tokens[++index]!) });
+        // PowerShell's redirect operators are `>`, `>>`, and the stream-qualified
+        // `N>`, `N>>`, `*>`, `*>>` forms; `<` is not a PowerShell operator at
+        // all. Matching only `>` and `>>` let `2>` and `*>` through ungraded,
+        // which is the same hole the bash side closed.
+        const redirect = /^(?:[0-9*]?>>?)$/u.exec(token);
+        if (redirect) {
+          redirects.push({ op: token.endsWith(">>") ? ">>" : ">", target: tokens[index + 1] === undefined ? undefined : unquote(tokens[++index]!) });
           continue;
         }
         args.push(unquote(token));
@@ -67,8 +74,27 @@ export function powerShellPathIntents(command: ShellCommand, env: PolicyEnv): { 
     if (!target) return;
     intents.push({ kind, path: normalizePath(target, env), raw: `${command.rawName} ${target}` });
   };
+  // Redirects are writes wherever they appear. `echo pk > ~/.ssh/authorized_keys`
+  // used to grade as the `Write-Output` cmdlet — safe, read-only — because the
+  // parser recorded the redirect and nothing ever read it.
+  for (const redirect of command.redirects) {
+    if (redirect.op === "other") continue;
+    push(redirect.op === "<" ? "read" : "write", redirect.target);
+  }
   if (READ_CMDLETS.has(command.name)) {
     push("read", flagValue(["-path", "-literalpath"]) ?? positional[0]);
+    // A recursive read of a credential root is a bulk credential read. The bash
+    // side grades `grep -r token ~/.kube/sub` dangerous for the same reason;
+    // `Get-ChildItem -Recurse ~/.aws` used to come back safe because nothing
+    // looked at `-Recurse`.
+    if (command.args.some((arg) => typeof arg === "string" && /^-rec/i.test(arg))) {
+      for (const root of positional) push("read", root);
+    }
+  } else if (ENUMERATE_CMDLETS.has(command.name)) {
+    push("read", flagValue(["-path", "-literalpath"]) ?? positional[0]);
+    if (command.args.some((arg) => typeof arg === "string" && /^-rec/i.test(arg))) {
+      for (const root of positional) push("read", root);
+    }
   } else if (WRITE_CMDLETS.has(command.name)) {
     push("write", flagValue(["-path", "-literalpath", "-destination"]) ?? positional[0]);
     if (command.name === "copy-item" || command.name === "move-item") {

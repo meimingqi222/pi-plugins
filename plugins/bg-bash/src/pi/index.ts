@@ -303,8 +303,9 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		leaveSession();
 		registry.reset();
 		uiCtx = ctx;
-		// Bound the log directory: files past the retention window are deleted,
-		// then the newest MAX_LOG_FILES are kept.
+		// Bound the log directory: files past the retention window are deleted.
+		// The count ceiling only applies when retention could not bound it, so a
+		// live job's log is never deleted to satisfy a number.
 		sweepLogDir();
 		try {
 			for (const record of recordsFromBranch(ctx.sessionManager.getBranch())) registry.restore(record);

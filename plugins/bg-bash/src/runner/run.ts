@@ -57,7 +57,15 @@ export interface StartCommandOptions {
 export function startCommand(options: StartCommandOptions): RunningCommand {
 	const shell = resolveShell(options.shellPath);
 	const logStream = options.logPath ? openLog(options.logPath) : undefined;
-	if (logStream && options.logHeader) logStream.write(options.logHeader);
+	// A log that dies mid-run is not a silent condition: the job still succeeds,
+	// and the notice still points at the path. The caller has to be able to say
+	// the file is incomplete, or a model reads a truncated log and reports a
+	// build as passing.
+	let logLost = false;
+	if (logStream) {
+		if (options.logHeader) logStream.write(options.logHeader);
+		logStream.once("error", () => { logLost = true; });
+	}
 
 	const child = spawnShell({
 		shell,
@@ -137,7 +145,7 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 		else options.signal.addEventListener("abort", onAbort, { once: true });
 	}
 
-	return { pid, result, kill, detach };
+	return { pid, result, kill, detach, logLost: () => logLost };
 }
 
 export function forwardCommandOutput(streams: readonly (NodeJS.ReadableStream | null)[], logStream?: Writable, onData?: (chunk: string) => void): { isPaused(): boolean } {

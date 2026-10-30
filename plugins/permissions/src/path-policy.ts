@@ -78,6 +78,26 @@ const CREDENTIAL_DIRS: readonly string[] = [
   "~/.docker",
 ];
 
+/**
+ * Paths a sandbox must hide outright: the credential roots, plus the standalone
+ * credential files that live outside any of them.
+ *
+ * The sandbox carried its own narrower copy of this for a while — the roots and
+ * `~/.pi/agent/auth.json` — which left `~/.npmrc`, `~/.netrc`, `~/.pypirc`,
+ * `~/.git-credentials` and `~/.docker` readable inside the strictest mode the
+ * plugin has. Two lists drift; there is one now, and it is this one.
+ */
+export const CREDENTIAL_MASK_PATHS: readonly string[] = [
+  ...CREDENTIAL_DIRS,
+  "~/.kube/config",
+  "~/.docker/config.json",
+  "~/.netrc",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.git-credentials",
+  "~/.pi/agent/auth.json",
+];
+
 /** Expand `~` and `<cwd>` placeholders; also normalizes win32 drive slashes. */
 export function expandPattern(pattern: string, env: PolicyEnv): string {
   let p = pattern;
