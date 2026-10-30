@@ -1,7 +1,7 @@
 {
 	"name": "@meimingqi222/pi-theme-mytheme",
 	"version": "0.1.0",
-	"description": "A calm pi theme: one violet accent, low-chroma surfaces, and markdown that stops shouting.",
+	"description": "A pi theme ported from MiniMax Code's palette: neutral grey base, one blue accent, Catppuccin markdown and syntax.",
 	"type": "module",
 	"pi": {
 		"themes": ["./themes/*.json"]

@@ -1,0 +1,28 @@
+{
+	"name": "@meimingqi222/pi-compact-ui",
+	"version": "0.1.0",
+	"description": "Quiet the pi conversation: one line per tool call, thinking collapsed to a label, and a status line that says what it means.",
+	"type": "module",
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"files": [
+		"src",
+		"README.md"
+	],
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=1.0.0",
+		"@earendil-works/pi-tui": ">=1.0.0",
+		"typebox": "*"
+	},
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-compact-ui"
+	],
+	"license": "MIT"
+}

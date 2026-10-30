@@ -158,6 +158,15 @@
         "@earendil-works/pi-coding-agent": ">=1.0.0",
       },
     },
+    "plugins/pi-compact-ui": {
+      "name": "@meimingqi222/pi-compact-ui",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": ">=1.0.0",
+        "@earendil-works/pi-tui": ">=1.0.0",
+        "typebox": "*",
+      },
+    },
     "plugins/pi-theme-mytheme": {
       "name": "@meimingqi222/pi-theme-mytheme",
       "version": "0.1.0",
@@ -483,6 +492,8 @@
     "@meimingqi222/pi-agent-runner": ["@meimingqi222/pi-agent-runner@workspace:plugins/agent-runner"],
 
     "@meimingqi222/pi-bg-bash": ["@meimingqi222/pi-bg-bash@workspace:plugins/bg-bash"],
+
+    "@meimingqi222/pi-compact-ui": ["@meimingqi222/pi-compact-ui@workspace:plugins/pi-compact-ui"],
 
     "@meimingqi222/pi-goal": ["@meimingqi222/pi-goal@workspace:plugins/goal"],
 

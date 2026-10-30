@@ -1,7 +1,7 @@
 # pi-theme-mytheme
 
-A calm theme for pi. One violet accent, low-chroma surfaces, and markdown that
-stops shouting.
+A pi theme ported from MiniMax Code's palette: a neutral grey base, one blue
+accent, and Catppuccin for everything that carries meaning.
 
 Install it like any other plugin in this workspace:
 
@@ -20,29 +20,53 @@ Then either pick it in `/theme`, or set it in `~/.pi/agent/settings.json`:
 
 ## What it changes
 
-pi's default `dark` theme is not badly built — its token set is richer than most
-terminal themes get. What it does is spend that richness all at once: a
-near-maximally saturated yellow on every markdown heading, four different hues
-inside ordinary body text, a bright border, and a saturated background behind
-every tool call. Nothing is emphasised because everything is.
+The palette is ported from MiniMax Code's default theme, which solves the same
+problem differently and better: a **neutral grey base**, **one blue accent**
+(`#68C0FF`), and **Catppuccin** for everything that carries meaning.
 
-This theme keeps pi's own vocabulary and re-establishes a hierarchy:
-
-| | default `dark` | `mytheme` |
+| | pi default `dark` | `mytheme` |
 |---|---|---|
-| `mdHeading` | yellow `okhsl(83 88% 67%)` | violet — the accent, and nothing else competes with it |
-| `mdCodeBlock` | green, saturated | desaturated green, only inside code blocks |
-| `border` | `okhsl(231 57% 65%)` | `okhsl(235 11% 33%)` |
-| `toolSuccessBg` / `toolErrorBg` | `okhsl(158 46% 25%)` / `okhsl(19 54% 25%)` | `okhsl(150 16% 18%)` / `okhsl(8 26% 19%)` — a tint, not a fill |
-| `userMessageBg` | blue | violet-tinted, so the band belongs to the accent |
+| base | OKHSL, everything saturated | grey: `text #D6D6D6`, `muted #ADADAD`, `dim #666666`, `border #303030` |
+| `accent` | violet | `#68C0FF`, and nothing else competes with it |
+| `mdHeading` | yellow `okhsl(83 88% 67%)` | Catppuccin mauve `#CBA6F7` |
+| `mdCode` / `mdCodeBlock` | violet / green | Catppuccin green `#A6E3A1` |
+| `border` | `okhsl(231 57% 65%)` — bright | `#303030` |
+| `toolSuccessBg` / `toolErrorBg` | saturated fills | MiniMax's own `diffAddedBg #213A2B` / `diffRemovedBg #4A221D` — a tint, not a fill |
+| `userMessageBg` | blue-tinted | flat neutral `#262626` |
+| `syntax*` (12 tokens) | four hues, one lightness band | the full Catppuccin dark set |
 
-Violet stays the accent on purpose. It is pi's only strong visual identity, and
-replacing it with another product's blue buys nothing that a calmer value set
-does not already buy.
+The single biggest change is the base. In pi's default, hue is spent everywhere
+at once, so nothing is emphasised; here hue is rationed — grey for structure,
+blue for interaction, Catppuccin for content.
 
-The thinking ramp is left as a ramp — `thinkingOff` through `thinkingMax` still
-sweeps gray → blue → violet → magenta → red, wrapping only at the top. It is the
-one place pi turns a setting into something you can see, and it is worth keeping.
+`toolSuccessBg` and `toolErrorBg` reuse MiniMax's diff backgrounds directly,
+which is the one place its palette maps onto pi's tokens without interpretation.
+
+### The thinking ramp is derived, not ported
+
+MiniMax has no equivalent of pi's thinking-level ramp, so this is the one part
+that had to be built rather than copied. It sweeps grey → teal → blue → violet →
+mauve → peach, using MiniMax's own colours at every step it can:
+
+| Step | Dark | Hue |
+|---|---|---|
+| `thinkingOff` | `#666666` (MiniMax `dim`) | grey |
+| `thinkingMinimal` | `#7FC5CB` (MiniMax teal) | 184.7 |
+| `thinkingLow` | `#68C0FF` (MiniMax accent) | 205.0 |
+| `thinkingMedium` | `#89B4FA` (Catppuccin blue) | 217.2 |
+| `thinkingHigh` | `#A8A6F2` — **derived** | 241.6 |
+| `thinkingXhigh` | `#CBA6F7` (Catppuccin mauve) | 267.4 |
+| `thinkingMax` | `#FAB387` (Catppuccin peach) | 23.0 — the wrap |
+
+`thinkingHigh` is the only invented value: MiniMax's palette has nothing between
+Catppuccin blue (217) and mauve (267), and a step has to sit there for the sweep
+to stay monotonic. It is interpolated inside that hue range at the same
+lightness as its neighbours. The test asserts the ordering, so a future retune
+that flattens the ramp fails rather than passing quietly.
+
+MiniMax ships three more palettes — Midnight, Graphite and Aurora — which are
+the same construction with a different accent. They are not ported here; one
+theme that works beats four nobody chose between.
 
 ## Layout
 

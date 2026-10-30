@@ -44,6 +44,34 @@ const ALL_TOKENS = new Set<string>([...REQUIRED_TOKENS, ...OPTIONAL_TOKENS]);
 /** `#RGB`, `#RRGGBB`, `okhsl(...)`, `oklch(...)`, or empty for the terminal default. */
 const COLOR_VALUE = /^(?:#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|okhsl\([^)]*\)|oklch\([^)]*\)|)$/u;
 
+/**
+ * Hue of a colour, whichever notation it is written in.
+ *
+ * The theme is a hex port, so the ramp check has to read hex; a theme written in
+ * OKHSL should still pass, which is why both are handled.
+ */
+function hueOf(value: unknown): number | undefined {
+	const text = String(value);
+	const okhsl = /okhsl\(\s*([\d.]+)/u.exec(text);
+	if (okhsl) return Number(okhsl[1]);
+	const hex = /^#([0-9a-fA-F]{6})$/u.exec(text.trim());
+	if (!hex) return undefined;
+	const channel = Number.parseInt(hex[1]!, 16);
+	const r = ((channel >> 16) & 255) / 255;
+	const g = ((channel >> 8) & 255) / 255;
+	const b = (channel & 255) / 255;
+	const max = Math.max(r, g, b);
+	const min = Math.min(r, g, b);
+	if (max === min) return 0; // grey: no hue, reported as 0 so it sorts first
+	const delta = max - min;
+	let hue: number;
+	if (max === r) hue = ((g - b) / delta) % 6;
+	else if (max === g) hue = (b - r) / delta + 2;
+	else hue = (r - g) / delta + 4;
+	hue *= 60;
+	return hue < 0 ? hue + 360 : hue;
+}
+
 interface ThemeFile {
 	name?: unknown;
 	appearance?: unknown;
@@ -137,15 +165,18 @@ describe("pi-theme-mytheme", () => {
 		// the level indicator into noise, and nothing else would notice.
 		const colors = readTheme(file).colors as Record<string, unknown>;
 		const steps = ["thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh"];
-		const hues = steps.map((token) => /okhsl\(\s*([\d.]+)/u.exec(String(colors[token]))?.[1]);
-		for (const hue of hues) expect(hue).toBeDefined();
-		const ramp = hues.map(Number);
-		for (let index = 1; index < ramp.length; index += 1) {
-			expect(ramp[index]).toBeGreaterThanOrEqual(ramp[index - 1]!);
+		const ramp = steps.map((token) => hueOf(colors[token]));
+		for (const hue of ramp) expect(hue).toBeDefined();
+		const numbers = ramp as number[];
+		for (let index = 1; index < numbers.length; index += 1) {
+			expect(numbers[index]).toBeGreaterThanOrEqual(numbers[index - 1]!);
 		}
-		// The last step is the wrap: past magenta back into the reds.
-		const top = /okhsl\(\s*([\d.]+)/u.exec(String(colors.thinkingMax))?.[1];
-		expect(Number(top)).toBeLessThan(60);
-		expect(Number(top)).toBeLessThan(ramp[0]!);
+		// The last step is the wrap: past magenta back into the warm end, which
+		// means it lands *below the first chromatic step* rather than continuing
+		// upward. Comparing against `numbers[0]` would be wrong — that step is
+		// grey, hue 0, and nothing sorts under it.
+		const top = hueOf(colors.thinkingMax);
+		expect(top).toBeLessThan(60);
+		expect(top).toBeLessThan(numbers[1]!);
 	});
 });
