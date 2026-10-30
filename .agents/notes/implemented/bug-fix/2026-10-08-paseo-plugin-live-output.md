@@ -59,3 +59,14 @@ navigation at desktop and 375 px mobile widths in light/dark themes, with no
 horizontal overflow. Host React Native primitives were adapted to DOM only
 for this browser harness; a real provider-driven run in the installed app
 still requires the parent Pi extension to be reloaded.
+
+The transcript parser imports status icons through the dependency-free
+work-icons package subpath. Paseo recursively resolves
+imports in type declarations, so the run-core barrel pulls unrelated agent
+SDK declarations into the plugin build and can fail on optional types. Keep
+one shared icon definition; copying icons would allow the renderers to drift.
+
+- `integrations/paseo-ui/test/server-build.test.ts::server build avoids the run-core barrel and its unrelated dependencies` checks the build graph.
+
+Proved: restoring the barrel import made the bound assertion fail; restoring
+the subpath passed it. Output: `.agents/notes-evidence/2026-10-30-paseo-server-build-red.txt`.

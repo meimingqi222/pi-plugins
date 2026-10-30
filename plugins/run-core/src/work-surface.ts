@@ -28,9 +28,9 @@
 
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { WORK_ICONS, type WorkState } from "./work-icons.ts";
+export { WORK_ICONS, type WorkState } from "./work-icons.ts";
 
-/** States the shared renderer understands; plugins map their own vocabulary onto it. */
-export type WorkState = "queued" | "running" | "idle" | "stalled" | "succeeded" | "failed" | "stopped";
 
 /** One row of background work, whatever produced it. */
 export interface WorkItem {
@@ -58,16 +58,6 @@ export const WORK_SURFACE_MAX_ROWS = 6;
 const METRIC_WIDTH = 16;
 /** Kind column width; longer names truncate instead of shifting the row. */
 const KIND_WIDTH = 12;
-
-export const WORK_ICONS: Record<WorkState, string> = {
-	queued: "·",
-	running: "●",
-	idle: "◌",
-	stalled: "◉",
-	succeeded: "✓",
-	failed: "×",
-	stopped: "■",
-};
 
 const ICON_COLOR: Record<WorkState, ThemeColor> = {
 	queued: "muted",

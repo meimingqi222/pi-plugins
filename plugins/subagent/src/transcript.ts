@@ -14,7 +14,7 @@
  * the whole run.
  */
 
-import { WORK_ICONS } from "@meimingqi222/pi-run-core";
+import { WORK_ICONS } from "@meimingqi222/pi-run-core/work-icons";
 
 interface TranscriptTheme {
 	fg(color: string, text: string): string;

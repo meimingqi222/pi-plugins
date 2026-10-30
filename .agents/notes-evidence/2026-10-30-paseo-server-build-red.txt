@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+integrations/paseo-ui/test/server-build.test.ts:
+3 | 
+4 | test("server build avoids the run-core barrel and its unrelated dependencies", async () => {
+5 |   const result = await Bun.build({ entrypoints: [resolve(import.meta.dir, "../index.server.ts")], target: "bun", metafile: true });
+6 |   expect(result.success).toBe(true);
+7 |   const inputs = Object.keys(result.metafile!.inputs);
+8 |   expect(inputs.some(path => /run-core[/\\]src[/\\]index\.ts$/.test(path))).toBe(false);
+                                                                                ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (integrations/paseo-ui/test/server-build.test.ts:8:77)
+(fail) server build avoids the run-core barrel and its unrelated dependencies [65.23ms]
+
+ 0 pass
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [101.00ms]
