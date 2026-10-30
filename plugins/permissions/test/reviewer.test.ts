@@ -98,6 +98,21 @@ describe("reviewer", () => {
     expect(calls.length).toBe(1);
   });
 
+  test("oversized calls are never approved from a truncated review", async () => {
+    const { ctx, calls } = fakeCtx();
+    expect(await review(ctx, "bash", "x".repeat(4001))).toBeUndefined();
+    expect(calls.length).toBe(0);
+  });
+
+  test("a changed user request does not reuse a previous verdict", async () => {
+    const first = fakeCtx({}, "run the tests");
+    const second = fakeCtx({}, "stop running tests");
+    const r = createReviewer(CFG, { platform: "darwin", cwd: "/work" }, NO_AGENT_DIR, () => {})!;
+    await r.review({ ctx: first.ctx, toolName: "bash", toolInput: "npm test", staticAnalysis: "x" });
+    await r.review({ ctx: second.ctx, toolName: "bash", toolInput: "npm test", staticAnalysis: "x" });
+    expect(second.calls.length).toBe(1);
+  });
+
   test("maxPerSession caps real calls and warns once", async () => {
     const { ctx, calls } = fakeCtx();
     let warnings = 0;

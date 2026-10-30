@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+plugins/permissions/test/security-boundaries.test.ts:
+ 8 |     "{ echo pk; } > ~/.ssh/authorized_keys", "( echo pk ) > ~/.ssh/authorized_keys",
+ 9 |     "if true; then echo pk; fi > ~/.ssh/authorized_keys", "echo x >| ~/.ssh/authorized_keys",
+10 |     "echo x <> ~/.ssh/authorized_keys", "grep -r token ~/.kube/sub", "ln ~/.ssh/id_rsa /tmp/hl",
+11 |   ]) {
+12 |     const classification = classifyToolCall("bash", { command }, { env, shellDialect: "bash" });
+13 |     expect(classification.tier).toBe("dangerous");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "dangerous"
+Received: "safe"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/permissions/test/security-boundaries.test.ts:13:33)
+(fail) compound redirects, clobber redirects, and nested credential searches fail closed [20.49ms]
+
+ 0 pass
+ 8 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [74.00ms]

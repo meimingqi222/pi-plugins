@@ -21,6 +21,7 @@
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { isCompatibleRedactService } from '@meimingqi222/pi-redact-contract';
 
 import type { AskOptions, JevAsker, JevQuestions, JevResponse, JevState } from './jev/types.ts';
 
@@ -34,18 +35,11 @@ interface RedactService {
   isEnabled?: () => boolean;
   redactJson(value: unknown): unknown;
   redactString(value: string | null | undefined): string | null | undefined;
-  patternCount: number;
+  patternCount?: number;
 }
 
 function isService(value: unknown): value is RedactService {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    (candidate.version === SERVICE_VERSION || candidate.version === 1) &&
-    typeof candidate.redactJson === 'function' &&
-    typeof candidate.redactString === 'function' &&
-    (candidate.version === 1 || typeof candidate.isEnabled === 'function')
-  );
+  return isCompatibleRedactService(value);
 }
 
 /**

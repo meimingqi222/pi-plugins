@@ -29,7 +29,7 @@
 import { Type } from "typebox";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
-import { connectGoalSpend, createHostWorkReporter, createPollGuard, DeliveryLedger, SettledDeliveryQueue, type GoalSpendLease } from "pi-run-core";
+import { connectGoalSpend, createHostWorkReporter, createPollGuard, DeliveryLedger, SettledDeliveryQueue, type GoalSpendLease } from "@meimingqi222/pi-run-core";
 import { createPiExecutor } from "../runner/pi-executor.ts";
 import { listSavedWorkflows, listWorkflowRuns, formatRunSummary, formatWorkflowStatus } from "../runs/progress.ts";
 import { renderLiveStatus } from "../runs/live-status.ts";

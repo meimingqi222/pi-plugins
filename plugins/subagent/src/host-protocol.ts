@@ -1,6 +1,6 @@
 import { HostTranscript } from "./host-transcript.ts";
 import { basename } from "node:path";
-import { formatHostWork, type HostWork, type HostWorkContext } from "pi-run-core";
+import { formatHostWork, type HostWork, type HostWorkContext } from "@meimingqi222/pi-run-core";
 import { Type, type Static } from "typebox";
 import type {
   AgentToolResult,

@@ -165,7 +165,10 @@ export function classifyPath(
   // 3. grep over a directory that would surface credential contents.
   if (kind === "read" && ["grep", "rg", "egrep", "fgrep"].includes(tool)) {
     const riskyRoot = absPath === env.home || isFilesystemRoot(absPath);
-    const coversSecrets = CREDENTIAL_DIRS.some((dir) => isInside(expandPattern(dir, env), absPath, env));
+    const coversSecrets = CREDENTIAL_DIRS.some((dir) => {
+      const root = expandPattern(dir, env);
+      return isInside(root, absPath, env) || isInside(absPath, root, env);
+    });
     if (riskyRoot || coversSecrets) {
       return { tier: "dangerous", reason: `grep over ${absPath} would search credential directories`, ruleId: "sensitive-path" };
     }

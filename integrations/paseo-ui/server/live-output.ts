@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { defaultSubagentLogDir } from "pi-subagent/logs";
-import { foldSubagentLog } from "pi-subagent/transcript";
+import { defaultSubagentLogDir } from "@meimingqi222/pi-subagent/logs";
+import { foldSubagentLog } from "@meimingqi222/pi-subagent/transcript";
 import { liveLogSchema } from "../shared/work-status.ts";
 import type { LiveOutput } from "../shared/live-output.ts";
 

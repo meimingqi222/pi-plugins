@@ -1,0 +1,26 @@
+bun test v1.4.2 (744846f84)
+
+plugins/goal/test/verifier.test.ts:
+54 | test("redaction bridge rejects v2 services without live enablement", () => {
+55 |  let announce!: (value: unknown) => void;
+56 |  const pi: any = { events: { on: (_: string, fn: typeof announce) => { announce = fn; }, emit: () => {} } };
+57 |  const get = installRedactBridge(pi);
+58 |  announce({ version: 2, redactJson: (v: unknown) => v, redactString: (v: string) => v });
+59 |  expect(get()).toBeUndefined();
+                    ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  version: 2,
+  redactJson: [Function: redactJson],
+  redactString: [Function: redactString],
+}
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/goal/test/verifier.test.ts:59:16)
+(fail) redaction bridge rejects v2 services without live enablement [7.58ms]
+
+ 0 pass
+ 9 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [116.00ms]

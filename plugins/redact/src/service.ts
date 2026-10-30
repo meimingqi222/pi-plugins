@@ -9,12 +9,11 @@
  * rejected. pi's documented inter-extension bus (`pi.events`) lets the consumer
  * call this live redactor instead.
  *
- * The consumer lives in a different, independently-installable package, so it
- * cannot import these types. The contract is therefore **versioned and
- * validated at runtime**: a consumer checks `version` and that the methods are
- * callable before using an announcement, and falls back safely otherwise. Keep
- * `VERSION` in sync with `plugins/jev-compact/src/redact.ts`.
+ * Independently installed consumers share a small versioned contract package;
+ * announcements are still validated at runtime before they are used.
  */
+
+import { isCompatibleRedactService } from "@meimingqi222/pi-redact-contract";
 
 /** Channel a consumer subscribes to. Namespaced to avoid collisions. */
 export const REDACT_SERVICE_CHANNEL = "pi-redact:service";
@@ -54,8 +53,8 @@ export interface RedactService {
 
 /** True when `value` is a usable, compatible announcement. */
 export function isRedactService(value: unknown): value is RedactService {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
+  if (!isCompatibleRedactService(value)) return false;
+  const candidate = value;
   return (
     candidate.version === REDACT_SERVICE_VERSION &&
     typeof candidate.isEnabled === "function" &&

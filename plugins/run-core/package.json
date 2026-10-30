@@ -1,5 +1,5 @@
 {
-	"name": "pi-run-core",
+	"name": "@meimingqi222/pi-run-core",
 	"version": "0.1.0",
 	"description": "Shared run primitives for pi run-oriented extensions: snapshot persistence, staleness guards, token accounting, continuation delivery.",
 	"type": "module",

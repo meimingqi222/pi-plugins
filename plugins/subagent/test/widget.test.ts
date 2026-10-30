@@ -52,6 +52,17 @@ function record(partial: Partial<BackgroundRecord>): BackgroundRecord {
 }
 
 describe("createFleetReporter", () => {
+	test("keeps the detailed widget when task navigation is unavailable", () => {
+		const ui = fakeUI();
+		const timer = fakeTimer();
+		const reporter = createFleetReporter({ ui: () => ui, list: () => [record({})], activeCount: () => 1, schedule: timer.schedule, cancel: timer.cancel });
+		try {
+			reporter.sync();
+			const factory = ui.widgetCalls[0]!.content as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+			const lines = factory({ requestRender() {} }, { fg: (_: string, text: string) => text, bold: (text: string) => text }).render(100);
+			expect(lines.join("\n")).toContain("Inspect");
+		} finally { reporter.dispose(); }
+	});
 	test("mounts the widget only while children run and hands the slot back", () => {
 		const ui = fakeUI();
 		const timer = fakeTimer();
@@ -60,11 +71,14 @@ describe("createFleetReporter", () => {
 			ui: () => ui,
 			list: () => records,
 			activeCount: () => records.filter((item) => item.status === "running").length,
+			compact: () => true,
 			schedule: timer.schedule,
 			cancel: timer.cancel,
 		});
 		reporter.sync();
 		expect(ui.widgetCalls).toHaveLength(1);
+		const factory = ui.widgetCalls[0]!.content as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+		expect(factory({ requestRender() {} }, { fg: (_: string, text: string) => text, bold: (text: string) => text }).render(100)).toEqual([]);
 		expect(ui.widgetCalls[0]!.key).toBe("pi-subagent-fleet");
 		expect(ui.widgetCalls[0]!.options).toEqual({ placement: "belowEditor" });
 		expect(timer.callbacks.size).toBe(1);

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import type { AgentRunResult, RpcChildInput } from "pi-agent-runner";
+import type { AgentRunResult, RpcChildInput } from "@meimingqi222/pi-agent-runner";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { prepareHostArguments } from "../src/host-protocol.ts";
 import { subagentExtension } from "../src/index.ts";

@@ -8,17 +8,15 @@
  * to bridge. A user who pastes a credential into a prompt and then makes one
  * grey call sent it to a third party in the clear.
  *
- * Why a bus and not an import: the plugins are published independently and
- * `pi-permissions` must still install alone. The constants are duplicated from
- * `pi-redact/src/service.ts` on purpose; a cross-package import would
- * reintroduce the dependency. A different version is ignored, not guessed at.
+ * The event bus avoids depending on the redactor extension; a small shared
+ * contract library validates the same versioned service across consumers.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isCompatibleRedactService } from "@meimingqi222/pi-redact-contract";
 
 const SERVICE_CHANNEL = "pi-redact:service";
 const DISCOVERY_CHANNEL = "pi-redact:service-request";
-const SERVICE_VERSION = 2;
 
 /** The shape pi-redact announces. Validated at runtime, never trusted. */
 export interface RedactService {
@@ -26,18 +24,11 @@ export interface RedactService {
   isEnabled?: () => boolean;
   redactJson(value: unknown): unknown;
   redactString(value: string | null | undefined): string | null | undefined;
-  patternCount: number;
+  patternCount?: number;
 }
 
 function isService(value: unknown): value is RedactService {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    (candidate.version === SERVICE_VERSION || candidate.version === 1) &&
-    typeof candidate.redactJson === "function" &&
-    typeof candidate.redactString === "function" &&
-    (candidate.version === 1 || typeof candidate.isEnabled === "function")
-  );
+  return isCompatibleRedactService(value);
 }
 
 export interface RedactBridge {

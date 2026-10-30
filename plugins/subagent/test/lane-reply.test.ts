@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentRunResult, RpcChild, RpcChildInput } from "pi-agent-runner";
+import type { AgentRunResult, RpcChild, RpcChildInput } from "@meimingqi222/pi-agent-runner";
 import { subagentExtension } from "../src/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 

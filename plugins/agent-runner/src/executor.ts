@@ -795,6 +795,7 @@ export function createAgentExecutor(options: AgentExecutorOptions = {}): AgentEx
         child.on("exit", (code) => {
           exitCode = code;
           if (timer) clearTimeout(timer);
+          if (stallTimer) clearInterval(stallTimer);
           // Drain already-buffered events, but do not wait for a descendant's EOF.
           boundDrain();
         });

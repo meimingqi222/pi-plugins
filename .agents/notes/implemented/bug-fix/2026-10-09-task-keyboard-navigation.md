@@ -16,7 +16,12 @@ below-editor selector and input listener across independently installed
 plugins. Down highlights a category from an empty editor; Up/Down switches,
 Enter opens its task view, and Escape returns to input. Dialog events, overlays,
 non-editor focus and key releases keep their keys. Each plugin clears its
-participation on teardown. Background tasks gain an identity-based panel with
+participation on teardown. The default summary occupies one row; Down expands
+the category list. Subagent and background reporters suppress duplicate detailed
+rows when this selector is available, retaining their fallback on older hosts or
+when subagent navigation is disabled. Background task counts include running
+jobs only; completed jobs remain accessible through `/bg` and `/bg live`.
+Subagent entries retain their existing lifecycle and counts. Background tasks gain an identity-based panel with
 bounded live output, scrolling, and an explicit stop key.
 
 ## Alternatives considered
@@ -43,6 +48,8 @@ Proved: With the old opt-in listener enabled, Down opened customFactory before
 Enter and failed the assertion expecting undefined. Output is saved in
 `.agents/notes-evidence/2026-10-09-task-navigation-red.txt`. The updated default
 navigation regression passes with the new selector.
+
+Additional red-run proof: `plugins/run-core/test/task-navigation.test.ts::task categories expand only after navigation starts` and `plugins/subagent/test/widget.test.ts::mounts the widget only while children run and hands the slot back` failed before the compact selector change; outputs are in `regression-evidence/task-navigation-collapse-red.txt` and `regression-evidence/fleet-compact-red.txt`.
 
 ## Superseded
 

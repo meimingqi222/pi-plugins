@@ -20,8 +20,11 @@ The adapter guards the host tree shape rather than depending on module identity.
 Subagent main views open a sole child's Markdown transcript immediately;
 multiple children use a stable-id list followed by Enter into messages.
 Esc returns through the list to the parent; q always returns to the parent.
-The viewport follows live messages until the user scrolls away, End resumes
-following, and resizing updates its row budget. Background commands use the
+The viewport follows live messages until the user scrolls away, and `f` resumes
+following. Fullscreen mouse events route to the visible task component rather
+than hidden parent messages; wheel scrolling pauses follow and returning to
+the bottom resumes it. Pi fullscreen intercepts End before the custom component,
+so the visible hint uses `f`. Resizing updates the row budget. Background commands use the
 same main-view adapter.
 
 Structured transcript reads retain whole newline-delimited JSON records from
@@ -66,3 +69,7 @@ Proved: Temporarily replaced the document renderer's child lines with a marker;
 Child inspection in progress in the main region. Restored the renderer and
 reran both native modes green. Output saved in
 `.agents/notes-evidence/2026-10-09-task-native-document-red.txt`.
+
+Proved: Before mouse forwarding, fullscreen wheel input left the last transcript line visible instead of scrolling away. The native integration failure is saved in `regression-evidence/subagent-wheel-red.txt`; the regression also checks live updates, `f` follow and restoration of the parent mouse handler.
+
+Both the main view and legacy panel show each child name and explicit state before any long task text, and the header counts completed and other states. This keeps state visible without relying on icon color or prompt width. `plugins/subagent/test/panel.test.ts::each task shows its name and status before a long repeated prompt` failed before the change; output is saved in `regression-evidence/subagent-state-labels-red.txt`.

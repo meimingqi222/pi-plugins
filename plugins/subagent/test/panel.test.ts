@@ -61,6 +61,21 @@ function fakePanel(list: () => BackgroundRecord[], stopOutcome: StopOutcome = "s
 }
 
 describe("the fleet panel", () => {
+	test("each task shows its name and status before a long repeated prompt", () => {
+		const prompt = "You are reviewing a pi-extension monorepo for implementation quality. ".repeat(4);
+		const records = [record({ alias: "review-runs", task: prompt }), record({ id: "sa-2", alias: "review-perm", task: prompt, status: "completed", finishedAt: Date.now() })];
+		const { panel } = fakePanel(() => records);
+		try {
+			const lines = panel.render(60).join("\n");
+			expect(lines).toContain("1 running");
+			expect(lines).toContain("1 completed");
+			expect(lines).toMatch(/review-runs\s+running/);
+			expect(lines).toMatch(/review-perm\s+completed/);
+			const narrow = panel.render(30).join("\n");
+			expect(narrow).toContain("running");
+			expect(narrow).toContain("completed");
+		} finally { panel.dispose?.(); }
+	});
 	test("lists children with live detail and a bounded body", () => {
 		const records = [record({ id: "sa-1", task: "one" }), record({ id: "sa-2", task: "two" })];
 		const { panel } = fakePanel(() => records);
@@ -76,13 +91,13 @@ describe("the fleet panel", () => {
 		const { panel } = fakePanel(() => records);
 		panel.render(80);
 		panel.handleInput?.(DOWN);
-		expect(panel.render(80).join("\n")).toContain("› ● second");
+		expect(panel.render(80).find((line) => line.includes("› ● explore"))).toContain("second");
 		// Reorder (a settle moves a record between active and settled groups):
 		// selection stays on the same child, not the same index.
 		records.reverse();
 		panel.render(80);
 		panel.handleInput?.(DOWN);
-		expect(panel.render(80).join("\n")).toContain("› ● first");
+		expect(panel.render(80).find((line) => line.includes("› ● explore"))).toContain("first");
 	});
 
 	test("enter opens the detail, Esc returns to the list, Esc again closes", () => {
@@ -253,7 +268,7 @@ test("main view selects children beyond the viewport and returns through transcr
 	try {
 		view.render(100);
 		for (let i = 0; i < 9; i++) view.handleInput?.(DOWN);
-		expect(view.render(100).join("\n")).toContain("› ● task 10");
+		expect(view.render(100).find((line) => line.includes("› ● explore"))).toContain("task 10");
 		view.handleInput?.(ENTER);
 		expect(view.render(100).join("\n")).toContain("reply for sa-10");
 		view.handleInput?.("d");
@@ -261,7 +276,7 @@ test("main view selects children beyond the viewport and returns through transcr
 		view.handleInput?.(ESC);
 		expect(view.render(100).join("\n")).toContain("reply for sa-10");
 		view.handleInput?.(ESC);
-		expect(view.render(100).join("\n")).toContain("› ● task 10");
+		expect(view.render(100).find((line) => line.includes("› ● explore"))).toContain("task 10");
 		expect(closed).toBe(false);
 		view.handleInput?.(ESC);
 		expect(closed).toBe(true);
@@ -284,8 +299,27 @@ test("main transcript follows new messages until scrolling away and resizes", ()
 		expect(view.render(40).join("\n")).not.toContain("message 39");
 		view.handleInput?.(END);
 		expect(view.render(40).join("\n")).toContain("message 39");
+		view.handleInput?.(UP);
+		view.handleInput?.(DOWN);
+		count = 41;
+		expect(view.render(40).join("\n")).toContain("message 40");
 		rows = 15;
 		expect(view.render(40)).toHaveLength(rows + 4);
 		for (const line of view.render(20)) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 	} finally { view.dispose?.(); }
+});
+
+test("mouse selects a task and double click opens its transcript", () => {
+	const { deps, panel: original } = fakePanel(() => [record({ id: "sa-1", alias: "first" }), record({ id: "sa-2", alias: "second" })]);
+	original.dispose?.();
+	const panel = createSubagentsPanel({ ...deps, mainView: true }, () => {});
+	panel.render(80);
+	const click = { type: "click", button: "left", x: 1, y: 3, screenX: 1, screenY: 3, width: 80, height: 20, shift: false, alt: false, ctrl: false } as const;
+	try {
+		expect(panel.handleMouse?.({ ...click, type: "press" })).toEqual({ handled: true });
+		expect(panel.handleMouse?.(click)).toEqual({ handled: true });
+		expect(panel.render(80).join("\n")).toContain("› ● second");
+		expect(panel.handleMouse?.({ ...click, clickCount: 2 })).toEqual({ handled: true });
+		expect(panel.render(80).join("\n")).toContain("Waiting for the child's first message");
+	} finally { panel.dispose?.(); }
 });

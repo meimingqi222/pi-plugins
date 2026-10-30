@@ -52,7 +52,9 @@ Blob names and hashes are computed exactly as `acemcp` computes them —
 `sha256(chunkName + chunkContent)`, `#chunk{N}of{TOTAL}` naming, 300-line chunks,
 1 MiB file cap, no-newline minified-file skip. All 4428 files / 6031 hashes of
 this workspace were verified byte-identical to acemcp's cache, so a project
-`acemcp` already indexed uploads **nothing** on first use.
+`acemcp` already indexed uploads **nothing** on first use when the current
+server confirms those blobs are still present. Cached hashes are checked on
+every search; an unavailable or invalid check causes a safe re-upload.
 
 `acemcp`'s manifest is read but never written; this client keeps its own index
 beside it, atomically. Two processes writing one manifest was one of the problems

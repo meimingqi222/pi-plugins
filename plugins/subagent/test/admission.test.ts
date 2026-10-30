@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { AgentRunResult, RpcChild, RpcChildInput } from "pi-agent-runner";
+import type { AgentRunResult, RpcChild, RpcChildInput } from "@meimingqi222/pi-agent-runner";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createAdmission } from "pi-run-core";
+import { createAdmission } from "@meimingqi222/pi-run-core";
 import { subagentExtension } from "../src/index.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };

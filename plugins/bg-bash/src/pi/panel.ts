@@ -1,5 +1,5 @@
 import { isKeyRelease, matchesKey, wrapTextWithAnsi, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
-import { formatWorkRow, type WorkTheme } from "pi-run-core";
+import { formatWorkRow, type WorkTheme } from "@meimingqi222/pi-run-core";
 import type { Job } from "../core/jobs.ts";
 import { jobWorkItem } from "./surface.ts";
 import { readLogTail } from "./settings.ts";

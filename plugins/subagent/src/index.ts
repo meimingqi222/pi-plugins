@@ -26,14 +26,14 @@ import {
   readTokenUsage,
   type Admission,
   type GoalSpendLease,
-} from "pi-run-core";
+} from "@meimingqi222/pi-run-core";
 import { laneResultText, SubagentResultDelivery, type ResultOrigin } from "./result-delivery.ts";
 import { formatBackground } from "./background.ts";
 import { LaneRegistry, type Lane } from "./lane.ts";
 import { formatFleetListing } from "./fleet.ts";
 import { createSubagentsPanel } from "./panel.ts";
 import { createFleetReporter } from "./widget.ts";
-import type { RpcChild } from "pi-agent-runner";
+import type { RpcChild } from "@meimingqi222/pi-agent-runner";
 import { discoverAgents, formatAgentNames } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import { WAIT_TIMEOUT_DEFAULT_SECONDS, WAIT_TIMEOUT_MAX_SECONDS } from "./contract.ts";
@@ -194,6 +194,7 @@ export function subagentExtension(options: SubagentExtensionOptions = {}) {
       ui: () => (uiCtx?.mode === "tui" && uiCtx.hasUI && typeof uiCtx.ui?.setWidget === "function" ? uiCtx.ui : undefined),
       list: () => (uiCtx ? registry.list(uiCtx.sessionManager.getSessionId()) : []),
       activeCount: () => registry.activeCount(),
+      compact: () => !!pi.events && (options.downInspect ?? downInspectEnabled()) && typeof uiCtx?.ui?.onTerminalInput === "function",
     });
 
     async function openFleetPanel(source: ExtensionContext): Promise<void> {
@@ -792,4 +793,4 @@ export {
   type AgentRunInput,
   type AgentRunResult,
   type AgentUsage,
-} from "pi-agent-runner";
+} from "@meimingqi222/pi-agent-runner";

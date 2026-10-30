@@ -130,8 +130,10 @@ typecheck` is clean.
 ## Superseded
 
 The opt-in Down-to-open decision is replaced by the shared default Down/Enter
-category selector in 2026-10-09-task-keyboard-navigation.md. Widget, panel,
-shortcut and lifecycle behavior described here otherwise remains applicable.
+category selector in 2026-10-09-task-keyboard-navigation.md. The same note
+now specifies the compact summary: per-child widget rows are a fallback only
+when the shared selector is unavailable or disabled. Shortcut and lifecycle
+behavior otherwise remains applicable.
 Active duration accounting is now owned by 2026-10-09-subagent-active-duration.md.
 
 The overlay and Enter-to-detail presentation is superseded by

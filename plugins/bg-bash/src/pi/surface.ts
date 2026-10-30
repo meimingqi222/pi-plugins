@@ -12,7 +12,7 @@
  * did not succeed.
  */
 
-import { fitWorkText, formatWorkElapsed, type WorkItem, type WorkState } from "pi-run-core";
+import { fitWorkText, formatWorkElapsed, type WorkItem, type WorkState } from "@meimingqi222/pi-run-core";
 import type { Job } from "../core/jobs.ts";
 import { formatDuration } from "./format.ts";
 

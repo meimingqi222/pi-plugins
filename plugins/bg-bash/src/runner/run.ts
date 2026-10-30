@@ -9,6 +9,7 @@
 import { constants, createWriteStream, mkdirSync, openSync, type WriteStream } from "node:fs";
 import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import type { Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import type { RunOutcome, RunningCommand } from "../core/types.ts";
 import { killTree, spawnShell } from "./process.ts";
@@ -97,9 +98,8 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 
 	const finish = (exitCode: number | null): void => {
 		if (settled) return;
-		// A terminal job no longer has an owner that can stop its descendants.
-		// Clean the process group without relabelling a successful shell exit.
-		killTree(pid);
+		// A naturally exiting shell may have intentionally started a background
+		// process. Explicit stop and timeout already kill the process group.
 		settled = true;
 		if (timeoutHandle) clearTimeout(timeoutHandle);
 		detach();
@@ -113,28 +113,12 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 
 	// One decoder per stream: a multi-byte character split across chunks must
 	// not surface as U+FFFD in the tail buffer or the log file.
-	const forward = (stream: NodeJS.ReadableStream | null): void => {
-		if (!stream) return;
-		const decoder = new StringDecoder("utf8");
-		stream.on("data", (chunk: Buffer) => {
-			const text = decoder.write(chunk);
-			options.onData?.(text);
-			if (logStream && !logStream.destroyed) logStream.write(text);
-		});
-		stream.once("end", () => {
-			const rest = decoder.end();
-			if (!rest) return;
-			options.onData?.(rest);
-			if (logStream && !logStream.destroyed) logStream.write(rest);
-		});
-	};
-	forward(child.stdout);
-	forward(child.stderr);
+	const output = forwardCommandOutput([child.stdout, child.stderr], logStream, options.onData);
 	child.on("error", (error) => {
 		spawnError = error instanceof Error ? error.message : String(error);
 	});
 
-	void waitForTermination(child, options.exitGraceDeadlineMs)
+	void waitForTermination(child, options.exitGraceDeadlineMs, output.isPaused)
 		.then((exitCode) => finish(exitCode))
 		.catch((error: unknown) => {
 			spawnError = error instanceof Error ? error.message : String(error);
@@ -154,6 +138,41 @@ export function startCommand(options: StartCommandOptions): RunningCommand {
 	}
 
 	return { pid, result, kill, detach };
+}
+
+export function forwardCommandOutput(streams: readonly (NodeJS.ReadableStream | null)[], logStream?: Writable, onData?: (chunk: string) => void): { isPaused(): boolean } {
+	let paused = false;
+	const resume = (): void => {
+		if (!paused) return;
+		paused = false;
+		for (const source of streams) source?.resume();
+	};
+	const write = (text: string): void => {
+		if (!logStream || logStream.destroyed) return;
+		if (!logStream.write(text) && !paused) {
+			paused = true;
+			for (const source of streams) source?.pause();
+			logStream.once("drain", resume);
+		}
+	};
+	logStream?.once("close", resume);
+	const forward = (stream: NodeJS.ReadableStream | null): void => {
+		if (!stream) return;
+		const decoder = new StringDecoder("utf8");
+		stream.on("data", (chunk: Buffer) => {
+			const text = decoder.write(chunk);
+			onData?.(text);
+			write(text);
+		});
+		stream.once("end", () => {
+			const rest = decoder.end();
+			if (!rest) return;
+			onData?.(rest);
+			write(rest);
+		});
+	};
+	for (const stream of streams) forward(stream);
+	return { isPaused: () => paused };
 }
 
 function openLog(path: string): WriteStream | undefined {
@@ -191,6 +210,7 @@ function openLog(path: string): WriteStream | undefined {
 export function waitForTermination(
 	child: ChildProcess,
 	exitGraceDeadlineMs = EXIT_STDIO_DEADLINE_MS,
+	isBackpressured: () => boolean = () => false,
 ): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
@@ -225,7 +245,10 @@ export function waitForTermination(
 		};
 		const armGrace = (): void => {
 			if (graceTimer) clearTimeout(graceTimer);
-			graceTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_GRACE_MS);
+			graceTimer = setTimeout(() => {
+				if (isBackpressured()) armGrace();
+				else finalize(exitCode);
+			}, EXIT_STDIO_GRACE_MS);
 		};
 		function onData(): void {
 			if (exited && !settled) armGrace();

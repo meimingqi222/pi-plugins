@@ -11,7 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createAgentExecutor, type PiInvocation } from "pi-agent-runner";
+import { createAgentExecutor, type PiInvocation } from "@meimingqi222/pi-agent-runner";
 import { parseStructuredReply, type AgentExecutor } from "./agent-runner.ts";
 import { resolveToolProfile } from "./roles.ts";
 import type { WorkflowAgentRunInput, WorkflowAgentRunResult } from "../core/types.ts";

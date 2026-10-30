@@ -1,0 +1,18 @@
+bun test v1.4.2 (744846f84)
+
+plugins/redact/test/index.test.ts:
+254 |   test("redacts and preserves structured tool results", async () => {
+255 |     const pi = createMockPi(); piRedact(pi as any);
+256 |     const { ctx } = createMockCtx();
+257 |     const structuredContent = { nested: { token: GHP } };
+258 |     const onlyStructured = await emit(pi, "tool_result", { content: [{ type: "text", text: "ok" }], structuredContent }, ctx);
+259 |     expect(onlyStructured.structuredContent.nested.token).not.toContain(GHP);
+                 ^
+TypeError: undefined is not an object (evaluating 'onlyStructured.structuredContent')
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/redact/test/index.test.ts:259:12)
+(fail) pi-redact extension > redacts and preserves structured tool results [2.00ms]
+
+ 0 pass
+ 25 filtered out
+ 1 fail
+Ran 1 test across 1 file. [274.00ms]

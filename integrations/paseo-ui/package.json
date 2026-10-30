@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "dependencies": { "pi-subagent": "workspace:*" },
+  "dependencies": { "@meimingqi222/pi-subagent": "workspace:*" },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"

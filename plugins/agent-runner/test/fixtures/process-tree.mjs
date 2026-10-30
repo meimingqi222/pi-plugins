@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
 const { pidPath, mode } = JSON.parse(process.argv.at(-1));
+if (mode === "exit") process.stdout.write(JSON.stringify({ type: "session", id: "exit-fixture" }) + "\n");
 if (mode === "ignore-term") process.on("SIGTERM", () => {});
 // A descendant keeps the parent's stdout/stderr open after the parent dies.
 const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 4000)"], {

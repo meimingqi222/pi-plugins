@@ -1,5 +1,5 @@
 {
-	"name": "pi-agent-runner",
+	"name": "@meimingqi222/pi-agent-runner",
 	"version": "0.1.0",
 	"description": "Shared subprocess agent runner for pi extensions: spawn one pi child in JSON mode, fold its event stream, and bound it.",
 	"type": "module",

@@ -3,12 +3,29 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { startCommand, waitForTermination } from "../src/runner/run.ts";
+import { startCommand, waitForTermination, forwardCommandOutput } from "../src/runner/run.ts";
+
+test("slow logging backpressures both output pipes without dropping data", async () => {
+	const stdout = new PassThrough(), stderr = new PassThrough();
+	let received = 0, peak = 0;
+	const log = new Writable({ highWaterMark: 1024, write(chunk, _encoding, done) {
+		received += chunk.length;
+		setTimeout(done, 2);
+	} });
+	forwardCommandOutput([stdout, stderr], log);
+	const data = Buffer.alloc(2048, 120);
+	for (let i = 0; i < 128; i++) { stdout.write(data); stderr.write(data); peak = Math.max(peak, log.writableLength); }
+	stdout.end(); stderr.end();
+	await Promise.all([new Promise<void>(r => stdout.on("end", r)), new Promise<void>(r => stderr.on("end", r))]);
+	await new Promise<void>(r => log.end(r));
+	expect(received).toBe(128 * 2 * data.length);
+	expect(peak).toBeLessThan(16 * 1024);
+});
 
 describe("startCommand", () => {
-	test.skipIf(process.platform !== "linux")("settlement kills redirected shell descendants", async () => {
+	test.skipIf(process.platform === "win32")("natural shell exit preserves redirected background descendants", async () => {
 		let output = "";
 		const running = startCommand({ command: "sleep 30 >/dev/null 2>&1 & echo $!", cwd: process.cwd(), onData: (text) => { output += text; } });
 		try {
@@ -17,8 +34,8 @@ describe("startCommand", () => {
 			expect(Number(output.trim())).toBeGreaterThan(0);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			let live = false;
-			try { live = !readFileSync(`/proc/${Number(output.trim())}/stat`, "utf8").split(" ")[2]!.includes("Z"); } catch { /* reaped */ }
-			expect(live).toBe(false);
+			try { process.kill(Number(output.trim()), 0); live = true; } catch { /* exited */ }
+			expect(live).toBe(true);
 		} finally {
 			const pid = Number(output.trim());
 			if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }

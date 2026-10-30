@@ -188,7 +188,7 @@ describe("pi-permissions extension wiring", () => {
     expect(ui.selectCalls).toHaveLength(0);
     expect(ctx.registry.calls).toHaveLength(0);
     if (child) expect(process.env.PI_PERMISSIONS_INHERITED_MODE).toBe("yolo");
-    else expect(ui.statuses["pi-permissions"]).toContain("yolo");
+    else expect(ui.statuses["@meimingqi222/pi-permissions"]).toContain("yolo");
   });
 
   test("Allow once permits; Deny and dismissal block", async () => {
@@ -363,7 +363,7 @@ describe("pi-permissions extension wiring", () => {
     const ui = freshUi();
     const { pi, ctx } = setup(ui);
     await pi.commands.get("permissions")!.handler("mode yolo", ctx);
-    expect(ui.statuses["pi-permissions"]).toBe("perm: ask");
+    expect(ui.statuses["@meimingqi222/pi-permissions"]).toBe("perm: ask");
     expect(ui.notifies.at(-1)!.message).toContain("mode: ask");
     expect(ui.notifies.at(-1)!.message).toContain("PI_PERMISSIONS_MODE");
     expect(process.env.PI_PERMISSIONS_INHERITED_MODE).toBe("ask");
@@ -476,7 +476,7 @@ describe("pi-permissions extension wiring", () => {
     process.env.PI_PERMISSIONS_MODE = "ask";
     const ui = freshUi();
     setup(ui);
-    expect(ui.statuses["pi-permissions"]).toBe("perm: ask");
+    expect(ui.statuses["@meimingqi222/pi-permissions"]).toBe("perm: ask");
   });
 
   test("/permissions check reports the decision without executing", async () => {

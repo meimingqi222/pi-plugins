@@ -1,0 +1,38 @@
+bun test v1.4.2 (744846f84)
+
+plugins/ace-search/test/search.test.ts:
+(pass) fatal upload stops queued batches and drains asynchronous in-flight workers [40.57ms]
+88 |       const next = fakeClient({
+89 |         async findMissing(hashes) { return { unknown: [...hashes], pending: [] }; },
+90 |         async uploadBlobs(blobs) { uploaded += blobs.length; },
+91 |       });
+92 |       await runAceSearch({ projectRoot: root, query: "x", config: { ...config, baseUrl: "https://other.test" }, client: next.client });
+93 |       expect(uploaded).toBe(1);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/ace-search/test/search.test.ts:93:24)
+(fail) runAceSearch > a warm local cache is checked against the current server [8.81ms]
+(pass) runAceSearch > gitignore rules exclude upload bodies and retrieval hashes with nested overrides [13.18ms]
+(pass) runAceSearch > a cold project uploads every chunk, then retrieves with hashes [1.96ms]
+(pass) runAceSearch > a warm index uploads nothing and skips the upload phase [2.37ms]
+(pass) runAceSearch > a stale hash forces a re-upload on the next run [3.09ms]
+(pass) runAceSearch > waitForIndex polls find-missing with hashes, not names [1.30ms]
+(pass) runAceSearch > waitForIndex is skipped when there was nothing to upload [1.09ms]
+(pass) runAceSearch > a failing batch does not abort the run, but a 401 does [1.00ms]
+(pass) runAceSearch > aborting mid-run stops the search phase from starting [1.56ms]
+(pass) runAceSearch > a failed upload is not persisted, so the next run retries it [2.03ms]
+(pass) runAceSearch > a successful upload is persisted and the next run is warm [1.69ms]
+(pass) runAceSearch > the cache key is canonical, so a redundant spelling finds the same index [1.73ms]
+(pass) runAceSearch > progress reports every phase so a slow run is attributable [1.08ms]
+(pass) runAceSearch > a file known only to this client's index is not re-uploaded [1.87ms]
+(pass) runAceSearch > both stores contribute: the union is warm [1.58ms]
+(pass) runAceSearch > a hash disagreement between the stores forces a re-upload [1.66ms]
+
+ 16 pass
+ 1 fail
+ 48 expect() calls
+Ran 17 tests across 1 file. [145.00ms]

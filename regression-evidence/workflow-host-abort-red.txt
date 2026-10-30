@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+plugins/workflow/test/orchestrator.test.ts:
+48 |       return { status: "failed", errorMessage: "aborted", usage: { input: 0, output: 0 } } as never;
+49 |     };
+50 |     const result = await runWorkflow({ script: "return await agent('hi', {});", args: null, name: "timeout", cwd: process.cwd(), executor, timeoutMs: 300, agentTimeoutMs: 5000 });
+51 |     expect(started).toBe(true);
+52 |     expect(result.status).not.toBe("completed");
+53 |     expect(aborted).toBe(true);
+                         ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/workflow/test/orchestrator.test.ts:53:21)
+(fail) workflow orchestration > host timeout aborts an in-flight agent before its own deadline [2026.59ms]
+
+ 0 pass
+ 36 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [2.11s]

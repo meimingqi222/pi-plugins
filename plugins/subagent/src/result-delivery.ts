@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DeliveryLedger, type DeliveryOffer } from "pi-run-core";
+import { DeliveryLedger, type DeliveryOffer } from "@meimingqi222/pi-run-core";
 import { formatBackground } from "./background.ts";
 import type { Lane } from "./lane.ts";
 

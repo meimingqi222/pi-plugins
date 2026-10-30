@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentExecutor, AgentRunInput, AgentUsage } from "pi-agent-runner";
+import type { AgentExecutor, AgentRunInput, AgentUsage } from "@meimingqi222/pi-agent-runner";
 import type { SubagentDefinition } from "../src/agents.ts";
 import { executeSubagent, truncate } from "../src/tool.ts";
 

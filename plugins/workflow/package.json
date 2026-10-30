@@ -1,5 +1,5 @@
 {
-	"name": "pi-workflow",
+	"name": "@meimingqi222/pi-workflow",
 	"version": "0.1.0",
 	"description": "Structured multi-agent workflows for pi: fan out isolated agents, coordinate them with a script, and resume from a journal.",
 	"type": "module",
@@ -11,7 +11,7 @@
 	"keywords": ["pi", "pi-package", "workflow", "orchestration", "subagent"],
 	"license": "MIT",
 	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.0.0", "typebox": "*" },
-	"dependencies": { "pi-agent-runner": "workspace:*", "pi-run-core": "workspace:*" },
+	"dependencies": { "@meimingqi222/pi-agent-runner": "workspace:*", "@meimingqi222/pi-run-core": "workspace:*" },
 	"devDependencies": {
 		"@earendil-works/pi-tui": "^1.0.0",
 		"@types/node": "^22.0.0",

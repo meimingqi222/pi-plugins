@@ -27,7 +27,7 @@ import {
   RunBudgetExceeded,
   type Admission,
   type RunBudgetLimits,
-} from "pi-run-core";
+} from "@meimingqi222/pi-run-core";
 import { join } from "node:path";
 import { workflowHash } from "../core/hash.ts";
 import { emptyWorkflowUsage, mergeWorkflowUsage, workflowUsageTokens, type WorkflowProgress, type WorkflowProgressAgent, type WorkflowRunResult, type WorkflowUsage } from "../core/types.ts";
@@ -318,7 +318,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
       if (options.journal?.resume.hasCachedEntries) return;
       budget.check(calls);
     },
-    async agent(prompt, agentOptions: WorkflowAgentOptions) {
+    async agent(prompt, agentOptions: WorkflowAgentOptions, signal: AbortSignal) {
       const index = sequence;
       sequence += 1;
       const callHash = workflowHash({ prompt, options: agentOptions as unknown });
@@ -384,10 +384,10 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
             ...(options.journal
               ? { evidencePath: join(options.journal.paths.runDir, "agents", `${record.id}.jsonl`) }
               : {}),
-            ...(options.signal ? { signal: options.signal } : {}),
+            signal,
           },
           admit: () => budget.admit(1),
-          ...(options.signal ? { signal: options.signal } : {}),
+          signal,
         });
       const withSlot = async () => {
         await semaphore.acquire();
@@ -395,6 +395,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
         if (queueDepth === 0) queueOpenedAt = now();
         queueDepth += 1;
         try {
+          signal.throwIfAborted();
           // The run-local slot bounds this run; admission bounds the process.
           // Acquiring both is what turns four runs × four agents from sixteen
           // live children into at most the provider ceiling.
@@ -406,7 +407,7 @@ export async function runWorkflow(options: WorkflowRunOptions): Promise<Workflow
             // run. Within a run the group's queue is FIFO by call order.
             runId,
             key: DEFAULT_ADMISSION_KEY,
-            ...(options.signal ? { signal: options.signal } : {}),
+            signal,
           });
           record.status = "running";
           record.startedAt = now();

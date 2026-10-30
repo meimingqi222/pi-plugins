@@ -347,6 +347,13 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
   try {
     await terminal;
 
+    // A failed worker has abandoned its agents; stop them as on a host timeout.
+    if (!state.completed && !controller.signal.aborted) {
+      state.errorMessage ||= workerError || "The workflow script ended without a result";
+      controller.abort(new Error(state.errorMessage));
+      state.stopReason = "failed";
+    }
+
     // Rule 2: an abandoned handler must not hold the run open. The worker is
     // already gone, so a result it can no longer receive does not matter — the
     // drain is only a grace period for a child that is mid-write.
@@ -362,6 +369,8 @@ export async function runScriptHost(options: ScriptHostOptions): Promise<ScriptH
       state.stopReason = abandoned > 0
         ? `completed; ${abandoned} agent call(s) were still running at script exit`
         : "completed";
+    } else if (state.stopReason === "failed") {
+      // Preserve the worker failure rather than labelling our cleanup a timeout.
     } else if (controller.signal.aborted) {
       state.stopReason = "timeout";
       state.errorMessage = errorText(controller.signal.reason) || "The workflow script was stopped";

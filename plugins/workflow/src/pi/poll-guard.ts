@@ -7,7 +7,7 @@
  * blocked poll terminates the batch and ends the turn.
  */
 
-export { PURE_WAIT_PATTERN, isPureWaitCommand } from "pi-run-core";
+export { PURE_WAIT_PATTERN, isPureWaitCommand } from "@meimingqi222/pi-run-core";
 
 /** The message a blocked poll carries, so the reason names the run to check. */
 export function pollBlockReason(runIds: string[]): string {

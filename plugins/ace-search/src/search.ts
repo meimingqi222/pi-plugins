@@ -90,12 +90,29 @@ export async function runAceSearch(options: RunAceSearchOptions): Promise<AceSea
   const store = await resolveHashStore(config, projectRoot);
   // Hashing happens once here; the store is already in memory, so nothing
   // downstream may re-read or re-walk the workspace.
-  const inventory = await buildBlobInventory({
+  let inventory = await buildBlobInventory({
     projectRoot,
     config,
     hashesByPath: store.hashesByPath,
     signal,
   });
+  // Local manifests may belong to another endpoint/account or predate server
+  // eviction. Only the current server can confirm that cached hashes exist.
+  const missingHashes = new Set(inventory.missing.map((chunk) => chunk.hash));
+  const cached = inventory.entries.flatMap((entry) => entry.chunks).filter((chunk) => !missingHashes.has(chunk.hash));
+  if (cached.length > 0) {
+    progress({ phase: "hash", message: `Checking ${cached.length} cached blobs with the server` });
+    let unconfirmed = cached;
+    try {
+      const status = await client.findMissing(cached.map((chunk) => chunk.hash), signal);
+      const unknown = new Set(status.unknown);
+      unconfirmed = cached.filter((chunk) => unknown.has(chunk.hash));
+    } catch (error) {
+      if (signal.aborted || isFatalAceError(error)) throw error;
+      progress({ phase: "hash", message: "Could not verify cached blobs; uploading them again" });
+    }
+    inventory = { ...inventory, missing: [...inventory.missing, ...unconfirmed] };
+  }
   phases.push({
     phase: "hash",
     durationMs: Date.now() - startedAt,

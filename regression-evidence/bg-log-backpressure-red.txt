@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+plugins/bg-bash/test/run.test.ts:
+19 | 	for (let i = 0; i < 128; i++) { stdout.write(data); stderr.write(data); peak = Math.max(peak, log.writableLength); }
+20 | 	stdout.end(); stderr.end();
+21 | 	await Promise.all([new Promise<void>(r => stdout.on("end", r)), new Promise<void>(r => stderr.on("end", r))]);
+22 | 	await new Promise<void>(r => log.end(r));
+23 | 	expect(received).toBe(128 * 2 * data.length);
+24 | 	expect(peak).toBeLessThan(16 * 1024);
+                   ^
+error: expect(received).toBeLessThan(expected)
+
+Expected: < 16384
+Received: 524288
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/bg-bash/test/run.test.ts:24:15)
+(fail) slow logging backpressures both output pipes without dropping data [784.82ms]
+
+ 0 pass
+ 10 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [1247.00ms]

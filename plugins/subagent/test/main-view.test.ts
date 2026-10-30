@@ -93,6 +93,7 @@ for (const mode of ["regular", "fullscreen"] as const) {
 				return (renderer.getScreenLines?.() ?? tui.render(terminal.columns)).map(stripTerminalSequences).join("\n");
 			};
 			expect(frame()).toContain("PARENT-MESSAGE");
+			const parentMouse = tui.children[0]!.handleMouse;
 			terminal.input!("\x1b[B");
 			terminal.input!("\r");
 			await new Promise((resolve) => setTimeout(resolve, 30));
@@ -107,6 +108,19 @@ for (const mode of ["regular", "fullscreen"] as const) {
 			expect(frame()).toContain("Project overview");
 			expect(frame()).toContain("· explore · running");
 			expect(frame()).not.toContain("PARENT-LIVE-UPDATE");
+			if (mode === "fullscreen") {
+				const longReport = Array.from({ length: 80 }, (_, i) => `Unique transcript line ${i}`).join("\n\n");
+				writeFileSync(evidence, JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: longReport }] } }) + "\n");
+				expect(frame()).toContain("Unique transcript line 79");
+				for (let i = 0; i < 12; i++) terminal.input!("\x1b[<64;10;10M");
+				expect(frame()).not.toContain("Unique transcript line 79");
+				const updated = `${longReport}\n\nUnique new message`;
+				writeFileSync(evidence, JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: updated }] } }) + "\n");
+				expect(frame()).not.toContain("Unique new message");
+				terminal.input!("f");
+				expect(frame()).toContain("Unique new message");
+				writeFileSync(evidence, JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: report }] } }) + "\n");
+			}
 			terminal.rows = 42;
 			terminal.resize?.();
 			frame();
@@ -120,6 +134,7 @@ for (const mode of ["regular", "fullscreen"] as const) {
 			expect(frame()).toContain("PARENT-MESSAGE");
 			expect(frame()).toContain("PARENT-LIVE-UPDATE");
 			expect(frame()).not.toContain("Project overview");
+			expect(tui.children[0]!.handleMouse).toBe(parentMouse);
 			ctx.ui.setEditorText("restored draft");
 			expect(ctx.ui.getEditorText()).toBe("restored draft");
 			resolveChild({ status: "completed", text: report, usage });

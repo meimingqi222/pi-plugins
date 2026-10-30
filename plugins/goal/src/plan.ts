@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveHelperModel, stripJsonFence, withDeadline } from "pi-run-core";
+import { resolveHelperModel, stripJsonFence, withDeadline } from "@meimingqi222/pi-run-core";
 import type { RedactService } from "./redact.ts";
 
 /**

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isCompatibleRedactService } from "@meimingqi222/pi-redact-contract";
 
 interface RedactService {
   version: number;
@@ -11,10 +12,7 @@ interface RedactService {
 export function installRedactBridge(pi: ExtensionAPI) {
   let service: RedactService | undefined;
   pi.events?.on("pi-redact:service", (value: unknown) => {
-    if (!value || typeof value !== "object") return;
-    const candidate = value as RedactService;
-    if ((candidate.version === 1 || (candidate.version === 2 && typeof candidate.isEnabled === "function"))
-      && typeof candidate.redactJson === "function" && typeof candidate.redactString === "function") service = candidate;
+    if (isCompatibleRedactService(value)) service = value as RedactService;
   });
   pi.events?.emit("pi-redact:service-request", undefined);
   return {

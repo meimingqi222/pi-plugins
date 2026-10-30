@@ -80,7 +80,7 @@ function normalizeExecutable(word: string, platform: NodeJS.Platform): string {
 }
 
 function redirectOp(operator: string): ShellRedirect["op"] {
-  if (operator === ">" || operator === ">>" || operator === "|>") return ">";
+  if (operator === ">" || operator === ">>" || operator === ">|" || operator === "<>" || operator === "|>") return ">";
   if (operator === "&>" || operator === "&>>") return "&>";
   if (operator === "<") return "<";
   return "other";
@@ -297,7 +297,10 @@ export function analyzeShell(input: string, env: PolicyEnv): ShellAnalysis {
         case "Command": {
           const redirects: ShellRedirect[] = [];
           collectRedirects(node.redirects, redirects);
-          if (!node.name) return;
+          if (!node.name) {
+            if (redirects.length) invocations.push({ words: ["echo"], rawWords: ["echo"], redirects, pipeline: pipeline ?? ++pipelineCount });
+            return;
+          }
           const words = [node.name, ...node.suffix].map((word) => wordValue(word, visitScript, env.home));
           const rawWords = [node.name, ...node.suffix].map((word) => word.text);
           invocations.push({ words, rawWords, redirects, pipeline: pipeline ?? ++pipelineCount });
@@ -308,14 +311,17 @@ export function analyzeShell(input: string, env: PolicyEnv): ShellAnalysis {
           collectRedirects(node.redirects, redirects);
           if (node.command.type === "Command") {
             const inner = node.command;
+            collectRedirects(inner.redirects, redirects);
             if (inner.name) {
-              collectRedirects(inner.redirects, redirects);
               const words = [inner.name, ...inner.suffix].map((word) => wordValue(word, visitScript, env.home));
               const rawWords = [inner.name, ...inner.suffix].map((word) => word.text);
               invocations.push({ words, rawWords, redirects, pipeline: pipeline ?? ++pipelineCount });
               return;
             }
+            if (redirects.length) invocations.push({ words: ["echo"], rawWords: ["echo"], redirects, pipeline: pipeline ?? ++pipelineCount });
+            return;
           }
+          if (redirects.length) invocations.push({ words: ["echo"], rawWords: ["echo"], redirects, pipeline: pipeline ?? ++pipelineCount });
           visitNode(node.command, pipeline);
           return;
         }

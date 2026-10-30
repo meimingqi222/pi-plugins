@@ -1,5 +1,5 @@
 {
-  "name": "pi-redact",
+  "name": "@meimingqi222/pi-redact",
   "version": "0.1.0",
   "description": "pi extension that redacts detected secrets from agent-loop payloads and blocks detected unsafe native-summary attempts.",
   "type": "module",
@@ -45,5 +45,8 @@
     "@types/node": "^22.0.0",
     "bun-types": "^1.4.2",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@meimingqi222/pi-redact-contract": "workspace:*"
   }
 }

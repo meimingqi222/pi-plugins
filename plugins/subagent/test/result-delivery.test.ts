@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentRunResult, RpcChildInput } from "pi-agent-runner";
+import type { AgentRunResult, RpcChildInput } from "@meimingqi222/pi-agent-runner";
 import { subagentExtension } from "../src/index.ts";
 
 const cleanups: Array<() => Promise<void>> = [];

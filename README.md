@@ -8,55 +8,61 @@ can be installed without pulling in its siblings.
 
 | Plugin | Package | What it does |
 |--------|---------|--------------|
-| [redact](plugins/redact) | `pi-redact` | Redacts detected secrets from agent-loop payloads and blocks detected unsafe native-summary attempts. |
-| [jev-compact](plugins/jev-compact) | `pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
-| [ace-search](plugins/ace-search) | `pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
-| [goal](plugins/goal) | `pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
-| [workflow](plugins/workflow) | `pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
-| [subagent](plugins/subagent) | `pi-subagent` | Delegate one task to a named subagent in its own pi process: runs in the background with automatic answer delivery. One-level fan-out, user-scoped agent definitions. |
-| [bg-bash](plugins/bg-bash) | `pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
-| [morph-search](plugins/morph-search) | `pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
-| [permissions](plugins/permissions) | `pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized prompts, an auto-mode reviewer model, and an optional `sandbox-exec`/`bwrap` sandbox. |
-| [paste-image](plugins/paste-image) | `pi-paste-image` | A pasted or drag-dropped image path is read, attached as image content and replaced with `[#image N]`, so no path- or URL-shaped reference ever reaches the provider. |
+| [redact](plugins/redact) | `@meimingqi222/pi-redact` | Redacts detected secrets from agent-loop payloads and blocks detected unsafe native-summary attempts. |
+| [jev-compact](plugins/jev-compact) | `@meimingqi222/pi-jev-compact` | Replaces compaction summaries with Jev-pruned transcripts — stale tool calls are deleted, text is never rewritten. |
+| [ace-search](plugins/ace-search) | `@meimingqi222/pi-ace-search` | Semantic codebase retrieval (`ace_codebase_search`) over an Augment ACE index, reusing acemcp's blob hashes so a warm project uploads nothing. |
+| [goal](plugins/goal) | `@meimingqi222/pi-goal` | Persistent, user-controlled session objectives with guarded continuations and isolated completion verification. |
+| [workflow](plugins/workflow) | `@meimingqi222/pi-workflow` | Structured multi-agent workflows: a script fans work out across isolated agent contexts in the background, with role isolation, a fail-closed budget, and journaled resume. |
+| [subagent](plugins/subagent) | `@meimingqi222/pi-subagent` | Delegate one task to a named subagent in its own pi process: runs in the background with automatic answer delivery. One-level fan-out, user-scoped agent definitions. |
+| [bg-bash](plugins/bg-bash) | `@meimingqi222/pi-bg-bash` | Cross-platform background bash: commands that outlive a threshold detach instead of blocking the turn, and `bg_tasks` inspects or stops a job that looks stuck. |
+| [morph-search](plugins/morph-search) | `@meimingqi222/pi-morph-search` | Morph local and public GitHub code search; optional, default-off compaction without Fast Apply or prompt routing. |
+| [permissions](plugins/permissions) | `@meimingqi222/pi-permissions` | Deterministic permission layer over `tool_call`: four tiers, four modes (default `yolo`), protected paths, serialized prompts, an auto-mode reviewer model, and an optional `sandbox-exec`/`bwrap` sandbox. |
+| [paste-image](plugins/paste-image) | `@meimingqi222/pi-paste-image` | A pasted or drag-dropped image path is read, attached as image content and replaced with `[#image N]`, so no path- or URL-shaped reference ever reaches the provider. |
 
-### Not a plugin: `pi-run-core`
+### Not a plugin: `@meimingqi222/pi-run-core`
 
-[`plugins/run-core`](plugins/run-core) (`pi-run-core`) is a **library**, not an
+[`plugins/run-core`](plugins/run-core) (`@meimingqi222/pi-run-core`) is a **library**, not an
 installable extension — it declares no `pi` manifest and registers nothing. It
-holds the run primitives that `pi-goal` and `pi-workflow` share:
+holds the run primitives that `@meimingqi222/pi-goal` and `@meimingqi222/pi-workflow` share:
 staleness guards, dual-axis fail-closed budgets, active-time accounting, token
 accounting, branch-aware snapshot persistence, and continuation delivery. It
 has its own [README](plugins/run-core/README.md); plugins consume it as a
 workspace dependency.
 
-### Not a plugin: `pi-agent-runner`
+### Not a plugin: `@meimingqi222/pi-redact-contract`
 
-[`plugins/agent-runner`](plugins/agent-runner) (`pi-agent-runner`) is also a
+The small `plugins/redact-contract` library owns the versioned bus-service
+validator shared by the redactor and its independently installed consumers.
+It accepts legacy v1 services and requires live enablement on v2 services.
+
+### Not a plugin: `@meimingqi222/pi-agent-runner`
+
+[`plugins/agent-runner`](plugins/agent-runner) (`@meimingqi222/pi-agent-runner`) is also a
 **library**, not an installable extension. It is the shared subprocess agent
 runner: how to spawn `pi` from a source launch or a compiled binary, how to fold
 a child's JSON event stream, when to kill it, and the one-level fan-out
-environment. `pi-workflow` and `pi-subagent` both delegate to it, so the process
+environment. `@meimingqi222/pi-workflow` and `@meimingqi222/pi-subagent` both delegate to it, so the process
 handling that has hung a real session lives in one place. It has its own
 [README](plugins/agent-runner/README.md); plugins consume it as a workspace
 dependency.
 
 
 Each plugin has its own README with configuration, architecture notes and
-measured behaviour. `pi-jev-compact` additionally ships
+measured behaviour. `@meimingqi222/pi-jev-compact` additionally ships
 [`ATTRIBUTION.md`](plugins/jev-compact/ATTRIBUTION.md), since its decision engine
-is vendored from `fast-jev-compaction`; `pi-workflow` ships one too, since its
+is vendored from `fast-jev-compaction`; `@meimingqi222/pi-workflow` ships one too, since its
 core is ported from Step-Code.
 
 ### The plugins stay independent, but cooperate when both are installed
 
-`pi-jev-compact` uploads a conversation to TypeSafe, which is traffic
-`pi-redact`'s provider hooks never see. Instead of one plugin depending on the
-other, `pi-redact` publishes a versioned redaction service on pi's shared event
-bus (`pi.events`) and `pi-jev-compact` consumes it, so the same engine redacts
+`@meimingqi222/pi-jev-compact` uploads a conversation to TypeSafe, which is traffic
+`@meimingqi222/pi-redact`'s provider hooks never see. Instead of one plugin depending on the
+other, `@meimingqi222/pi-redact` publishes a versioned redaction service on pi's shared event
+bus (`pi.events`) and `@meimingqi222/pi-jev-compact` consumes it, so the same engine redacts
 both destinations.
 
 Either plugin installs and works alone. Load order does not matter, and the
-`pi-jev-compact` startup notice states whether redaction is active. See
+`@meimingqi222/pi-jev-compact` startup notice states whether redaction is active. See
 [`.agents/notes`](.agents/notes/implemented/bug-fix/2026-09-20-redact-provider-gap.md)
 for the design and the alternatives rejected.
 
@@ -73,12 +79,12 @@ pi install -l ./plugins/bg-bash
 pi install -l ./plugins/subagent
 pi install -l ./plugins/morph-search
 pi install -l ./plugins/permissions
-pi install npm:pi-redact               # once published
+pi install npm:@meimingqi222/pi-redact  # once published
 ```
 
-`pi-jev-compact` needs a TypeSafe API key in the environment
-(`TYPESAFE_API_KEY`); `pi-redact` has no required configuration.
-`pi-ace-search` reads its endpoint and token from `~/.acemcp/settings.toml`, the
+`@meimingqi222/pi-jev-compact` needs a TypeSafe API key in the environment
+(`TYPESAFE_API_KEY`); `@meimingqi222/pi-redact` has no required configuration.
+`@meimingqi222/pi-ace-search` reads its endpoint and token from `~/.acemcp/settings.toml`, the
 same file `acemcp` uses, and uploads source to that endpoint — see its
 [README](plugins/ace-search/README.md).
 
@@ -203,7 +209,7 @@ git config core.hooksPath .githooks
 
 ## License
 
-MIT. Each plugin carries its own license field. `pi-redact`'s engine and
-pattern set are ported from `opencode-redact` (MIT); `pi-jev-compact`'s decision
+MIT. Each plugin carries its own license field. `@meimingqi222/pi-redact`'s engine and
+pattern set are ported from `opencode-redact` (MIT); `@meimingqi222/pi-jev-compact`'s decision
 engine is vendored from `fast-jev-compaction` (MIT, tamaratran) — see
 [`plugins/jev-compact/ATTRIBUTION.md`](plugins/jev-compact/ATTRIBUTION.md).

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveHelperModel } from "pi-run-core";
-import { restoreLatestRun } from "pi-run-core";
+import { resolveHelperModel } from "@meimingqi222/pi-run-core";
+import { restoreLatestRun } from "@meimingqi222/pi-run-core";
 
 /**
  * The model type the registry hands out, derived rather than imported.

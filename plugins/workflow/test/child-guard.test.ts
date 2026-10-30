@@ -154,7 +154,7 @@ test("pi loads the child guard as an extension without errors", async () => {
 	}
 });
 
-import { agentChildEnv } from "pi-agent-runner";
+import { agentChildEnv } from "@meimingqi222/pi-agent-runner";
 import { workflowsDisabled } from "../src/pi/index.ts";
 
 /**

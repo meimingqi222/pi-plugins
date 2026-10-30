@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/main-view.test.ts:
+(pass) native regular Enter replaces parent messages and Escape restores live parent updates [267.84ms]
+110 | 			if (mode === "fullscreen") {
+111 | 				const longReport = Array.from({ length: 80 }, (_, i) => `Unique transcript line ${i}`).join("\n\n");
+112 | 				writeFileSync(evidence, JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: longReport }] } }) + "\n");
+113 | 				expect(frame()).toContain("Unique transcript line 79");
+114 | 				for (let i = 0; i < 12; i++) terminal.input!("\x1b[<64;10;10M");
+115 | 				expect(frame()).not.toContain("Unique transcript line 79");
+                              ^
+error: expect(received).not.toContain(expected)
+
+Expected to not contain: "Unique transcript line 79"
+Received: " Inspect the project str… · explore · running · 0s\n\n                                                                                                    \n Unique transcript line 69                                                                          \n                                                                                                    \n Unique transcript line 70                                                                          \n                                                                                                    \n Unique transcript line 71                                                                          \n                                                                                                    \n Unique transcript line 72                                                                          \n                                                                                                    \n Unique transcript line 73                                                                          \n                                                                                                    \n Unique transcript line 74                                                                          \n                                                                                                    \n Unique transcript line 75                                                                          \n                                                                                                    \n Unique transcript line 76                                                                          \n                                                                                                    \n Unique transcript line 77                                                                          \n                                                                                                    \n Unique transcript line 78                                                                          \n                                                                                                    \n Unique transcript line 79                                                                          \n\n\n ↑/↓ scroll · End follow · d details · L log · Esc back · n notify off · q close\n\n\n\n/var/folders/tl/74__pctd5f381mbyq6cc2pdh0000gn/T/pi-main-view-lMeH2v\n↑2 ↓2 0.0%/100k                                                              (openai) main-view-test"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/main-view.test.ts:115:25)
+(fail) native fullscreen Enter replaces parent messages and Escape restores live parent updates [162.94ms]
+
+ 1 pass
+ 1 fail
+ 25 expect() calls
+Ran 2 tests across 1 file. [672.00ms]

@@ -1,5 +1,5 @@
 {
-  "name": "pi-ace-search",
+  "name": "@meimingqi222/pi-ace-search",
   "version": "0.1.0",
   "description": "pi extension + CLI that queries the Augment ACE codebase-retrieval index over a project, reusing acemcp-go's blob hashes so a warm index is a single round trip.",
   "type": "module",
@@ -11,7 +11,7 @@
     "./config": "./src/config.ts"
   },
   "bin": {
-    "pi-ace-search": "./src/cli.ts"
+    "@meimingqi222/pi-ace-search": "./src/cli.ts"
   },
   "files": [
     "src",

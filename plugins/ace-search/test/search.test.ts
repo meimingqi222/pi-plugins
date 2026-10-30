@@ -78,6 +78,43 @@ test("fatal upload stops queued batches and drains asynchronous in-flight worker
 });
 
 describe("runAceSearch", () => {
+  test("a warm local cache is checked against the current server", async () => {
+    const { root, dataDir } = await workspace();
+    try {
+      await writeFile(join(root, "a.ts"), "x\n");
+      const config = configFor(dataDir);
+      await runAceSearch({ projectRoot: root, query: "x", config, client: fakeClient().client });
+      let uploaded = 0;
+      const next = fakeClient({
+        async findMissing(hashes) { return { unknown: [...hashes], pending: [] }; },
+        async uploadBlobs(blobs) { uploaded += blobs.length; },
+      });
+      await runAceSearch({ projectRoot: root, query: "x", config: { ...config, baseUrl: "https://other.test" }, client: next.client });
+      expect(uploaded).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed cache check re-uploads unconfirmed blobs", async () => {
+    const { root, dataDir } = await workspace();
+    try {
+      await writeFile(join(root, "a.ts"), "x\n");
+      const config = configFor(dataDir);
+      await runAceSearch({ projectRoot: root, query: "x", config, client: fakeClient().client });
+      let uploaded = 0;
+      const next = fakeClient({
+        async findMissing() { throw new Error("unavailable"); },
+        async uploadBlobs(blobs) { uploaded += blobs.length; },
+      });
+      await runAceSearch({ projectRoot: root, query: "x", config, client: next.client });
+      expect(uploaded).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
   test("gitignore rules exclude upload bodies and retrieval hashes with nested overrides", async () => {
     const { root, dataDir } = await workspace();
     try {
@@ -215,7 +252,7 @@ describe("runAceSearch", () => {
     expect(hashes[0]).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("waitForIndex is skipped when there was nothing to upload", async () => {
+  test("waitForIndex does not poll for indexing when there was nothing to upload", async () => {
     const { root, dataDir } = await workspace();
     await writeFile(join(root, "a.ts"), "x\n");
     const { client, calls } = fakeClient();
@@ -238,7 +275,7 @@ describe("runAceSearch", () => {
       waitForIndex: true,
     });
 
-    expect(calls.some((call) => call.method === "findMissing")).toBe(false);
+    expect(calls.filter((call) => call.method === "findMissing")).toHaveLength(1);
   });
 
   test("a failing batch does not abort the run, but a 401 does", async () => {

@@ -3,6 +3,18 @@ import { classifyToolCall } from "../src/classify.ts";
 import { decide } from "../src/decide.ts";
 import { envMac } from "./envs.ts";
 const env = envMac();
+test("compound redirects, clobber redirects, and nested credential searches fail closed", () => {
+  for (const command of [
+    "{ echo pk; } > ~/.ssh/authorized_keys", "( echo pk ) > ~/.ssh/authorized_keys",
+    "if true; then echo pk; fi > ~/.ssh/authorized_keys", "echo x >| ~/.ssh/authorized_keys",
+    "echo x <> ~/.ssh/authorized_keys", "> ~/.ssh/authorized_keys", "grep -r token ~/.kube/sub", "ln ~/.ssh/id_rsa /tmp/hl",
+    "{ echo x; } > ~/.ssh/authorized_keys | cat", "for x in one; do echo x; done > ~/.ssh/authorized_keys",
+  ]) {
+    const classification = classifyToolCall("bash", { command }, { env, shellDialect: "bash" });
+    expect(classification.tier).toBe("dangerous");
+    expect(decide(classification, "read-only", [], env).action).toBe("deny");
+  }
+});
 function verdict(command: string, mode: "yolo" | "ask" = "ask") {
   const classification = classifyToolCall("bash", { command }, { env, shellDialect: "bash" });
   return { tier: classification.tier, action: decide(classification, mode, [], env).action };

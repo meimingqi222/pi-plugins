@@ -1,5 +1,5 @@
 {
-	"name": "pi-paste-image",
+	"name": "@meimingqi222/pi-paste-image",
 	"version": "0.1.0",
 	"description": "Paste or drag an image into pi and it arrives as image content, not as a file path the model has to go read.",
 	"type": "module",

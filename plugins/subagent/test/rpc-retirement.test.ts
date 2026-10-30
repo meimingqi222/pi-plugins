@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnRpcChild, type RpcChild } from "pi-agent-runner";
+import { spawnRpcChild, type RpcChild } from "@meimingqi222/pi-agent-runner";
 import { subagentExtension } from "../src/index.ts";
 
 class Process extends EventEmitter {

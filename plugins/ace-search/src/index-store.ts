@@ -128,8 +128,9 @@ function emptyStore(path: string, format: IndexStoreFormat): BlobHashStore {
  *      store wins and the newer file is still missed. Entry count is not
  *      evidence of freshness.
  *
- * Merging is the only rule that holds for both: a name is warm if *any* store
- * has that name with that hash. A name present in two stores with different
+ * Merging is the only rule that holds for both: a name is a cache hit if *any*
+ * store has that name with that hash. The current server must still confirm it
+ * before upload can be skipped. A name present in two stores with different
  * hashes is dropped, because the disagreement means one of them describes an
  * older revision of the file — and re-uploading is always safe, whereas
  * skipping an upload is not.

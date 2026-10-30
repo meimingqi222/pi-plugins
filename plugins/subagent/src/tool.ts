@@ -24,7 +24,7 @@ import {
   type AgentUsage,
   type RpcChild,
   type SpawnRpcChildOptions,
-} from "pi-agent-runner";
+} from "@meimingqi222/pi-agent-runner";
 import { discoverAgents, formatAgentNames, type SubagentDefinition } from "./agents.ts";
 import { resolveAgent } from "./catalog.ts";
 import {

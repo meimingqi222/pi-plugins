@@ -149,7 +149,10 @@ Mode precedence: inherited (children) → `PI_PERMISSIONS_MODE` → session
 In `auto`, a grey call is first judged by a reviewer before a human is asked.
 `allow` releases it; `ask`/`deny`/timeout/error fall back to the human prompt —
 a deny just annotates the prompt. Results are cached per identical call and
-capped at `maxPerSession` real calls per session. Two backends:
+capped at `maxPerSession` real calls per session. Calls longer than 4,000
+characters fall back to a user prompt, because the reviewer cannot safely
+approve a truncated call. Cache entries also include the current user request
+and static analysis. Two backends:
 
 - **`"jev"`** (the default) — the TypeSafe System One endpoint, a purpose-built
   fast decision model. Key resolution is shared with pi-jev-compact:

@@ -51,6 +51,14 @@ test("redaction bridge supports either extension load order", () => {
  }
 });
 
+test("redaction bridge rejects v2 services without live enablement", () => {
+ let announce!: (value: unknown) => void;
+ const pi: any = { events: { on: (_: string, fn: typeof announce) => { announce = fn; }, emit: () => {} } };
+ const get = installRedactBridge(pi);
+ announce({ version: 2, redactJson: (v: unknown) => v, redactString: (v: string) => v });
+ expect(get()).toBeUndefined();
+});
+
 
 test("bounded transcript keeps whole entries from both ends", () => {
   const entries = Array.from({ length: 20 }, (_, i) => ({ type: "message", body: `entry-${i}-${"x".repeat(200)}` }));

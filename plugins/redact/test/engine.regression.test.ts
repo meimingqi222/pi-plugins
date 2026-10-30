@@ -6,6 +6,16 @@ import * as FX from "./fixtures.ts";
 const r = createRedactor(SECRET_PATTERNS);
 
 describe("performance fixes preserve correctness", () => {
+  test("redacts secrets separated by format characters without changing surrounding text", () => {
+    const secret = FX.AWS_ACCESS_KEY_ID.slice(0, 4) + "\u200b" + FX.AWS_ACCESS_KEY_ID.slice(4);
+    const input = `hello\u200c world ${secret} end\u200d`;
+    const output = r.string(input)!;
+    expect(output).toContain("[REDACTED:");
+    expect(output).not.toContain(secret);
+    expect(output).toContain("hello\u200c world");
+    expect(output).toEndWith("end\u200d");
+    expect(r.string("normal\u200c words")).toBe("normal\u200c words");
+  });
   test("multiple case-insensitive secrets in one string are all redacted", () => {
     // Regression guard for the `lowered` reuse optimisation: after a
     // replacement the lowercase snapshot must be invalidated, otherwise the

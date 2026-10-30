@@ -216,7 +216,11 @@ export function extractPathIntents(command: ShellCommand, env: PolicyEnv): Extra
   } else if (command.name === "mv") {
     for (const arg of args) pathIntent("write", arg, arg ?? "?", command, env, out);
   } else if (command.name === "ln") {
-    // Only the link name is created; treat the last operand as the write target.
+    // A hard link exposes an existing inode at another path; a symbolic link
+    // does not open its source. Conservatively protect hard-link sources.
+    if (!command.args.some((arg) => typeof arg === "string" && (arg === "--symbolic" || /^-[^-]*s/u.test(arg)))) {
+      for (const arg of args.slice(0, -1)) pathIntent("read", arg, arg ?? "?", command, env, out);
+    }
     if (args.length > 0) pathIntent("write", args[args.length - 1], args[args.length - 1] ?? "?", command, env, out);
   } else if (command.name === "sed") {
     // `sed -i` is the shortest route around a protected-write rule that only

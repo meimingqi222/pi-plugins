@@ -201,7 +201,7 @@ export interface WorkSurfaceUI {
 export type WorkSurfaceComponent = Component & { dispose?(): void };
 
 export interface WorkReporterDeps<T> {
-	/** Widget slot key; plugin-namespaced (`"pi-subagent-fleet"`, `"pi-bg-bash"`). */
+	/** Widget slot key; plugin-namespaced (`"pi-subagent-fleet"`, `"@meimingqi222/pi-bg-bash"`). */
 	readonly key: string;
 	/** UI for the session that owns the surface; `undefined` outside TUI mode. */
 	ui(): WorkSurfaceUI | undefined;

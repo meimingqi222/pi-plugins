@@ -24,7 +24,7 @@ import {
 	type WorkItem,
 	type WorkState,
 	type WorkTheme,
-} from "pi-run-core";
+} from "@meimingqi222/pi-run-core";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { deriveChildState, formatBackground, formatDuration, type ChildState } from "./background.ts";
 import { laneElapsedMs, type Lane } from "./lane.ts";
@@ -118,18 +118,12 @@ export function renderFleetWidget(records: Lane[], theme: FleetTheme, now: numbe
 export function formatPanelRow(record: Lane, selected: boolean, theme: FleetTheme, now: number, width: number): string {
 	const state = deriveChildState(record, now);
 	const rail = selected ? theme.bold(theme.fg("accent", "›")) : " ";
-	const progress = record.progress;
-	const live =
-		state === "running" || state === "stalled"
-			? (progress?.activeTool ? `tool ${progress.activeTool}` : progress?.lastEvent) ?? "starting"
-			: state === "idle"
-				? "idle — awaiting a reply"
-				: undefined;
-	const detail = [record.agent, live, `${formatDuration(Math.floor(laneElapsedMs(record, now) / 1_000))}`]
-		.filter(Boolean)
-		.join(" · ");
-	const text = `${rail} ${stateIcon(state, theme)} ${theme.fg("toolOutput", fit(record.task, width - 4))} ${theme.fg("dim", detail)}`;
-	return truncateToWidth(text, width, "…");
+	const name = fit(record.alias || record.agent, Math.max(4, Math.min(24, Math.floor(width / 3))));
+	const elapsed = formatDuration(Math.floor(laneElapsedMs(record, now) / 1_000));
+	const prefix = `${rail} ${stateIcon(state, theme)} ${theme.bold(name)}  ${state} · ${elapsed}`;
+	const available = Math.max(0, width - visibleWidth(prefix) - 2);
+	const activity = [record.progress?.activeTool ? `tool ${record.progress.activeTool}` : "", record.task].filter(Boolean).join(" · ");
+	return truncateToWidth(`${prefix}${available > 4 ? `  ${theme.fg("toolOutput", fit(activity, available))}` : ""}`, width, "…");
 }
 
 /** `/subagents` (no args): the model's own `formatBackground` lines, so the human and the tool read the same truth. */

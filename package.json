@@ -12,9 +12,9 @@
     "test": "bun run --sequential --filter '*' test",
     "typecheck": "bun run --filter '*' typecheck",
     "smoke": "node scripts/smoke-packages.mjs",
-    "bench": "bun run --filter 'pi-redact' bench",
-    "compare": "bun run --filter 'pi-jev-compact' compare",
-    "accuracy": "bun run --filter 'pi-ace-search' bench",
+    "bench": "bun run --filter '@meimingqi222/pi-redact' bench",
+    "compare": "bun run --filter '@meimingqi222/pi-jev-compact' compare",
+    "accuracy": "bun run --filter '@meimingqi222/pi-ace-search' bench",
     "notes": "sh scripts/verify-notes.sh",
     "secrets": "bun test plugins/redact/test/no-secrets.test.ts"
   },

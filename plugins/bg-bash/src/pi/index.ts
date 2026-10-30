@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { connectTaskNavigation, openMainTaskView, createHostWorkReporter, createPollGuard, createWorkReporter, DeliveryLedger } from "pi-run-core";
+import { connectTaskNavigation, openMainTaskView, createHostWorkReporter, createPollGuard, createWorkReporter, renderWorkSurface, DeliveryLedger } from "@meimingqi222/pi-run-core";
 import { createBgTasksPanel } from "./panel.ts";
 import { JobRegistry, type Job } from "../core/jobs.ts";
 import { resolveAutoBackgroundSeconds } from "../core/config.ts";
@@ -65,7 +65,7 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 	let panel: { dispose?(): void } | undefined;
 	const navigation = connectTaskNavigation(pi, {
 		key: "background", label: "Background tasks",
-		count: () => registry.list().filter((job) => job.mode === "background").length,
+		count: () => runningWorkItems(registry.list(), Date.now()).length,
 		open: openPanel,
 	});
 	async function openPanel(ctx: ExtensionContext): Promise<void> {
@@ -86,6 +86,8 @@ export default function bgBashExtension(pi: ExtensionAPI): void {
 		live: () => registry.list().some((job) => job.mode === "background" && job.status === "running"),
 		title: "bg jobs",
 		hint: "bg_tasks · /bg",
+		render: (items, theme, now, width) => pi.events && typeof uiCtx?.ui?.onTerminalInput === "function"
+			? [] : renderWorkSurface(items, theme, now, width, { title: "bg jobs", hint: "bg_tasks · /bg" }),
 	});
 	function syncSurfaces(): void {
 		reporter.sync();

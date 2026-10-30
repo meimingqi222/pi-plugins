@@ -314,17 +314,19 @@ export default function piRedact(pi: ExtensionAPI) {
     pi.on("tool_result", (event) => {
       const content = safe(() => redactValue(event.content, redactor), undefined);
       const details = safe(() => redactValue(event.details, redactor), undefined);
+      const structured = safe(() => redactValue(event.structuredContent, redactor), undefined);
 
       const detailsHits = details?.hits ?? 0;
-      if ((content?.hits ?? 0) === 0 && detailsHits === 0) return undefined;
+      if ((content?.hits ?? 0) === 0 && detailsHits === 0 && (structured?.hits ?? 0) === 0) return undefined;
 
-      record((content?.hits ?? 0) + detailsHits);
+      record((content?.hits ?? 0) + detailsHits + (structured?.hits ?? 0));
 
       // Only include `details` in the patch when it actually changed, so an
       // untouched `details` value is preserved rather than cleared.
-      const patch: { content?: typeof event.content; details?: unknown } = {};
-      if (content) patch.content = content.value as typeof event.content;
+      const patch: { content?: typeof event.content; details?: unknown; structuredContent?: typeof event.structuredContent } = {};
+      if ((content?.hits ?? 0) > 0) patch.content = content!.value as typeof event.content;
       if (detailsHits > 0) patch.details = details?.value;
+      if (event.structuredContent !== undefined) patch.structuredContent = structured?.value as typeof event.structuredContent;
       return patch;
     });
   }

@@ -8,8 +8,8 @@ import goalPlugin from "../src/index.ts";
 import { subagentExtension } from "../../subagent/src/index.ts";
 import { parseObjective, restoreGoal } from "../src/state.ts";
 import { parseVerdict } from "../src/verifier.ts";
-import { withDeadline } from "pi-run-core";
-import { GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendService } from "pi-run-core";
+import { withDeadline } from "@meimingqi222/pi-run-core";
+import { GOAL_SPEND_REQUEST, GOAL_SPEND_SERVICE, type GoalSpendService } from "@meimingqi222/pi-run-core";
 import { planPathFor, renderPlan } from "../src/plan.ts";
 
 /**

@@ -1,5 +1,5 @@
 {
-	"name": "pi-subagent",
+	"name": "@meimingqi222/pi-subagent",
 	"version": "0.1.0",
 	"description": "Delegate a single task to an isolated subagent: background execution with automatic answer delivery.",
 	"type": "module",
@@ -11,7 +11,7 @@
 	"keywords": ["pi", "pi-package", "subagent", "delegation", "agent"],
 	"license": "MIT",
 	"peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.0.0", "@earendil-works/pi-tui": ">=1.0.0", "typebox": "*" },
-	"dependencies": { "pi-agent-runner": "workspace:*", "pi-run-core": "workspace:*" },
+	"dependencies": { "@meimingqi222/pi-agent-runner": "workspace:*", "@meimingqi222/pi-run-core": "workspace:*" },
 	"devDependencies": {
 		"@earendil-works/pi-tui": "^1.0.0",
 		"@types/node": "^22.0.0",

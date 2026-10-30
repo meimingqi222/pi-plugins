@@ -215,18 +215,18 @@ remains in the tool result details.
 Background children also get a human-facing surface, because a card in
 scrollback cannot describe work that is still in flight:
 
-- **A widget under the editor** appears while at least one child runs — one
-  stable row per child (icon, alias, task, elapsed, output tokens), folded past
-  six rows — and disappears when the last child settles. Rows are deliberately
-  stable: live tool calls and streamed text would churn every row on every
-  child event. Every launch is addressable by task ID and can be inspected,
-  replied to, or cancelled.
+- **A compact task summary under the editor** shows the number of subagents
+  and background commands. With an empty editor, Down expands the task selector.
+  Each launch remains addressable by task ID and can be inspected, replied to,
+  or cancelled. When task navigation is unavailable or disabled, the older
+  detailed fleet widget remains available.
 - **`/subagents`** prints the same listing the model's `subagent_tasks`
   produces. **`/subagents live`** switches the main message area to the
   subagent view. A single child opens directly into its live transcript;
   with multiple children, `↑`/`↓` select by record id and `enter` opens its
-  transcript. Assistant messages render as Markdown. `↑`/`↓`, Home and
-  PageUp scroll; End resumes following new messages. `d` opens details,
+  transcript. Assistant messages render as Markdown. `↑`/`↓` scroll; in Pi's
+  fullscreen mode, the mouse wheel scrolls and moving away pauses live follow.
+  Press `f` or scroll back to the bottom to resume following. `d` opens details,
   `L` opens a bounded raw-log tail, and `k` in the list or details cancels a
   running child. `Esc` backs out to the list (if there were multiple children),
   then restores the parent conversation, including messages received while
@@ -236,7 +236,7 @@ scrollback cannot describe work that is still in flight:
   announces each settle (`PI_SUBAGENT_NOTIFY_DONE=1` makes on the default).
 - **`ctrl+shift+a`** opens the panel without typing. Extension shortcuts take
   precedence over user keybindings and conflict loudly in `/hotkeys` output;
-  the widget's hint line always shows a working way in.
+  the task summary shows a working way in.
 - **↓ then Enter** selects and opens the Subagents or Background tasks panel
   from an empty editor. ↑/↓ switches the selected entry; Esc returns to input.
   This is enabled by default and leaves dialogs and typed prompts alone.
@@ -245,7 +245,7 @@ resumed session: children still run `--no-session`, so the fold never appears
 in `/resume` and cannot be resumed into a session that bypasses the one-level
 fan-out guard.
 
-- A child with no event for 90s is marked `stalled` (◉) in the widget and
+- A child with no event for 90s is marked `stalled` (◉) in the task view and
   announces itself once per child via a warning notification — the same
   threshold `subagent_tasks` reports as "possible stall".
 

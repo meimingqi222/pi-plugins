@@ -32,7 +32,8 @@ try {
   });
 
   const entries = extensionNames.map((name) => {
-    const packageRoot = join(installRoot, "node_modules", `pi-${name}`);
+    const localManifest = JSON.parse(readFileSync(join(plugins, name, "package.json"), "utf8"));
+    const packageRoot = join(installRoot, "node_modules", localManifest.name);
     const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     const entry = resolve(packageRoot, manifest.pi.extensions[0]);
     if (!existsSync(entry)) throw new Error(`Packed extension entry missing: ${entry}`);

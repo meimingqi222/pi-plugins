@@ -1,6 +1,7 @@
 # Agent Note: bg-bash review follow-ups — capacity, lifecycle, and inspection fixes
 
 Status: implemented
+Partly-superseded-by: 2026-10-30-bg-natural-exit.md
 
 ## Problem
 
@@ -48,10 +49,8 @@ smaller defects, each independently wrong:
   and only counts `mode === "background"` jobs.
 - `allocateLogPath` returns `undefined` when the directory cannot be created.
 - `kill()` returns early once the run has settled.
-- Settlement first kills any remaining descendants in the command's process
-  group, without changing the shell's outcome. A terminal job cannot manage
-  an orphan after its timers and abort handler are removed. Services should
-  stay foregrounded under `background: true`, not daemonize using shell `&`.
+- The original settlement cleanup killed remaining descendants; this part is
+  superseded by the natural-exit behavior in `2026-10-30-bg-natural-exit.md`.
 - `TailBuffer` tracks `bufferBytes` incrementally.
 - `emitUpdate` sends `truncateOutput(...).text`, matching the final render.
 - `bg_tasks kill` polls the job status for up to 2s and reports the terminal
@@ -90,7 +89,7 @@ refuses to die), which is the honest answer to report anyway.
 
 ## Verification
 
-- `plugins/bg-bash/test/run.test.ts::settlement kills redirected shell descendants`
+- The original descendant-cleanup regression was replaced by `plugins/bg-bash/test/run.test.ts::natural shell exit preserves redirected background descendants`.
 
 Proved: the redirected `sleep 30` was still live after shell settlement before
 the fix; `.agents/notes-evidence/2026-10-19-bg-descendant-red.txt` saves the
@@ -113,3 +112,7 @@ Proved: before the change, the buffer-preference test returned
 `STALE-FILE-CONTENT` from the file instead of the live buffer, and the
 foreground-at-capacity path threw `Too many background jobs`; after it,
 `bun test plugins/bg-bash` runs `61 pass, 0 fail`.
+
+## Superseded
+
+The 2026-10-30 spec change replaces only natural-exit descendant cleanup. Explicit stop and timeout still terminate the process group. Other decisions in this note remain in force.

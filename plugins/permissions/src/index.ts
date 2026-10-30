@@ -186,7 +186,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
     if (isChild() || !ctx.hasUI) return;
     try {
       const sbx = merged && sandboxOn(merged) ? (sandboxAvailability?.available ? " sbx:on" : " sbx:n/a") : "";
-      ctx.ui.setStatus("pi-permissions", `perm: ${mode}${sbx}`);
+      ctx.ui.setStatus("@meimingqi222/pi-permissions", `perm: ${mode}${sbx}`);
     } catch {
       // Torn-down UI.
     }

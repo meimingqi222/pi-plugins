@@ -161,9 +161,13 @@ export function createAceClient(options: AceClientOptions): AceClient {
         unknown_memory_names?: unknown;
         nonindexed_blob_names?: unknown;
       };
+      if (!Array.isArray(result?.unknown_memory_names) || !result.unknown_memory_names.every((item) => typeof item === "string") ||
+          !Array.isArray(result?.nonindexed_blob_names) || !result.nonindexed_blob_names.every((item) => typeof item === "string")) {
+        throw new Error("ACE find-missing returned an invalid response");
+      }
       return {
-        unknown: toStringArray(result?.unknown_memory_names),
-        pending: toStringArray(result?.nonindexed_blob_names),
+        unknown: result.unknown_memory_names as string[],
+        pending: result.nonindexed_blob_names as string[],
       };
     },
 
@@ -191,10 +195,6 @@ export function createAceClient(options: AceClientOptions): AceClient {
       return formatted || "No relevant code context found.";
     },
   };
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 interface CombinedSignal {

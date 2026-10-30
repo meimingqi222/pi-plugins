@@ -68,6 +68,11 @@ describe("createAceClient", () => {
     expect(result).toEqual({ unknown: ["h1"], pending: ["h2", "h3"] });
   });
 
+  test("findMissing rejects an invalid response instead of assuming all hashes exist", async () => {
+    const client = createAceClient({ baseUrl: "https://ace.test", token: "t", maxAttempts: 1, fetchImpl: (async () => jsonResponse({})) as unknown as typeof fetch });
+    await expect(client.findMissing(["hash"], new AbortController().signal)).rejects.toThrow();
+  });
+
   test("search sends hashes in added_blobs and the exact legacy envelope", async () => {
     const { impl, recorded } = recordingFetch([
       () => jsonResponse({ formatted_retrieval: "Path: a.ts\n  1\tcode" }),

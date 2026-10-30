@@ -10,7 +10,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isolatedComplete, parseJsonReply, parseModelIdentity, type RegisteredModel } from "pi-run-core";
+import { isolatedComplete, parseJsonReply, parseModelIdentity, type RegisteredModel } from "@meimingqi222/pi-run-core";
 import { jevReview, resolveJevEndpoint, resolveJevKey } from "./jev.ts";
 import { redactPayload, type RedactBridge } from "./redact.ts";
 import type { PolicyEnv, ReviewerConfig } from "./types.ts";
@@ -50,7 +50,7 @@ function isVerdict(value: unknown): value is ReviewVerdict {
   );
 }
 
-/** The newest user message text on the branch, truncated for the payload. */
+/** The newest user message text on the branch. */
 function lastUserRequest(ctx: Pick<ExtensionContext, "sessionManager">): string {
   try {
     const entries = ctx.sessionManager.getBranch();
@@ -67,7 +67,7 @@ function lastUserRequest(ctx: Pick<ExtensionContext, "sessionManager">): string 
                 .map((part) => part.text)
                 .join("\n")
             : "";
-      if (text.trim()) return text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
+      if (text.trim()) return text;
     }
   } catch {
     // No session manager in this context (tests, headless) — the reviewer works without it.
@@ -150,7 +150,10 @@ export function createReviewer(
 
   return {
     async review(input) {
-      const key = `${input.toolName}\n${input.toolInput}`;
+      // A verdict about a prefix cannot authorize the full tool call.
+      if (input.toolInput.length > 4000) return undefined;
+      const userRequest = lastUserRequest(input.ctx);
+      const key = JSON.stringify([input.toolName, input.toolInput, input.staticAnalysis, userRequest]);
       const cached = cache.get(key);
       if (cached) return cached;
       if (calls >= maxPerSession) {
@@ -162,9 +165,9 @@ export function createReviewer(
         const payload = {
           cwd: env.cwd,
           platform: env.platform,
-          userRequest: lastUserRequest(input.ctx),
+          userRequest: userRequest.length > 2000 ? `${userRequest.slice(0, 2000)}…` : userRequest,
           toolName: input.toolName,
-          toolInput: input.toolInput.length > 4000 ? `${input.toolInput.slice(0, 4000)}…` : input.toolInput,
+          toolInput: input.toolInput,
           staticAnalysis: input.staticAnalysis,
         };
         // Redact at the transport edge. The Jev backend is a separate third

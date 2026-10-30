@@ -48,12 +48,12 @@ export function createMainTaskView(tui: TUI, theme: Theme, factory: TaskViewFact
 		while (lines.length < rows) lines.push("");
 		return lines;
 	});
-	// Avoid routing clicks to the hidden parent message components.
+	// Route mouse events to the visible view, never the hidden parent messages.
 	const mouse = Object.getOwnPropertyDescriptor(document!, "handleMouse");
-	const ignoreMouse: Component["handleMouse"] = () => undefined;
-	document!.handleMouse = ignoreMouse;
+	const routeMouse: Component["handleMouse"] = (event) => view.handleMouse?.(event);
+	document!.handleMouse = routeMouse;
 	restore.push(() => {
-		if (document!.handleMouse !== ignoreMouse) return;
+		if (document!.handleMouse !== routeMouse) return;
 		if (mouse) Object.defineProperty(document!, "handleMouse", mouse);
 		else delete document!.handleMouse;
 	});

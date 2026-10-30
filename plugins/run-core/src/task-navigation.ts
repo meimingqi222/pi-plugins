@@ -114,8 +114,13 @@ function createTaskNavigation(pi: ExtensionAPI): NavigationService {
 								const label = `${entry.label} (${entry.count()})`;
 								return selected === entry.key ? theme.bold(theme.fg("accent", `› ${label}`)) : theme.fg("muted", label);
 							});
-							const hint = selected ? "↑/↓ select · Enter open · Esc input" : "↓ select tasks";
-							return list.length ? [truncateToWidth(` ${tabs.join("  ·  ")}  ${theme.fg("dim", hint)}`, width)] : [];
+							if (!list.length) return [];
+							if (!selected) return [truncateToWidth(` ${tabs.join("  ·  ")}  ${theme.fg("dim", "↓ select tasks")}`, width)];
+							return [
+								truncateToWidth(` ${theme.fg("dim", "Tasks")}`, width),
+								...tabs.map((tab) => truncateToWidth(` ${tab}`, width)),
+								truncateToWidth(` ${theme.fg("dim", "↑/↓ select · Enter open · Esc input")}`, width),
+							];
 						},
 					};
 				}, { placement: "belowEditor" });

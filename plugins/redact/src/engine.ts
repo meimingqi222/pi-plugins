@@ -151,6 +151,39 @@ function censorMatches(regex: RegExp, input: string, id: string): string {
   return out
 }
 
+/** A matching view retains UTF-16 offsets into the unchanged original text. */
+function normalizedView(input: string): { normalized: string; starts: number[]; ends: number[] } {
+  let normalized = ""
+  const starts: number[] = []
+  const ends: number[] = []
+  for (let i = 0; i < input.length;) {
+    const char = String.fromCodePoint(input.codePointAt(i)!)
+    if (!/\p{Cf}/u.test(char)) {
+      normalized += char
+      for (let j = 0; j < char.length; j++) { starts.push(i + j); ends.push(i + j + 1) }
+    }
+    i += char.length
+  }
+  return { normalized, starts, ends }
+}
+
+/** Match through format characters but redact spans in the original text. */
+function censorNormalized(regex: RegExp, input: string, id: string, view: ReturnType<typeof normalizedView>): string {
+  const { normalized, starts, ends } = view
+  let out = "", last = 0
+  regex.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(normalized)) !== null) {
+    if (!match[0]) { if (regex.lastIndex <= match.index) regex.lastIndex = match.index + 1; continue }
+    const group = (match as { indices?: Array<[number, number]> }).indices?.[1]
+    const span = group && group[1] > group[0] ? group : [match.index, match.index + match[0].length]
+    const start = starts[span[0]!]!, end = ends[span[1]! - 1]!
+    out += input.slice(last, start) + `[REDACTED:${id}]`
+    last = end
+  }
+  return out + input.slice(last)
+}
+
 /**
  * Apply every pattern to `input`.
  *
@@ -160,9 +193,21 @@ function censorMatches(regex: RegExp, input: string, id: string): string {
  */
 function applyPatterns(input: string, compiled: readonly CompiledPattern[]): string {
   let lowered: string | undefined
+  let view: ReturnType<typeof normalizedView> | undefined
+  let normalizedLowered: string | undefined
   let out = input
+  let hasFormat = /\p{Cf}/u.test(out)
 
   for (const entry of compiled) {
+    // Fast path retains the existing keyword prefilter for ordinary text.
+    if (hasFormat) {
+      view ??= normalizedView(out)
+      if (entry.caseInsensitive) normalizedLowered ??= view.normalized.toLowerCase()
+      if (!matchesKeyword(entry, view.normalized, normalizedLowered ?? view.normalized)) continue
+      const next = censorNormalized(entry.regex, out, entry.id, view)
+      if (next !== out) { out = next; lowered = undefined; view = undefined; normalizedLowered = undefined; hasFormat = /\p{Cf}/u.test(out) }
+      continue
+    }
     if (entry.caseInsensitive && lowered === undefined) {
       lowered = out.toLowerCase()
     }

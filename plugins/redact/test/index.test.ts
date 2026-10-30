@@ -251,6 +251,16 @@ describe("pi-redact extension", () => {
     expect("details" in result).toBe(false);
   });
 
+  test("redacts and preserves structured tool results", async () => {
+    const pi = createMockPi(); piRedact(pi as any);
+    const { ctx } = createMockCtx();
+    const structuredContent = { nested: { token: GHP } };
+    const onlyStructured = await emit(pi, "tool_result", { content: [{ type: "text", text: "ok" }], structuredContent }, ctx);
+    expect(onlyStructured.structuredContent.nested.token).not.toContain(GHP);
+    const both = await emit(pi, "tool_result", { content: [{ type: "text", text: GHP }], structuredContent: { count: 2 } }, ctx);
+    expect(both.structuredContent).toEqual({ count: 2 });
+  });
+
   test("skips everything when PI_REDACT=false", async () => {
     process.env.PI_REDACT = "false";
     const pi = createMockPi();

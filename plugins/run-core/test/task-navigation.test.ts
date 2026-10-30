@@ -48,6 +48,20 @@ test("both plugins share one selector and enter opens only the highlighted categ
 	expect(h.inputs.size).toBe(0);
 });
 
+test("task categories expand only after navigation starts", () => {
+	const h = harness();
+	const nav = connectTaskNavigation(h.pi, { key: "subagents", label: "Subagents", count: () => 2, open: async () => {} });
+	nav.sync(h.ctx);
+	expect(h.render().split("\n")).toHaveLength(1);
+	expect(h.render()).not.toContain("›");
+	h.input(DOWN);
+	expect(h.render().split("\n").length).toBeGreaterThan(1);
+	expect(h.render()).toContain("› Subagents (2)");
+	h.input(ESC);
+	expect(h.render().split("\n")).toHaveLength(1);
+	nav.clear();
+});
+
 test("typed prompts, dialogs, overlays and key releases retain their keys", () => {
 	const h = harness();
 	const nav = connectTaskNavigation(h.pi, { key: "subagents", label: "Subagents", count: () => 1, open: async () => {} });

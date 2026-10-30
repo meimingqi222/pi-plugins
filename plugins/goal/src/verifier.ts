@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { withDeadline, stripJsonFence } from "pi-run-core";
+import { withDeadline, stripJsonFence } from "@meimingqi222/pi-run-core";
 import type { CriteriaChanges } from "./plan.ts";
 import type { Goal } from "./state.ts";
 import type { RedactService } from "./redact.ts";

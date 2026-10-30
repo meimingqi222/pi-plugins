@@ -1,0 +1,32 @@
+bun test v1.4.2 (744846f84)
+
+plugins/ace-search/test/client.test.ts:
+(pass) createAceClient > uploadBlobs posts names under `path`, never hashes [2.29ms]
+(pass) createAceClient > findMissing posts hashes under `mem_object_names` and reads both lists [0.28ms]
+68 |     expect(result).toEqual({ unknown: ["h1"], pending: ["h2", "h3"] });
+69 |   });
+70 | 
+71 |   test("findMissing rejects an invalid response instead of assuming all hashes exist", async () => {
+72 |     const client = createAceClient({ baseUrl: "https://ace.test", token: "t", maxAttempts: 1, fetchImpl: (async () => jsonResponse({})) as typeof fetch });
+73 |     await expect(client.findMissing(["hash"], new AbortController().signal)).rejects.toThrow();
+                                                                                          ^
+error: expect(received).rejects.toThrow(expected)
+
+Expected promise that rejects
+Received promise that resolved: Promise { <resolved> }
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/ace-search/test/client.test.ts:73:86)
+(fail) createAceClient > findMissing rejects an invalid response instead of assuming all hashes exist [0.53ms]
+(pass) createAceClient > search sends hashes in added_blobs and the exact legacy envelope [0.18ms]
+(pass) createAceClient > an empty formatted_retrieval becomes a readable message, not an empty string [0.06ms]
+(pass) createAceClient > a 401 fails immediately instead of burning retries [0.63ms]
+(pass) createAceClient > a 500 is retried and then succeeds [251.62ms]
+(pass) createAceClient > an aborted signal rejects instead of retrying [251.73ms]
+(pass) createAceClient > uploading zero blobs makes no request [0.47ms]
+(pass) createAceClient > the bearer token is attached to every request [1.21ms]
+(pass) permanent 400 and 404 responses are not retried [0.56ms]
+
+ 10 pass
+ 1 fail
+ 24 expect() calls
+Ran 11 tests across 1 file. [516.00ms]

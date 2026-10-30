@@ -13,7 +13,7 @@ import {
   RunGuard,
   type GoalSpendService,
   type RunToken,
-} from "pi-run-core";
+} from "@meimingqi222/pi-run-core";
 import { installRedactBridge } from "./redact.ts";
 import { GOAL_ENTRY, MAX_OBJECTIVE, goalDisabled, goalLimits, goalPrompt, isResumable, isRetired, nextActionKey, parseObjective, planEnabled, resolveVerifierModel, restoreGoal, type Goal, type GoalStatus } from "./state.ts";
 import { parseVerdict, verifyGoal, type VerifierPlanInput } from "./verifier.ts";
@@ -121,7 +121,7 @@ export default function goalPlugin(pi: ExtensionAPI, deferSettlement: Settlement
   function display(ctx: ExtensionContext): void {
     // A retired goal leaves the status bar. The objective text it carries only
     // invites the model to keep talking about a goal that is already finished.
-    ctx.ui.setStatus("pi-goal", goal && !isRetired(goal)
+    ctx.ui.setStatus("@meimingqi222/pi-goal", goal && !isRetired(goal)
       ? `Goal ${goal.status} · ${goal.workRuns} runs · ${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens · ${goal.objective.slice(0, 60)}`
       : undefined);
     if (goal) hostWork.publish({ kind: "goal", id: goal.id, title: goal.objective, status: goal.status, description: goal.reason ?? "", activity: `${goal.workRuns} work runs`, metric: `${goal.used}${goal.budget ? `/${goal.budget}` : ""} tokens` }, ctx);

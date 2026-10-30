@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWorkflow, DEFAULT_MAX_AGENTS } from "../src/runs/orchestrator.ts";
-import { createAdmission, DEFAULT_ADMISSION_KEY } from "pi-run-core";
+import { createAdmission, DEFAULT_ADMISSION_KEY } from "@meimingqi222/pi-run-core";
 import { createWorkflowRunPaths, readJsonLines, WorkflowJournal } from "../src/runs/journal.ts";
 import type { AgentExecutor } from "../src/runner/agent-runner.ts";
 import type { WorkflowAgentRunInput } from "../src/core/types.ts";
@@ -36,6 +36,43 @@ async function withTemp(): Promise<{ root: string; cleanup: () => Promise<void> 
 }
 
 describe("workflow orchestration", () => {
+  test("host timeout aborts an in-flight agent before its own deadline", async () => {
+    let started = false, aborted = false;
+    const executor: AgentExecutor = async (input) => {
+      started = true;
+      await new Promise<void>((resolve) => {
+        if (input.signal?.aborted) { aborted = true; resolve(); return; }
+        input.signal?.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true });
+        setTimeout(resolve, 2000).unref();
+      });
+      return { status: "failed", errorMessage: "aborted", usage: { input: 0, output: 0 } } as never;
+    };
+    const result = await runWorkflow({ script: "return await agent('hi', {});", args: null, name: "timeout", cwd: process.cwd(), executor, timeoutMs: 300, agentTimeoutMs: 5000 });
+    expect(started).toBe(true);
+    expect(result.status).not.toBe("completed");
+    expect(aborted).toBe(true);
+  });
+
+  test("a failed workflow aborts its abandoned in-flight agent", async () => {
+    let started = false, aborted = false;
+    const executor: AgentExecutor = async (input) => {
+      if (input.prompt === "fail") {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return { status: "failed", errorMessage: "fixture failure", usage: { input: 0, output: 0 } } as never;
+      }
+      started = true;
+      await new Promise<void>(resolve => {
+        if (input.signal?.aborted) { aborted = true; resolve(); return; }
+        input.signal?.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true });
+        setTimeout(resolve, 2000).unref();
+      });
+      return { status: "failed", errorMessage: "aborted", usage: { input: 0, output: 0 } } as never;
+    };
+    const result = await runWorkflow({ script: "return await Promise.all([agent('slow', {}), agent('fail', {})]);", args: null, name: "failure", cwd: process.cwd(), executor, timeoutMs: 5000, agentTimeoutMs: 5000 });
+    expect(started).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(aborted).toBe(true);
+  });
   test("runs a script and returns its value with completion status", async () => {
     const { executor } = recorder(() => ({ value: "echo" }));
     const result = await runWorkflow({

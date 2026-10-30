@@ -1,7 +1,7 @@
 {
-  "name": "pi-jev-compact",
+  "name": "@meimingqi222/pi-jev-compact",
   "version": "0.1.0",
-  "description": "pi extension that compacts context by deleting stale tool calls (Jev) instead of summarizing — user and assistant text is never rewritten.",
+  "description": "pi extension that compacts context by deleting stale tool calls (Jev) instead of summarizing \u2014 user and assistant text is never rewritten.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
@@ -41,5 +41,8 @@
     "@types/node": "^22.0.0",
     "bun-types": "^1.4.2",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@meimingqi222/pi-redact-contract": "workspace:*"
   }
 }

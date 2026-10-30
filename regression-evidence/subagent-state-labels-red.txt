@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+plugins/subagent/test/panel.test.ts:
+66 | 		const records = [record({ alias: "review-runs", task: prompt }), record({ id: "sa-2", alias: "review-perm", task: prompt, status: "completed", finishedAt: Date.now() })];
+67 | 		const { panel } = fakePanel(() => records);
+68 | 		try {
+69 | 			const lines = panel.render(60).join("\n");
+70 | 			expect(lines).toContain("1 running");
+71 | 			expect(lines).toContain("1 completed");
+                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "1 completed"
+Received: " subagents · 2 total · 1 running\n\n› ● You are reviewing a pi-extension monorepo for implement\u001b[0m…\u001b[0m\n  ✓ You are reviewing a pi-extension monorepo for implement\u001b[0m…\u001b[0m\n\n ↑/↓ select · enter detail · k cancel · t transcript · l \u001b[0m...\u001b[0m"
+
+      at <anonymous> (/Users/yuqiang/work/code/pi-plugins/plugins/subagent/test/panel.test.ts:71:18)
+(fail) the fleet panel > each task shows its name and status before a long repeated prompt [15.59ms]
+
+ 0 pass
+ 19 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [450.00ms]

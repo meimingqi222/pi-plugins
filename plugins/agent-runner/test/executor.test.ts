@@ -40,6 +40,15 @@ function input(prompt: string, extra: Partial<AgentRunInput> = {}): AgentRunInpu
 }
 
 describe("agent executor spawn path", () => {
+  test("an exited child cannot be relabelled stalled while inherited stdio drains", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-exit-stall-"));
+    try {
+      const tree = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/process-tree.mjs");
+      const executor = createAgentExecutor({ invocation: { command: process.execPath, args: [tree] }, timeoutMs: TIMEOUT_MS, stallMs: 100 });
+      const result = await executor(input(JSON.stringify({ pidPath: join(dir, "pid"), mode: "exit" })));
+      expect(result.errorMessage ?? "").not.toContain("produced no output");
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
   test("forwards child tool activity with a bounded path but no search pattern or output", async () => {
     const progress: unknown[] = [];
     const executor = createAgentExecutor({ invocation: injection, timeoutMs: TIMEOUT_MS });

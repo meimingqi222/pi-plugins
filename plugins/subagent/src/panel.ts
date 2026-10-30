@@ -77,6 +77,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 	let view: View = directChild ? { kind: "transcript", id: directChild } : { kind: "list" };
 	let selectedId: string | undefined;
 	let scroll = 0;
+	let maxScroll = 0;
 	let follow = deps.mainView === true;
 	const bodyRows = () => Math.max(1, deps.bodyRows?.() ?? PANEL_BODY_ROWS);
 	let logCache: { id: string; text: string } | undefined;
@@ -184,12 +185,15 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 			const lane = list.find((record) => record.id === id);
 			if (lane) return truncateToWidth(` ${deps.theme.bold(lane.alias || lane.agent)} · ${lane.agent} · ${deriveChildState(lane, now())} · ${formatDuration(Math.floor(laneElapsedMs(lane, now()) / 1_000))}`, width);
 		}
-		const count = (state: "running" | "stalled" | "failed") => list.filter((record) => deriveChildState(record, now()) === state).length;
+		const count = (state: "running" | "stalled" | "idle" | "completed" | "failed" | "aborted") => list.filter((record) => deriveChildState(record, now()) === state).length;
 		const parts = [
 			`${list.length} total`,
 			count("running") > 0 ? `${count("running")} running` : "",
 			count("stalled") > 0 ? `${count("stalled")} stalled` : "",
+			count("idle") > 0 ? `${count("idle")} idle` : "",
+			count("completed") > 0 ? `${count("completed")} completed` : "",
 			count("failed") > 0 ? `${count("failed")} failed` : "",
+			count("aborted") > 0 ? `${count("aborted")} aborted` : "",
 		].filter(Boolean);
 		return truncateToWidth(` ${deps.theme.bold("subagents")} ${deps.theme.fg("dim", `· ${parts.join(" · ")}`)}`, width, "…");
 	}
@@ -199,7 +203,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 		switch (view.kind) {
 			case "list": keys = LIST_KEYS.replace("enter detail", deps.mainView ? "enter messages" : "enter detail"); break;
 			case "detail": keys = DETAIL_KEYS; break;
-			case "transcript": keys = deps.mainView ? "↑/↓ scroll · End follow · d details · L log · Esc back" : TRANSCRIPT_KEYS; break;
+			case "transcript": keys = deps.mainView ? "↑/↓ scroll · f follow · d details · L log · Esc back" : TRANSCRIPT_KEYS; break;
 			case "log": keys = LOG_KEYS; break;
 		}
 		const notify = deps.notifyDone() ? "notify on" : "notify off";
@@ -219,7 +223,7 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 				})()
 				: detailBody(width);
 			const rows = bodyRows();
-			const maxScroll = Math.max(0, body.length - rows);
+			maxScroll = Math.max(0, body.length - rows);
 			if (view.kind === "list") {
 				const index = records().findIndex((record) => record.id === selectedId);
 				if (index < scroll) scroll = Math.max(0, index);
@@ -230,6 +234,37 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 			lines.push(...body.slice(scroll, scroll + rows));
 			lines.push("", footer());
 			return lines.map((line) => truncateToWidth(line, width));
+		},
+		handleMouse(event) {
+			if (event.type === "wheel" && event.wheelDelta) {
+				if (view.kind === "list") {
+					const list = records();
+					if (list.length) {
+						const index = Math.max(0, list.findIndex((record) => record.id === selectedId));
+						selectedId = list[Math.max(0, Math.min(list.length - 1, index + Math.sign(event.wheelDelta)))]!.id;
+					}
+				} else {
+					scroll = Math.max(0, Math.min(maxScroll, scroll + event.wheelDelta));
+					follow = deps.mainView === true && scroll === maxScroll;
+				}
+				deps.tui.requestRender();
+				return { handled: true };
+			}
+			if (view.kind === "list" && (event.type === "press" || event.type === "click") && event.button === "left") {
+				const record = records()[scroll + event.y - 2];
+				if (!record || event.y < 2 || event.y >= 2 + bodyRows()) return undefined;
+				// Pi emits a click only after a component handles the press.
+				if (event.type === "press") return { handled: true };
+				selectedId = record.id;
+				if ((event.clickCount ?? 1) > 1) {
+					view = { kind: deps.mainView ? "transcript" : "detail", id: record.id };
+					scroll = 0;
+					follow = deps.mainView === true;
+				}
+				deps.tui.requestRender();
+				return { handled: true };
+			}
+			return undefined;
 		},
 		handleInput(data: string): void {
 			// Kitty-protocol releases would otherwise double-handle every key.
@@ -309,13 +344,15 @@ export function createSubagentsPanel(deps: PanelDeps, close: () => void): PanelC
 				scroll = Math.max(0, scroll - 1);
 			} else if (matchesKey(data, "down")) {
 				scroll += 1;
+				if (deps.mainView && scroll >= maxScroll) follow = true;
 			} else if (matchesKey(data, "pageUp")) {
 				scroll = Math.max(0, scroll - bodyRows());
 			} else if (matchesKey(data, "pageDown")) {
 				scroll += bodyRows();
+				if (deps.mainView && scroll >= maxScroll) follow = true;
 			} else if (matchesKey(data, "home")) {
 				scroll = 0;
-			} else if (matchesKey(data, "end")) {
+			} else if (matchesKey(data, "end") || (data === "f" && deps.mainView)) {
 				scroll = Number.MAX_SAFE_INTEGER; // clamped in render()
 				follow = deps.mainView === true;
 			} else if (data === "d" && view.kind === "transcript") {

@@ -10,10 +10,10 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import { createWorkReporter, type WorkReporterDeps, type WorkSurfaceUI } from "pi-run-core";
+import { createWorkReporter, type WorkReporterDeps, type WorkSurfaceUI } from "@meimingqi222/pi-run-core";
 import { deriveChildState } from "./background.ts";
-import type { Lane } from "./lane.ts";
 import { renderFleetWidget } from "./fleet.ts";
+import type { Lane } from "./lane.ts";
 
 const WIDGET_KEY = "pi-subagent-fleet";
 
@@ -29,6 +29,8 @@ export interface FleetReporterDeps {
 	list(): Lane[];
 	/** Running children across sessions: the tick lives only while this is non-zero. */
 	activeCount(): number;
+	/** The shared selector is available and already displays the summary. */
+	compact?(): boolean;
 	tickMs?: number;
 	now?(): number;
 	/** Test seams; the real ones are the globals. */
@@ -54,7 +56,9 @@ export function createFleetReporter(deps: FleetReporterDeps): FleetReporter {
 		ui: deps.ui,
 		items: deps.list,
 		live: () => deps.activeCount() > 0,
-		render: (records, theme, at, width) => renderFleetWidget(records, theme, at, width),
+		// The shared task selector supplies the visible compact summary. Keep
+		// this reporter alive for stall notifications without a duplicate list.
+		render: (records, theme, at, width) => deps.compact?.() ? [] : renderFleetWidget(records, theme, at, width),
 		tickMs: deps.tickMs,
 		now,
 		...(deps.schedule ? { schedule: deps.schedule } : {}),

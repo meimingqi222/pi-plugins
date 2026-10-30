@@ -208,6 +208,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
   let attempt = 0;
   let schemaAttempts = 0;
   while (schemaAttempts < maxAttempts) {
+    if (options.signal?.aborted) throw new RunAgentError("The agent was aborted", usage ?? emptyUsage());
     attempt += 1;
     options.admit?.(attempt);
     const prompt = !repair
@@ -226,6 +227,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
     const result = await executor({ ...input, prompt });
     usage = mergeWorkflowUsage(usage ?? emptyUsage(), result.usage);
     if (result.model) model = result.model;
+    if (options.signal?.aborted) throw new RunAgentError("The agent was aborted", usage ?? emptyUsage());
 
     // A timed-out or aborted agent is real spend too — often the most expensive
     // call, because it ran until the cap. Carrying its usage is what keeps the
