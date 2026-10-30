@@ -20,7 +20,7 @@ redaction plugin is absent; the service itself owns its pause policy.
 
 ## Alternatives considered
 
-- Import pi-redact directly: independently published plugins must not acquire a
+- Import pi-redact directly: independently installed plugins must not acquire a
   runtime dependency just to negotiate an optional service.
 - Trust provider hooks: the SDK request bypasses those hooks.
 - Catch a redactor failure and send raw history: recreates the privacy gap.

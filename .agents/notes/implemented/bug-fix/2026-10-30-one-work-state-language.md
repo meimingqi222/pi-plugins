@@ -48,11 +48,13 @@ than a bare `id · metric` join, because `↓1.2k` alone does not say what it
 counts.
 
 **`WorkState` is declared in `integrations/paseo-ui/shared/work-status.ts`
-rather than imported from `pi-run-core`.** The companion ships to Paseo as a
-standalone plugin; reaching into `pi-run-core` would drag the pi TUI dependency
-chain into it for one string union. The duplication is deliberate and the
-comment says so, matching how the redaction service contract is already handled
-across independently published packages.
+rather than imported from `pi-run-core`.** Nothing in this workspace is
+published to a registry, so that is not the reason. The reason is the
+dependency chain: `pi-run-core` depends on `@earendil-works/pi-tui`, and
+`integrations/paseo-ui` cannot even resolve `@earendil-works` — its
+`node_modules` holds only the `pi-subagent` workspace link. Importing a string
+union would drag pi's TUI into the Paseo daemon process. The duplication is
+deliberate and the comment at the declaration says so.
 
 ## Alternatives considered
 

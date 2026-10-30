@@ -9,8 +9,10 @@
  * rejected. pi's documented inter-extension bus (`pi.events`) lets the consumer
  * call this live redactor instead.
  *
- * Independently installed consumers share a small versioned contract package;
- * announcements are still validated at runtime before they are used.
+ * Consumers are installed and loaded independently of this extension — a
+ * machine may run `pi-permissions` without `pi-redact` at all — so the
+ * contract lives in a small shared package and every announcement is still
+ * validated at runtime before it is used.
  */
 
 import { isCompatibleRedactService } from "@meimingqi222/pi-redact-contract";

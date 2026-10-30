@@ -7,8 +7,9 @@
  * this bridge a secret in the transcript would be redacted from the model
  * request and sent in the clear to TypeSafe in the same turn.
  *
- * Why a bus and not an import: the two plugins are installed and published
- * independently. `pi-jev-compact` must work with `pi-redact` absent, present,
+ * Why a bus and not an import: the two plugins are installed and loaded
+ * independently, so neither may assume the other is present.
+ * `pi-jev-compact` must work with `pi-redact` absent, present,
  * or installed in either order, and must not depend on it at the package level.
  * pi's documented inter-extension bus (`pi.events`) is the one channel that
  * satisfies all three, so the contract is negotiated at runtime instead of

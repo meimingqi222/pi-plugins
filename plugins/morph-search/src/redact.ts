@@ -1,14 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isCompatibleRedactService } from "@meimingqi222/pi-redact-contract";
+import type { RedactService as RedactServiceContract } from "@meimingqi222/pi-redact-contract";
 
-interface RedactService {
-  version: number;
-  isEnabled?: () => boolean;
-  redactJson(value: unknown): unknown;
-  redactString(value: string): string;
-}
+type RedactService = Pick<RedactServiceContract, "version" | "isEnabled" | "redactJson" | "redactString">;
 
-// Plugins publish independently; negotiate the pi-redact contract over pi's bus.
+// Installed and loaded independently, so the contract is negotiated on pi's bus
+// rather than linked at build time: either plugin may be absent.
 export function installRedactBridge(pi: ExtensionAPI) {
   let service: RedactService | undefined;
   pi.events?.on("pi-redact:service", (value: unknown) => {

@@ -26,7 +26,8 @@ through pi's provider pipeline, which pi-redact gates when installed.
 ## Alternatives considered
 
 **Import `pi-redact` directly.** Reintroduces a package dependency between
-plugins that are published independently, and breaks installing either alone.
+plugins that are installed independently of each other, and breaks installing
+either one alone.
 
 **Require pi-redact at installation.** Disables `auto` mode for users who do
 not run the redactor, including those who configured a registry reviewer that

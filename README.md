@@ -79,8 +79,10 @@ pi install -l ./plugins/bg-bash
 pi install -l ./plugins/subagent
 pi install -l ./plugins/morph-search
 pi install -l ./plugins/permissions
-pi install npm:@meimingqi222/pi-redact  # once published
 ```
+
+These are path installs from a checkout; nothing here is published to a
+registry, and no plugin assumes another is installed.
 
 `@meimingqi222/pi-jev-compact` needs a TypeSafe API key in the environment
 (`TYPESAFE_API_KEY`); `@meimingqi222/pi-redact` has no required configuration.
