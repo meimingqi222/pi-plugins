@@ -120,9 +120,9 @@ never passes through those hooks. Without a bridge the same secret would be
 redacted from the model request and uploaded to TypeSafe in the clear in the same
 turn.
 
-So when pi-redact is installed, this extension subscribes to the redaction
-service it publishes on pi's shared event bus (`pi.events`) and runs that same
-engine over the state and questions immediately before upload:
+Whenever a compatible `pi-redact` is loaded, this extension subscribes to the
+redaction service it publishes on pi's shared event bus (`pi.events`) and runs
+that same engine over the state and questions immediately before upload:
 
 ```
 prune → serialize          (local)
@@ -149,19 +149,21 @@ Details worth knowing:
   **arguments**. A tool result's contents are replaced by `ok, N chars (omitted)`
   in the Jev state, so they never reach TypeSafe in the first place.
 
-By default, every Jev upload requires an active version-2 `pi-redact` service.
-If it is absent, paused, or throws, Jev sends nothing and pi uses its built-in
-summarizer. Set `JEV_COMPACT_REQUIRE_REDACT=false` only to explicitly allow
-unredacted uploads. That opt-out also permits older version-1 services, which
-cannot prove their active state. Neither mode guarantees removal of secrets
+The two features are independent. Compaction works with `pi-redact` absent,
+paused, or filtered out of `packages`; redaction is applied whenever the service
+is there and cannot be forgotten by configuration. To make the protection a
+precondition instead — refusing the upload when it is missing — set
+`JEV_COMPACT_REQUIRE_REDACT=true`. Neither setting guarantees removal of secrets
 that the redaction patterns do not recognize.
 
-The startup notice describes the observed state; the strict check also happens
-at upload time, so loading `pi-redact` later can enable Jev without a restart:
+The startup notice only reports a state worth acting on. A missing `pi-redact`
+is silent: it is the default installation, and a warning every session for a
+state the user chose is noise that gets ignored. The upload-time check runs per
+request, so loading `pi-redact` later protects the next upload without a
+restart:
 
 ```
 Jev compact: pi-redact detected — Jev payloads are redacted before upload
-Jev compact: pi-redact not detected — Jev payloads are sent unredacted
 Jev compact: pi-redact status unknown or paused — Jev payloads may be sent unredacted
 Jev compact: strict upload requires pi-redact to be active — using pi defaults until it is available
 ```
@@ -264,7 +266,7 @@ headroom, enough for the worst observed error.
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | — | The Jev/System One key. Highest priority, but not the only source; see [Install](#install). |
 | `JEV_COMPACT` | `true` | Set `false` to disable the extension. |
-| `JEV_COMPACT_REQUIRE_REDACT` | `true` | Require active pi-redact v2 before uploading to TypeSafe; otherwise use pi's built-in summary. |
+| `JEV_COMPACT_REQUIRE_REDACT` | `false` | `true` refuses the upload unless an active pi-redact v2 is present, using pi's built-in summary instead. Redaction itself is applied whenever the service exists, regardless of this flag. |
 | `JEV_COMPACT_MODEL` | `jev-latest` | Jev model name. |
 | `JEV_COMPACT_THRESHOLD` | `0.2` | Keep probability cutoff. Lower keeps more; higher discards more. Clamped to 0–1. |
 | `JEV_COMPACT_PRESERVE_RECENT` | `6` | Newest messages never touched. |

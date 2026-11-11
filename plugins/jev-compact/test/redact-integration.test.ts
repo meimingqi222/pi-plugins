@@ -244,23 +244,29 @@ describe('pi-redact + pi-jev-compact integration', () => {
       protectedRun.restore();
     }
 
+    // Without pi-redact the upload still happens (compaction is this plugin's
+    // job), so the startup notice stays silent about it: warning every session
+    // about a state the user chose just trains them to ignore notices.
     const soloRun = loadExtensions([jevCompact]);
     try {
       await runSessionStart(soloRun);
-      expect(soloRun.notes.some((n) => n.includes('requires pi-redact'))).toBe(true);
-      expect(soloRun.notes.some((n) => n.includes('sent unredacted'))).toBe(false);
+      expect(soloRun.notes.some((n) => n.includes('pi-redact'))).toBe(false);
+      expect(soloRun.notes.some((n) => n.includes('unredacted'))).toBe(false);
     } finally {
       soloRun.restore();
     }
   });
 
-  test('explicit opt-out allows an unredacted upload without pi-redact', async () => {
-    process.env.JEV_COMPACT_REQUIRE_REDACT = 'false';
-    // Pins the gap the bridge closes, so the test cannot pass vacuously by the
-    // secret never having been in the payload at all.
+  test('an absent pi-redact does not disable compaction by default', async () => {
+    // The decoupling this pins: redaction is inherited from the installation,
+    // never required by it. A user who uninstalls or filters out pi-redact gets
+    // Jev compaction and an unredacted upload, not a silent downgrade to pi's
+    // summarizer.
     const loaded = loadExtensions([jevCompact]);
     try {
       await runCompact(loaded);
+      // Pins the gap the bridge closes, so the test cannot pass vacuously by the
+      // secret never having been in the payload at all.
       expect(loaded.sent.join('\n')).toContain(GITHUB_PAT);
     } finally {
       loaded.restore();
@@ -331,9 +337,17 @@ describe('pi-redact + pi-jev-compact integration', () => {
   });
 });
 
-test('default upload policy refuses an absent redactor', async () => {
+test('strict mode is opt-in, not the default', async () => {
+  // The old default refused every upload without pi-redact, which made
+  // uninstalling the redactor break compaction. Strictness is now the switch a
+  // user turns on deliberately; the default keeps the two features independent.
   delete process.env.JEV_COMPACT_REQUIRE_REDACT;
-  const loaded = loadExtensions([jevCompact]);
-  try { await runCompact(loaded); expect(loaded.sent).toHaveLength(0); }
-  finally { loaded.restore(); }
+  const loose = loadExtensions([jevCompact]);
+  try { await runCompact(loose); expect(loose.sent.length).toBeGreaterThan(0); }
+  finally { loose.restore(); }
+
+  process.env.JEV_COMPACT_REQUIRE_REDACT = 'true';
+  const strict = loadExtensions([jevCompact]);
+  try { await runCompact(strict); expect(strict.sent).toHaveLength(0); }
+  finally { strict.restore(); }
 });

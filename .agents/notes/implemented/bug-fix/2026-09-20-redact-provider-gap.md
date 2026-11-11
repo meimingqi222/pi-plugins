@@ -1,7 +1,7 @@
 # Agent Note: Redact the outbound Jev payload, not just the provider payload
 
 Status: implemented
-Partly-superseded-by: 2026-10-09-jev-required-redaction-default.md
+Partly-superseded-by: 2026-11-11-jev-redaction-decoupled-from-compaction.md
 
 ## Problem
 
@@ -134,4 +134,10 @@ plugins).
 
 ## Superseded
 
-The handshake and error propagation remain current. The standalone-by-default policy and v1 default-mode claims are replaced by active-v2 redaction by default, with explicit upload opt-out.
+The handshake, fail-closed error propagation, and the v2 service check remain
+current. The default-upload policy has changed twice since: active-v2 redaction
+was made required by default (`2026-10-09-jev-required-redaction-default.md`,
+now archived), and is now opt-in again so that compaction does not depend on
+`pi-redact` being installed
+(`2026-11-11-jev-redaction-decoupled-from-compaction.md`). Redaction itself is
+still applied whenever the service is present; only the refusal is a choice.

@@ -28,7 +28,8 @@
  *   JEV_COMPACT_MAX_CONCURRENCY   simultaneous Jev requests, default 4
  *   JEV_COMPACT_BASE_URL          override the System One endpoint
  *   JEV_COMPACT_MIN_REDUCTION     below this ratio, fall back to pi, default 0.3
- *   JEV_COMPACT_REQUIRE_REDACT    require active pi-redact for uploads; default false
+ *   JEV_COMPACT_REQUIRE_REDACT    refuse uploads unless pi-redact is active;
+ *                                 default false (uploads proceed unredacted)
  */
 
 import type { ExtensionAPI, SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent';
@@ -124,7 +125,12 @@ function envProbability(name: string, fallback: number): number {
 function config() {
   return {
     enabled: envFlag('JEV_COMPACT', true),
-    requireRedact: envFlag('JEV_COMPACT_REQUIRE_REDACT', true),
+    // Off by default: this plugin's job is compaction, and a missing pi-redact
+    // must not silently turn it into pi's summarizer. Redaction is applied
+    // whenever the service is present, so the coupling is inherited from the
+    // installation rather than required by configuration. Set true only to
+    // refuse uploads when that protection is missing.
+    requireRedact: envFlag('JEV_COMPACT_REQUIRE_REDACT', false),
     // Below this reduction the pass is not worth taking: it would replace pi's
     // rewritten summary with a near-identical verbatim transcript. Deferring to
     // pi is right there, because pi actually shrinks the text.
@@ -312,22 +318,23 @@ export default function jevCompact(pi: ExtensionAPI): void {
       `Jev compact v${PLUGIN_VERSION} loaded (threshold ${cfg.options.keepThreshold}, keep recent ${cfg.options.preserveRecentMessages})`,
       'info',
     );
-    // Redaction of the outbound Jev payload depends on pi-redact being loaded.
-    // Say so plainly: a user who installed it expecting that protection should
-    // not have to infer its absence from an unchanged startup line.
+    // Redaction is inherited from the installation, so pi-redact's absence is
+    // the documented default state rather than an anomaly: every session would
+    // warn about something the user already decided, which trains them to
+    // ignore the notices that do matter. Stay silent unless there is a state to
+    // act on — strict mode refusing the upload, protection active, or a service
+    // that cannot prove it is enabled.
     const service = bridge.service();
     const activeRedaction = service?.version === 2 && service.isEnabled?.();
-    let notice: string;
+    let notice: string | undefined;
     if (cfg.requireRedact && !activeRedaction) {
       notice = 'Jev compact: strict upload requires pi-redact to be active — using pi defaults until it is available';
     } else if (activeRedaction) {
       notice = 'Jev compact: pi-redact detected — Jev payloads are redacted before upload';
     } else if (service) {
       notice = 'Jev compact: pi-redact status unknown or paused — Jev payloads may be sent unredacted';
-    } else {
-      notice = 'Jev compact: pi-redact not detected — Jev payloads are sent unredacted';
     }
-    ctx.ui.notify(notice, activeRedaction ? 'info' : 'warning');
+    if (notice) ctx.ui.notify(notice, activeRedaction ? 'info' : 'warning');
   });
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx) => {

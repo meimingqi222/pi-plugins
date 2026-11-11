@@ -1,0 +1,3 @@
+(fail) pi-redact + pi-jev-compact integration > the startup notice reports whether the upload is protected [4.07ms]
+(fail) pi-redact + pi-jev-compact integration > an absent pi-redact does not disable compaction by default [0.86ms]
+(fail) strict mode is opt-in, not the default [0.93ms]

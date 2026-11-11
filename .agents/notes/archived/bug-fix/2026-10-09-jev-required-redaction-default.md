@@ -1,6 +1,8 @@
 # Agent Note: Require active redaction by default
 
 Status: implemented
+Archived: 2026-11-11
+Superseded-by: 2026-11-11-jev-redaction-decoupled-from-compaction.md
 
 ## Problem
 
